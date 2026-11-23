@@ -1,0 +1,44 @@
+From 5fcd125d13e65076a9ad43aa3fab2e2e84419e2d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:27:12 -0800
+Subject: [PATCH 175/371] pirates: poker takes no action after the hand ends
+ (0217)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/DistributedPokerTableAI.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/pirates/minigame/DistributedPokerTableAI.py b/pirates/minigame/DistributedPokerTableAI.py
+index b9bafd8..fe53b1b 100644
+--- a/pirates/minigame/DistributedPokerTableAI.py
++++ b/pirates/minigame/DistributedPokerTableAI.py
+@@ -474,6 +474,8 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         if seatIndex is None:
+             return
+ 
++        if not self._handActive:
++            return  # the hand is over
+         if not self._bettingOrder or self._bettingOrder[0] != seatIndex:
+             return  # not his turn
+ 
+@@ -485,6 +487,8 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         self._applyAction(seatIndex, actionCode, amount)
+ 
+     def _applyAction(self, seatIndex, actionCode, amount):
++        if not self._handActive:
++            return
+         if not self._bettingOrder or self._bettingOrder[0] != seatIndex:
+             return  # only the seat whose turn it is may act
+ 
+@@ -563,6 +567,7 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+     def _endHand(self):
+         taskMgr.remove(self.uniqueName('poker-turn'))
+         taskMgr.remove(self.uniqueName('poker-timeout'))
++        self._bettingOrder = []  # nobody's turn is open once the hand is over
+ 
+         if not self._activeBettors:
+             # Everybody left: the pot is forfeited
+-- 
+2.53.0
+

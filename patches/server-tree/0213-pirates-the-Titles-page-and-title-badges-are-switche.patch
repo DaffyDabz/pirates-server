@@ -1,0 +1,30 @@
+From 4aeeb28660502be02294a6888d75f1735e06c01d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:47:19 -0800
+Subject: [PATCH 213/371] pirates: the Titles page and title badges are
+ switched on (0285, patch 20)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ config/general.prc | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/config/general.prc b/config/general.prc
+index 8a9ccac..36f8ea7 100644
+--- a/config/general.prc
++++ b/config/general.prc
+@@ -90,6 +90,11 @@ want-slash-commands #t
+ white-list-check-before-send #f
+ whitelist-chat-enabled #f
+ 
++# Titles:
++# family server (patch 0285): build the Titles page and its chest-tray button, and show title badges
++# over heads and on ships (GuiManager.py:100, ChestTray.py:14). Off by default in the 2008 client.
++want-titles-page #t
++
+ # Compass/Map:
+ map-islands-debug #f
+ 
+-- 
+2.53.0
+

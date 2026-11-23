@@ -1,0 +1,72 @@
+From 933263755e411e384977a563841c9b1abb2f9afd Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:07:29 -0800
+Subject: [PATCH 153/371] pirates: no empty quest mark or Quest button over
+ O'Malley and Balthasar, server-tree patch 0172
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/DistributedQuestGiver.py | 33 ++++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/pirates/quest/DistributedQuestGiver.py b/pirates/quest/DistributedQuestGiver.py
+index 4a1ba52..b81a125 100644
+--- a/pirates/quest/DistributedQuestGiver.py
++++ b/pirates/quest/DistributedQuestGiver.py
+@@ -20,6 +20,35 @@ from pirates.reputation.ReputationGlobals import getLevelFromTotalReputation
+ 
+ from libotp import *
+ 
++_shipPvpQuestIds = None
++
++
++def _getShipPvpQuestIds():
++    # family server (2026-11-18): the AI never offers Ship PvP quests (patch 0171: their ShipPVPDefeat steps
++    # count Ship PvP games, which this server does not run). The client builds the same list so it draws no
++    # quest mark over O'Malley or Balthasar and shows no Quest button that opens an empty menu.
++    global _shipPvpQuestIds
++    if _shipPvpQuestIds is None:
++
++        def questIds(c, out):
++            if type(c).__name__ == 'QuestDNA':
++                out.append(c.getQuestId())
++                return out
++            for k in c.containers:
++                questIds(k, out)
++            return out
++
++        pvp = set(qid for qid, dna in QuestDB.QuestDict.items()
++                  if any(isinstance(t, QuestTaskDNA.ShipPVPDefeatTaskDNA) for t in dna.getTaskDNAs()))
++        for ladderDict in (QuestLadderDB.FameQuestLadderDict, QuestLadderDB.FortuneQuestLadderDict):
++            for ladder in ladderDict.values():
++                ids = questIds(ladder, [])
++                if pvp.intersection(ids):
++                    pvp.update(ids)
++        _shipPvpQuestIds = pvp
++    return _shipPvpQuestIds
++
++
+ class DistributedQuestGiver(Avatar.Avatar):
+     notify = directNotify.newCategory('DistributedQuestGiver')
+     NoOffer = 0
+@@ -116,6 +145,8 @@ class DistributedQuestGiver(Avatar.Avatar):
+             if len(prereqExcludes):
+                 if questId in prereqExcludes:
+                     continue
++            if questId in _getShipPvpQuestIds():
++                continue
+             
+             prereqs = questDNA.getPrereqs()
+             boolWeapLvlCheck = (questDNA.weapLvlType != None) & (questDNA.minWeapLevel > 0)
+@@ -486,6 +517,8 @@ class DistributedQuestGiver(Avatar.Avatar):
+             if len(prereqExcludes):
+                 if questId in prereqExcludes:
+                     continue
++            if questId in _getShipPvpQuestIds():
++                continue
+             boolWeapLvlCheck = (questDNA.weapLvlType != None) & (questDNA.minWeapLevel > 0)
+             for prereq in questDNA.prereqs:
+                 if prereq.giverMatters():
+-- 
+2.53.0
+

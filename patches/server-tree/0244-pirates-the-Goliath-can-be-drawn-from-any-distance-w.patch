@@ -1,0 +1,96 @@
+From 1e9d1af9774035d6ef7e07b5140bd656bc029e80 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:58:05 -0800
+Subject: [PATCH 244/371] pirates: the Goliath can be drawn from any distance,
+ with its shadow and rigging (0319, patch 22)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/effects/Wake.py     | 11 +++++++++++
+ pirates/ship/ShipGlobals.py | 31 +++++++++++++++++++++++++++++++
+ 2 files changed, 42 insertions(+)
+
+diff --git a/pirates/effects/Wake.py b/pirates/effects/Wake.py
+index 54e9904..8bddb16 100644
+--- a/pirates/effects/Wake.py
++++ b/pirates/effects/Wake.py
+@@ -216,12 +216,23 @@ class Wake(PooledEffect):
+             wake_scale = 0.6
+             wake_offset_y = 100.0
+             string = 'BLACK_PEARL'
++        if model == ShipGlobals.GOLIATH:
++            # family server (0319): the Goliath had no shadow ("shadow model not found for ship class 53"). Its hull is
++            # twice the Man o' War's (216 x 491 against 108 x 246), so the warship shadow at twice the Man o' War's scale.
++            scale_x = 2.16
++            scale_y = 2.1
++            self.shadow_model = loader.loadModel('models/sea/shadow_warship')
++            string = 'GOLIATH'
+         if model == ShipGlobals.DAUNTLESS:
+             string = 'DAUNTLESS'
+ 
+         if model == ShipGlobals.FLYING_DUTCHMAN:
+             string = 'FLYING_DUTCHMAN'
+ 
++        if draw_shadow and not self.shadow_model and model != ShipGlobals.DINGHY:
++            # family server (0319): a ship with no shadow of its own gets the warship one, not none
++            self.shadow_model = loader.loadModel('models/sea/shadow_warship')
++
+         if draw_shadow:
+             if self.shadow_model:
+                 water_shadow = WaterShadow('p_ship_shadow', self.shadow_model, ship)
+diff --git a/pirates/ship/ShipGlobals.py b/pirates/ship/ShipGlobals.py
+index d226fb1..34458f8 100644
+--- a/pirates/ship/ShipGlobals.py
++++ b/pirates/ship/ShipGlobals.py
+@@ -7386,8 +7386,25 @@ def preprocessPhase3ShipParts():
+     preprocessMasts()
+ 
+ 
++# family server (0319): the Goliath and its cabin ship only a -geometry_High file (the Black Pearl and its cabin have
++# no _Medium). preprocessGoliath / preprocessBlackPearl build the Medium and Low from the High file, but only the
++# Black Pearl treasure map runs them, so a Goliath out at sea (0267) asked the disk for goliath-geometry_Medium and
++# closed the kid's game (OSError: Could not load model). Build them the first time one is drawn, the same way.
++_familyHighOnlyHulls = {
++    'models/shipparts/goliath': 'goliath',
++    'models/shipparts/goliathCabinA': 'goliathCabinA',
++    'models/shipparts/blackpearl': 'blackpearl',
++    'models/shipparts/blackpearlCabin': 'blackpearlCabin'}
++
++
+ def getShipGeom(filename):
+     data = shipGeoms.get(filename)
++    if not data and '-geometry_' in filename:
++        (prefix, lod) = filename.rsplit('-geometry_', 1)
++        if lod in ('High', 'Medium', 'Low') and prefix in _familyHighOnlyHulls:
++            preprocessHull(_familyHighOnlyHulls[prefix])
++            data = shipGeoms.get(filename)
++
+     if data:
+         return (1, data)
+     else:
+@@ -7418,8 +7435,22 @@ def getMast(filename):
+     return (newMast, newLocators)
+ 
+ 
++# family server (0319): start-up builds the rigging of the player hulls only, so the Goliath sailed with none.
++_familyLazyRigging = {
++    'models/char/goliath-rigging': [
++        0,
++        1]}
++
++
+ def getRigging(filename):
+     rig = shipGeoms.get(filename)
++    if not rig and '_' in filename:
++        (prefix, index) = filename.rsplit('_', 1)
++        indices = _familyLazyRigging.get(prefix)
++        if indices and index.isdigit() and int(index) in indices:
++            preprocessRigging(prefix, indices)
++            rig = shipGeoms.get(filename)
++
+     if rig:
+         rig = rig.copyTo(hidden)
+         rig.detachNode()
+-- 
+2.53.0
+

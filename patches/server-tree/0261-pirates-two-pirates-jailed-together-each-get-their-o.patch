@@ -1,0 +1,61 @@
+From 906ca7ec7088a56d3804923312432bc2fd006ad5 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 07:54:34 -0800
+Subject: [PATCH 261/371] pirates: two pirates jailed together each get their
+ own cell (0347)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/PlayerPirateGameFSMAI.py | 25 ++++++++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/pirate/PlayerPirateGameFSMAI.py b/pirates/pirate/PlayerPirateGameFSMAI.py
+index 484b2ba..cb0c8dd 100644
+--- a/pirates/pirate/PlayerPirateGameFSMAI.py
++++ b/pirates/pirate/PlayerPirateGameFSMAI.py
+@@ -1,3 +1,5 @@
++import random
++
+ from direct.directnotify.DirectNotifyGlobal import directNotify
+ 
+ from pirates.pirate.BattleAvatarGameFSMAI import BattleAvatarGameFSMAI
+@@ -65,7 +67,7 @@ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+ 
+             return
+ 
+-        cellDoor = interior.getCellDoor()
++        cellDoor = self._getFreeCellDoor(interior)
+         if not cellDoor:
+             self.notify.warning('Cannot teleport avatar %d to jail, '
+                 'no cell were doors found for interior %d!' % (self.avatar.doId, interior.doId))
+@@ -94,6 +96,27 @@ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+         parentWorld.d_sendLocalAvatarToJail(self.avatar.doId, interior.doId,
+             interior.parentId, interior.zoneId)
+ 
++    def _getFreeCellDoor(self, interior):
++        # family server (11-19, 0347): a cell no other pirate is in. The door was picked at random, so two kids
++        # knocked out together could share a cell, and the second one's arrival closed and reset the door the
++        # first one was kicking. Every cell taken: a random door, as before.
++        taken = set()
++        for av in list(self.air.doId2do.values()):
++            getIndex = getattr(av, 'getJailCellIndex', None)
++            if av is self.avatar or getIndex is None:
++                continue
++
++            index = getIndex()
++            if index < 100:
++                taken.add(index)
++
++        cellDoors = getattr(interior, 'cellDoors', None) or {}
++        free = [door for door in list(cellDoors.values()) if door.getCellIndex() not in taken]
++        if free:
++            return random.choice(free)
++
++        return interior.getCellDoor()
++
+     def findParentWorld(self, parentObj):
+         # family server (0322): the instance that sends him to the jail. A game area's parent is its world, as
+         # before; on a ship's deck it is the world above the ship's ocean grid.
+-- 
+2.53.0
+

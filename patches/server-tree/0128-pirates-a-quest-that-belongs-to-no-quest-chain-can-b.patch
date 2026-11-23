@@ -1,0 +1,31 @@
+From 7bbd2d1969e6d1431b65c9109f2df77cc2663f87 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 22:32:21 -0800
+Subject: [PATCH 128/371] pirates: a quest that belongs to no quest chain can
+ be dropped again instead of failing on the server, as server-tree patch 0143
+ (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 39e12e8..3611c53 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -378,7 +378,10 @@ class QuestManagerAI(DirectObject):
+             return
+ 
+         questStub = avatar.questStatus.getQuestStub(quest.getQuestId())
+-        avatar.questStatus.handleQuestDropped(quest, questStub)
++        # pir-test 11-17 (0143): a quest that is in no ladder (518, the treasure-dig quest) has no stub, and
++        # handleQuestDropped crashed on it, so the quest could never be dropped.
++        if questStub is not None:
++            avatar.questStatus.handleQuestDropped(quest, questStub)
+ 
+         # update the player's quest list on their inventory...
+         questList.remove(quest.doId)
+-- 
+2.53.0
+

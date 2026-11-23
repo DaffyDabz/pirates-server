@@ -1,0 +1,51 @@
+From 0af13a475e7d36c9a3a67cc746d78b04319cb423 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:26:45 -0800
+Subject: [PATCH 083/371] pirates: a ship that sank and was repaired comes back
+ as a fresh ship whose wheel the pirate can take, as server-tree patch 0097
+ (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShipAI.py | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index f9090b4..0e77682 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -527,8 +527,23 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+                 return    # the sinking task deletes a sunk ship once nobody is aboard
+ 
+             self.b_setGameState('PutAway', 0)
++            self._leaveOceanGrid()
+             self.b_setLocation(self.parentId, 0)
+ 
++    def _leaveOceanGrid(self):
++        # The ocean grid tracks every ship launched onto it (addObjectToOceanGrid
++        # in the deployer) and its update task puts each one back in the zone of
++        # its position every second. Nothing ever took a ship off that list, so a
++        # ship sent to zone 0 was back on the sea a moment later (SAIL1: zone 0,
++        # then 2389 at once). A sunk ship then stayed in view of its owner's game
++        # as the old sunk object, wheel and cannons switched off by the sinking,
++        # and the relaunch only set it Docked, so he could never take the wheel.
++        # Off the grid, it leaves every game at zone 0 and the relaunch (which
++        # puts it back on the grid) sends a fresh ship, like a first launch.
++        parentObj = self.getParentObj()
++        if isinstance(parentObj, DistributedOceanGridAI):
++            parentObj.removeObjectFromOceanGrid(self)
++
+     def handleChildArrive(self, childObj, zoneId):
+         if isinstance(childObj, DistributedPlayerPirateAI):
+             # TEMP-DIAG (2026-11-17): crew stayed [] after a relaunch
+@@ -1093,6 +1108,7 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+             self.steeringWheel.b_setUserId(0)
+ 
+         self.b_setGameState('Sunk', 0)
++        self._leaveOceanGrid()
+         self.b_setLocation(self.parentId, 0)
+         self.notify.warning('sunk ship %s: put away sunk, a shipwright can repair it' % self.doId)
+ 
+-- 
+2.53.0
+

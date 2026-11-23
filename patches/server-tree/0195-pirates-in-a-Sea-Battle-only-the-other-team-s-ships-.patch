@@ -1,0 +1,80 @@
+From 1ca93862851fbb2b31a577614b2a755fb99f3f2f Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 00:25:12 -0800
+Subject: [PATCH 195/371] pirates: in a Sea Battle only the other team's ships
+ can be shot or rammed, and hits score (0252)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/WeaponBaseAI.py    | 11 +++++++++++
+ pirates/ship/DistributedShipAI.py | 11 +++++++++++
+ 2 files changed, 22 insertions(+)
+
+diff --git a/pirates/battle/WeaponBaseAI.py b/pirates/battle/WeaponBaseAI.py
+index 5e27ef2..a51a4f5 100644
+--- a/pirates/battle/WeaponBaseAI.py
++++ b/pirates/battle/WeaponBaseAI.py
+@@ -157,6 +157,13 @@ class WeaponBaseAI(WeaponBaseBase):
+             areaIdEffects = [attackerEffects, targetEffects]
+ 
+             timestamp = globalClockDelta.getRealNetworkTime(bits=32)
++            # Sea Battle: a pirate's shot hurts the other team's ships only, and one
++            # player's ship never hurts another's outside the battle
++            seaBattle = getattr(self.air, 'seaBattleMgr', None)
++            if seaBattle is not None and skillResult and not isGrapple and not seaBattle.allowShipHit(avatar, target):
++                skillResult = WeaponGlobals.RESULT_MISS
++
++            hpBefore = target.getHp() if hasattr(target, 'getHp') else 0
+             if skillResult and not isGrapple:
+                 if hullCode > 0:
+                     target.hull.projectileWeaponHit(skillId, ammoSkillId, skillResult, targetEffects, pos, normal, codes, avatar)
+@@ -171,6 +178,10 @@ class WeaponBaseAI(WeaponBaseBase):
+                     if standing:
+                         random.choice(standing).projectileWeaponHit(skillId, ammoSkillId, skillResult, targetEffects, pos, normal, codes, avatar)
+ 
++                if seaBattle is not None and hasattr(target, 'getHp'):
++                    hpAfter = target.getHp()
++                    seaBattle.shipHit(avatar, target, hpBefore - hpAfter, self, hpBefore > 0 and hpAfter <= 0)
++
+             self.sendUpdate('setProjectileSkillResult', [skillId, ammoSkillId, skillResult, target.doId, [], attackerEffects, targetEffects, areaIdEffects, pos, normal, codes, avatar.doId, timestamp])
+ 
+         # the projectile has been successfully used, remove the projectile
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index 130bfc5..4317fd7 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -1668,6 +1668,12 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         if myPvpTeam and theirPvpTeam:
+             return myPvpTeam != theirPvpTeam
+ 
++        # in the Sea Battle only the other team's ships can be rammed
++        mySiegeTeam = self.getSiegeTeam()
++        theirSiegeTeam = target.getSiegeTeam()
++        if mySiegeTeam and theirSiegeTeam:
++            return mySiegeTeam != theirSiegeTeam
++
+         from pirates.piratesbase import TeamUtils
+         return TeamUtils.teamStatus(myTeam, theirTeam) == PiratesGlobals.ENEMY
+ 
+@@ -1726,6 +1732,7 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+ 
+         damage = self._getRamDamage()
+         targetWasAfloat = target._isAfloat()
++        hpBefore = target.getHp()
+         target.receiveRamDamage(damage, self.doId)
+ 
+         # the ram's impact effect: the contact point is in the rammer's frame, so the
+@@ -1751,6 +1758,10 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+             except Exception as e:
+                 self.notify.warning('Could not credit ship defeat for ram: %s' % str(e))
+ 
++        seaBattle = getattr(self.air, 'seaBattleMgr', None)
++        if seaBattle is not None:
++            seaBattle.shipHit(avatar, target, hpBefore - target.getHp(), 'ram', targetWasAfloat and not target._isAfloat())
++
+     def _makeCannon(self, cannonType):
+         # one cannon for a slot of the ship's cannon config; a subclass may return another cannon class,
+         # or None for a slot that stays empty
+-- 
+2.53.0
+

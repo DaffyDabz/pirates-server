@@ -1,0 +1,34 @@
+From 75ec3c4db75de0621f042ccb72dd9c81a641a57f Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 305/371] family server (11-20): a grenade hit shows to
+ everyone, and a grenade landing on the ground no longer makes an error (0389)
+
+Server: useProjectileSkill passed the client's suggested result into getTargetedSkillResult, shifting every later
+argument one place, so the hit broadcast could not be packed. Lane: combat (shops-0002 is the same fix).
+Test: test_grenade_hit_result.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/WeaponBaseAI.py | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/battle/WeaponBaseAI.py b/pirates/battle/WeaponBaseAI.py
+index c6a1d42..ef2b105 100644
+--- a/pirates/battle/WeaponBaseAI.py
++++ b/pirates/battle/WeaponBaseAI.py
+@@ -241,7 +241,10 @@ class WeaponBaseAI(WeaponBaseBase):
+         if getattr(target, 'takeKrakenHit', None) is not None:
+             targetResult = self._krakenHit(avatar, target, skillId, ammoSkillId, areaIdList, pos, 0)
+         else:
+-            targetResult = self.air.battleMgr.getTargetedSkillResult(avatar, target, skillId, ammoSkillId, result, areaIdList, timestamp, pos)
++            # the client's suggested result is not an argument here: passing it
++            # moved every later one along (the hit list got a number, the hit
++            # position landed in charge) and the hit broadcast below could not be sent
++            targetResult = self.air.battleMgr.getTargetedSkillResult(avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos)
+         if not targetResult:
+             self.notify.debug('Cannot get projectile targeted skill, '
+                 'no valid result was given; avatarId=%d, skillId=%d!' % (avatar.doId, skillId))
+-- 
+2.53.0
+

@@ -1,0 +1,31 @@
+From ab0efe0d0c5481504dc81496ab7a5a85191d4feb Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 07:54:34 -0800
+Subject: [PATCH 260/371] pirates: only one pirate at a time mans a ship's
+ cannon (0346)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedShipCannonAI.py | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/pirates/battle/DistributedShipCannonAI.py b/pirates/battle/DistributedShipCannonAI.py
+index 7ea9cf6..0996501 100644
+--- a/pirates/battle/DistributedShipCannonAI.py
++++ b/pirates/battle/DistributedShipCannonAI.py
+@@ -34,6 +34,12 @@ class DistributedShipCannonAI(DistributedPCCannonAI, DistributedShippartAI, Dist
+         return self.cannonIndex
+ 
+     def handleRequestInteraction(self, avatar, interactType, instant):
++        # family server (11-19, 0346): one gunner per cannon. Two pirates who clicked the same cannon at once were
++        # both let in: the second took the cannon over without being started on it, and when either let go the
++        # cannon was left free under the other.
++        if self.userId and self.userId != avatar.doId and self.air.doId2do.get(self.userId) is not None:
++            return self.DENY
++
+         self.startWeapon(avatar.doId)
+         return self.ACCEPT
+ 
+-- 
+2.53.0
+

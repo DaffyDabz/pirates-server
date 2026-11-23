@@ -1,0 +1,31 @@
+From 53e3c13b5cc6893acc215e20a6299ab68dbf8a32 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 01:28:02 -0800
+Subject: [PATCH 205/371] pirates: a treasure map voyage can be started for a
+ captain (0271)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/treasuremap/DistributedTreasureMapAI.py | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/pirates/treasuremap/DistributedTreasureMapAI.py b/pirates/treasuremap/DistributedTreasureMapAI.py
+index e72d5b3..6c74516 100644
+--- a/pirates/treasuremap/DistributedTreasureMapAI.py
++++ b/pirates/treasuremap/DistributedTreasureMapAI.py
+@@ -141,6 +141,12 @@ class DistributedTreasureMapAI(DistributedObjectAI):
+ 
+         self.notify.info('Avatar %d requests to start treasure map %d (type=%d)' % (
+             avatarId, self.mapId, instanceType))
++        self.startFor(avatar)
++
++    def startFor(self, avatar):
++        """Send this pirate to the map's voyage (family server 11-19, 0271: the Lookout's "with crew" start calls
++        this for the captain and then for each crewmate who said yes)"""
++        avatarId = avatar.doId
+ 
+         if not self.isEnabled:
+             self.notify.warning('Treasure map %d is not enabled' % self.mapId)
+-- 
+2.53.0
+

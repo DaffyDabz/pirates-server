@@ -1,0 +1,134 @@
+From 9a02e1d36bd9b698b39f493ffde1fa6747ea8f72 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 312/371] family server (11-20): whispering or SpeedChatting a
+ friend on another island reaches him (0396)
+
+UberDOG: friends were never declared to each other's client agent, so a whisper to a friend out of sight dropped the
+sender off the server or was lost. Both online friends are now declared when they become friends and after a relog.
+Lane: social. Test: test_friend_whisper.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/friends/PCAvatarFriendsManagerUD.py | 49 ++++++++++++++++++++-
+ 1 file changed, 48 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/friends/PCAvatarFriendsManagerUD.py b/pirates/friends/PCAvatarFriendsManagerUD.py
+index c75db5e..c251537 100644
+--- a/pirates/friends/PCAvatarFriendsManagerUD.py
++++ b/pirates/friends/PCAvatarFriendsManagerUD.py
+@@ -1,7 +1,7 @@
+ from direct.distributed.DistributedObjectGlobalUD import DistributedObjectGlobalUD
+ from direct.distributed.PyDatagram import PyDatagram
+ from direct.directnotify import DirectNotifyGlobal
+-from otp.distributed.MsgTypes import CLIENTAGENT_ADD_POST_REMOVE
++from otp.distributed.MsgTypes import CLIENTAGENT_ADD_POST_REMOVE, CLIENTAGENT_DECLARE_OBJECT, CLIENTAGENT_UNDECLARE_OBJECT
+ from otp.otpbase import OTPGlobals
+ from otp.uberdog.RejectCode import RejectCode
+ 
+@@ -18,6 +18,11 @@ from otp.uberdog.RejectCode import RejectCode
+ #   pirate enters the game and avatarOffline when it unloads one. A client
+ #   post-remove sends the 'avatarFriendsOffline' net message when the game
+ #   closes or the connection drops.
++# - Whispers (typed and SpeedChat) go from the client straight to the
++#   friend's pirate object. The client agent drops a pirate who sends to an
++#   object he cannot see, so each online pirate's client agent is told about
++#   his online friends (declare), and a friend on another island can be
++#   whispered.
+ class PCAvatarFriendsManagerUD(DistributedObjectGlobalUD):
+     notify = DirectNotifyGlobal.directNotify.newCategory('PCAvatarFriendsManagerUD')
+ 
+@@ -34,6 +39,8 @@ class PCAvatarFriendsManagerUD(DistributedObjectGlobalUD):
+         self.pendingLoads = {} # avId -> [callback, ...]
+         self.online = set()
+         self.invites = {}      # inviterId -> set(inviteeIds)
++        self.channels = {}     # avId -> connection channel, while online
++        self.declared = set()  # (avId, friendId): his client agent knows the friend's object
+ 
+     def announceGenerate(self):
+         DistributedObjectGlobalUD.announceGenerate(self)
+@@ -168,6 +175,35 @@ class PCAvatarFriendsManagerUD(DistributedObjectGlobalUD):
+             if friendId not in self.badAvatars:
+                 self.d_updateAvatarFriend(avId, friendId)
+ 
++    def declare(self, avId, friendId):
++        channel = self.channels.get(avId)
++        if not channel or (avId, friendId) in self.declared:
++            return
++        self.declared.add((avId, friendId))
++        datagram = PyDatagram()
++        datagram.addServerHeader(channel, self.air.ourChannel, CLIENTAGENT_DECLARE_OBJECT)
++        datagram.addUint32(friendId)
++        datagram.addUint16(self.air.dclassesByName['DistributedPlayerPirateUD'].getNumber())
++        self.air.send(datagram)
++
++    def undeclare(self, avId, friendId):
++        if (avId, friendId) not in self.declared:
++            return
++        self.declared.discard((avId, friendId))
++        channel = self.channels.get(avId)
++        if not channel:
++            return
++        datagram = PyDatagram()
++        datagram.addServerHeader(channel, self.air.ourChannel, CLIENTAGENT_UNDECLARE_OBJECT)
++        datagram.addUint32(friendId)
++        self.air.send(datagram)
++
++    def declareFriends(self, avId, friendId):
++        # both online: each one's client agent lets him whisper the other
++        if avId in self.online and friendId in self.online:
++            self.declare(avId, friendId)
++            self.declare(friendId, avId)
++
+     # ---------------------------------------------------------- from clients
+ 
+     def getSender(self):
+@@ -236,6 +272,7 @@ class PCAvatarFriendsManagerUD(DistributedObjectGlobalUD):
+                 self.saveFriends(a)
+         self.d_updateAvatarFriend(inviterId, inviteeId)
+         self.d_updateAvatarFriend(inviteeId, inviterId)
++        self.declareFriends(inviterId, inviteeId)
+         self.air.writeServerEvent('friendsMade', avId=inviterId, friendId=inviteeId)
+ 
+     def dropInvite(self, inviterId, inviteeId):
+@@ -281,6 +318,8 @@ class PCAvatarFriendsManagerUD(DistributedObjectGlobalUD):
+             otherFriends.remove(avId)
+             self.saveFriends(targetId)
+             self.d_removeAvatarFriend(targetId, avId)
++        self.undeclare(avId, targetId)
++        self.undeclare(targetId, avId)
+         self.air.writeServerEvent('friendsRemoved', avId=avId, friendId=targetId)
+ 
+     # ---------------------------------------------------- online and offline
+@@ -290,6 +329,10 @@ class PCAvatarFriendsManagerUD(DistributedObjectGlobalUD):
+             return
+         self.online.add(avId)
+         if connectionChannel:
++            if self.channels.get(avId) != connectionChannel:
++                # a new connection: its client agent knows nothing yet
++                self.declared = set(d for d in self.declared if d[0] != avId)
++            self.channels[avId] = connectionChannel
+             self.addOfflinePostRemove(avId, connectionChannel)
+ 
+         def gotSelf(ok):
+@@ -304,6 +347,7 @@ class PCAvatarFriendsManagerUD(DistributedObjectGlobalUD):
+             self.sendFriendsList(avId)
+             for friendId in self.av2friends.get(avId, []):
+                 self.d_updateAvatarFriend(friendId, avId)
++                self.declareFriends(avId, friendId)
+             self.scheduleResend(avId)
+ 
+         self.loadAvatar(avId, gotSelf, refreshName=True)
+@@ -343,6 +387,9 @@ class PCAvatarFriendsManagerUD(DistributedObjectGlobalUD):
+         if avId not in self.online:
+             return
+         self.online.discard(avId)
++        self.channels.pop(avId, None)
++        # his connection is gone, and with it what his client agent was told
++        self.declared = set(d for d in self.declared if d[0] != avId)
+         self.removeTask(self.uniqueName('friends-resend-%d' % avId))
+ 
+         # invites end with the session
+-- 
+2.53.0
+

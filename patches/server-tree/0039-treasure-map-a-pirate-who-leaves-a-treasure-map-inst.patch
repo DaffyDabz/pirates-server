@@ -1,0 +1,78 @@
+From 1d4eaf2789775389bd1857ea79749bb9d30561e6 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 21:48:20 -0800
+Subject: [PATCH 039/371] treasure map: a pirate who leaves a treasure map
+ instance is sent home to his return island
+
+The leave handler looked for the main world as PiratesWorld; its file name is
+the default-world setting (piratesWorld), so nothing was found, the warning was
+logged and the pirate stayed in the instance (PEARL3, 2026-11-16). The AI now
+finds the main world by type and teleports the pirate to his return island, or
+Port Royal, through the teleport manager.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ .../DistributedTreasureMapInstanceAI.py       | 37 +++++++++++++------
+ 1 file changed, 25 insertions(+), 12 deletions(-)
+
+diff --git a/pirates/treasuremap/DistributedTreasureMapInstanceAI.py b/pirates/treasuremap/DistributedTreasureMapInstanceAI.py
+index bf6927b..5a6b238 100644
+--- a/pirates/treasuremap/DistributedTreasureMapInstanceAI.py
++++ b/pirates/treasuremap/DistributedTreasureMapInstanceAI.py
+@@ -6,6 +6,7 @@ from otp.ai.MagicWordGlobal import *
+ 
+ from pirates.instance.DistributedInstanceWorldAI import DistributedInstanceWorldAI
+ from pirates.piratesbase import PiratesGlobals
++from pirates.quest.QuestConstants import LocationIds
+ 
+ 
+ class DistributedTreasureMapInstanceAI(DistributedInstanceWorldAI, FSM):
+@@ -210,21 +211,33 @@ class DistributedTreasureMapInstanceAI(DistributedInstanceWorldAI, FSM):
+             self._sendAvatarToMainWorld(avatar)
+ 
+     def _sendAvatarToMainWorld(self, avatar):
+-        """Send an avatar back to the main world"""
+-        # Find the main world instance
+-        mainWorld = self.air.teleportMgr.getWorld(PiratesGlobals.INSTANCE_MAIN, 'PiratesWorld')
++        """Send an avatar back to the main world: to his return island, or Port Royal if he has none"""
++        # The main world is found by its type: its file name is the 'default-world' setting ('piratesWorld'), and
++        # looking it up as 'PiratesWorld' found nothing, so a pirate who left was never sent home (2026-11-16).
++        tm = self.air.teleportMgr
++        mainWorld = None
++        for name in tm.getWorldNames(PiratesGlobals.INSTANCE_MAIN):
++            mainWorld = tm.getWorld(PiratesGlobals.INSTANCE_MAIN, name)
++            if mainWorld:
++                break
++
+         if not mainWorld:
+-            self.notify.warning('Could not find main world to return avatar to')
++            self.notify.warning('Could not find main world to return avatar %d to' % avatar.doId)
+             return
+ 
+-        # Get an island to teleport to (Port Royal by default)
+-        islands = mainWorld.builder.getIslands()
+-        if islands:
+-            island = islands[0]
+-            spawnPt = mainWorld.getSpawnPt(island.getUniqueId(), 0)
+-            # Notify client
+-            self.sendUpdateToAvatarId(avatar.doId, 'requestLeaveApproved', [
+-                mainWorld.doId, island.zoneId, 0])
++        for uid in (avatar.getReturnLocation(), LocationIds.PORT_ROYAL_ISLAND):
++            if not uid:
++                continue
++
++            island = mainWorld.builder.getObject(uniqueId=uid)
++            spawnPt = mainWorld.getSpawnPt(uid) if island else None
++            if island and spawnPt:
++                self.notify.info('Sending avatar %d home to %s' % (avatar.doId, uid))
++                tm.d_initiateTeleport(avatar, instanceType=PiratesGlobals.INSTANCE_MAIN,
++                    instanceName=mainWorld.getFileName(), locationUid=uid, spawnPt=spawnPt)
++                return
++
++        self.notify.warning('No return island in the main world for avatar %d' % avatar.doId)
+ 
+     # --- Treasure Map Complete ---
+     def d_setTMComplete(self, instanceResults, playerResults):
+-- 
+2.53.0
+

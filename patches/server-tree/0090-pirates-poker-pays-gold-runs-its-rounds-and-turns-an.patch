@@ -1,0 +1,320 @@
+From 352b751fe574218716cf7c027787d022fa5293db Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:54:30 -0800
+Subject: [PATCH 090/371] pirates: poker pays gold, runs its rounds and turns,
+ and lets a pirate leave, as server-tree patch 0104 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/DistributedPokerTableAI.py | 168 +++++++++++++++-----
+ 1 file changed, 128 insertions(+), 40 deletions(-)
+
+diff --git a/pirates/minigame/DistributedPokerTableAI.py b/pirates/minigame/DistributedPokerTableAI.py
+index 1b26ef9..4addfc2 100644
+--- a/pirates/minigame/DistributedPokerTableAI.py
++++ b/pirates/minigame/DistributedPokerTableAI.py
+@@ -50,6 +50,7 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         taskMgr.remove(self.uniqueName('poker-turn'))
+         taskMgr.remove(self.uniqueName('poker-timeout'))
+         taskMgr.remove(self.uniqueName('poker-start'))
++        taskMgr.remove(self.uniqueName('poker-next'))
+         DistributedGameTableAI.delete(self)
+ 
+     # ------------------------------------------------------------------
+@@ -197,9 +198,45 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         self._totalWinnings[seatIndex] = PlayingCardGlobals.PlayerInactive
+         self._chipsCount = self._normalizeChipsCount(self._chipsCount)
+         self._chipsCount[seatIndex] = 0
+-        if seatIndex in self._activeBettors:
+-            self._activeBettors.remove(seatIndex)
+         self.d_setTableState()
++        self._seatLeft(seatIndex)
++
++    def _avatarUnexpectedExit(self, avatar):
++        seatIndex = self.getAvatarSeatIndex(avatar)
++        DistributedGameTableAI._avatarUnexpectedExit(self, avatar)
++        if seatIndex is not None:
++            self._totalWinnings[seatIndex] = PlayingCardGlobals.PlayerInactive
++            self._chipsCount = self._normalizeChipsCount(self._chipsCount)
++            self._chipsCount[seatIndex] = 0
++            self._seatLeft(seatIndex)
++
++    def _seatLeft(self, seatIndex):
++        # A player left (stood up or logged out): fold him out of the running hand
++        # at once instead of waiting 30 seconds for his turn to time out.
++        if not self._handActive or seatIndex not in self._activeBettors:
++            return
++        wasHead = bool(self._bettingOrder) and self._bettingOrder[0] == seatIndex
++        self._activeBettors.remove(seatIndex)
++        while seatIndex in self._bettingOrder:
++            self._bettingOrder.remove(seatIndex)
++        self._playerActions[seatIndex] = [PlayingCardGlobals.Fold, 0]
++        self._broadcastPlayerActions()
++        if len(self._activeBettors) <= 1 or not self._hasHuman():
++            self._endHand()
++        elif wasHead:
++            self._nextBettingAction()
++
++    def _humanInv(self, seatIndex):
++        seat = self.seats[seatIndex]
++        if seat is None or seat in (0, 1):
++            return None
++        return self.air.inventoryManager.getInventory(seat.doId)
++
++    def _hasHuman(self):
++        for seat in self.seats:
++            if seat is not None and seat not in (0, 1):
++                return True
++        return False
+ 
+     # ------------------------------------------------------------------
+     # Hand management
+@@ -223,7 +260,7 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         """Start a hand once at least two seats are filled and no hand is running."""
+         if self._handActive:
+             return
+-        if len(self._getOccupiedSeats()) < 2:
++        if len(self._getOccupiedSeats()) < 2 or not self._hasHuman():
+             return
+         taskMgr.remove(self.uniqueName('poker-start'))
+         taskMgr.doMethodLater(delay, self._startHandTask,
+@@ -231,12 +268,24 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+ 
+     def _startHand(self):
+         occupied = self._getOccupiedSeats()
+-        if len(occupied) < 2:
++        taskMgr.remove(self.uniqueName('poker-next'))
++        self._chipsCount = self._normalizeChipsCount(self._chipsCount)
++        self._seedAIChips()
++        # Humans play with the gold in their pocket; a broke player sits this hand out.
++        playing = []
++        for s in occupied:
++            inv = self._humanInv(s)
++            if inv:
++                self._chipsCount[s] = inv.getGoldInPocket()
++                if self._chipsCount[s] <= 0:
++                    continue
++            playing.append(s)
++        occupied = playing
++        if len(occupied) < 2 or not self._hasHuman():
+             self._handActive = False
+             return
+ 
+         self._handActive = True
+-        self._seedAIChips()
+         self._buildDeck()
+         self._playerHands = self._normalizePlayerHands([])
+         self._communityCards = []
+@@ -245,6 +294,7 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         self._activeBettors = list(occupied)
+         self._timeouts = {s: 0 for s in self._activeBettors}
+         self.b_setPotSize(0)
++        self._broadcastTableState(0)
+ 
+         # Advance button
+         if occupied:
+@@ -258,7 +308,7 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         self._dealInitialCards()
+         self._broadcastTableState(1)
+         self._broadcastPlayerHands()
+-        self._startBettingRound(2)
++        self._startBettingRound(1)
+ 
+     def _collectBlindsAndAntes(self):
+         occupied = self._activeBettors
+@@ -277,22 +327,28 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         for s in occupied:
+             cost = self._deductChips(s, ante)
+             pot += cost
+-            self._playerActions[s] = [PlayingCardGlobals.Ante, ante]
++            self._playerActions[s] = [PlayingCardGlobals.Ante, cost]
+ 
+-        # Post blinds
+-        self._deductChips(sbSeat, smallBlind)
+-        self._playerActions[sbSeat] = [PlayingCardGlobals.SmallBlind, smallBlind]
+-        pot += smallBlind
++        # Post blinds (only what the player could actually pay goes in the pot)
++        paid = self._deductChips(sbSeat, smallBlind)
++        self._playerActions[sbSeat] = [PlayingCardGlobals.SmallBlind, paid]
++        pot += paid
+ 
+-        self._deductChips(bbSeat, bigBlind)
+-        self._playerActions[bbSeat] = [PlayingCardGlobals.BigBlind, bigBlind]
+-        pot += bigBlind
++        paid = self._deductChips(bbSeat, bigBlind)
++        self._playerActions[bbSeat] = [PlayingCardGlobals.BigBlind, paid]
++        pot += paid
+ 
+         self._maxBet = bigBlind
+         self.b_setPotSize(self.potSize + pot)
+ 
+     def _deductChips(self, seatIndex, amount):
+-        amount = min(amount, self._chipsCount[seatIndex])
++        amount = max(0, min(amount, self._chipsCount[seatIndex]))
++        inv = self._humanInv(seatIndex)
++        if inv:
++            # A human stakes real gold from his pocket
++            gold = inv.getGoldInPocket()
++            amount = min(amount, gold)
++            inv.setGoldInPocket(gold - amount)
+         self._chipsCount[seatIndex] -= amount
+         return amount
+ 
+@@ -325,12 +381,12 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+ 
+         # Community card dealing for Holdem
+         if self.gameType == PlayingCardGlobals.Holdem:
++            # The client numbers the rounds 1 = pre-flop, 2 = flop, 3 = turn, 4 = river
++            # and treats round == numRounds as the end of the hand.
+             if round == 2:
+-                pass  # cards already dealt pre-flop
+-            elif round == 3:
+                 for _ in range(3):
+                     self._communityCards.append(self._dealCard())
+-            elif round in (4, 5):
++            elif round in (3, 4):
+                 self._communityCards.append(self._dealCard())
+ 
+         self._broadcastTableState(round)
+@@ -404,6 +460,9 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         if seatIndex is None:
+             return
+ 
++        if not self._bettingOrder or self._bettingOrder[0] != seatIndex:
++            return  # not his turn
++
+         taskMgr.remove(self.uniqueName('poker-timeout'))
+ 
+         actionCode = action[0] if action else PlayingCardGlobals.Fold
+@@ -411,10 +470,14 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         self._applyAction(seatIndex, actionCode, amount)
+ 
+     def _applyAction(self, seatIndex, actionCode, amount):
+-        if seatIndex not in self._bettingOrder:
+-            return
++        if not self._bettingOrder or self._bettingOrder[0] != seatIndex:
++            return  # only the seat whose turn it is may act
+ 
+         self._bettingOrder.pop(0)
++        prev = self._playerActions[seatIndex][1]
++        callAmount = max(0, self._maxBet - prev)
++        if actionCode == PlayingCardGlobals.Check and callAmount > 0:
++            actionCode = PlayingCardGlobals.CheckCall  # cannot check into a bet
+ 
+         if actionCode == PlayingCardGlobals.Fold:
+             self._playerActions[seatIndex] = [PlayingCardGlobals.Fold, 0]
+@@ -424,25 +487,31 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+             while seatIndex in self._bettingOrder:
+                 self._bettingOrder.remove(seatIndex)
+ 
+-        elif actionCode in (PlayingCardGlobals.CheckCall, PlayingCardGlobals.AllIn):
+-            callAmount = max(0, self._maxBet - self._playerActions[seatIndex][1])
++        elif actionCode == PlayingCardGlobals.CheckCall:
+             paid = self._deductChips(seatIndex, callAmount)
+             self.b_setPotSize(self.potSize + paid)
+-            self._playerActions[seatIndex] = [PlayingCardGlobals.CheckCall, self._maxBet]
+-
+-        elif actionCode == PlayingCardGlobals.BetRaise:
+-            minBet = self.anteList[2] if len(self.anteList) > 2 else 2
+-            if self._round >= 3:
+-                minBet *= 2
+-            betAmount = max(minBet, amount)
+-            paid = self._deductChips(seatIndex, betAmount)
++            self._playerActions[seatIndex] = [PlayingCardGlobals.CheckCall, prev + paid]
++
++        elif actionCode in (PlayingCardGlobals.BetRaise, PlayingCardGlobals.AllIn):
++            if actionCode == PlayingCardGlobals.AllIn:
++                want = self._chipsCount[seatIndex]
++            else:
++                minBet = self.anteList[2] if len(self.anteList) > 2 else 2
++                if self._round >= 3:
++                    minBet *= 2
++                # The client sends the total it wants to have in this round
++                target = max(amount, self._maxBet + minBet)
++                want = target - prev
++            paid = self._deductChips(seatIndex, want)
+             self.b_setPotSize(self.potSize + paid)
+-            self._maxBet = self._playerActions[seatIndex][1] + paid
+-            self._playerActions[seatIndex] = [PlayingCardGlobals.BetRaise, self._maxBet]
+-            # Others who already acted need to act again
+-            for s in self._activeBettors:
+-                if s != seatIndex and s not in self._bettingOrder:
+-                    self._bettingOrder.append(s)
++            newTotal = prev + paid
++            self._playerActions[seatIndex] = [actionCode, newTotal]
++            if newTotal > self._maxBet:
++                self._maxBet = newTotal
++                # Others who already acted need to act again
++                for s in self._activeBettors:
++                    if s != seatIndex and s not in self._bettingOrder and self._chipsCount[s] > 0:
++                        self._bettingOrder.append(s)
+ 
+         elif actionCode == PlayingCardGlobals.Check:
+             self._playerActions[seatIndex] = [PlayingCardGlobals.Check, 0]
+@@ -459,7 +528,7 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+     def _onBettingRoundComplete(self):
+         taskMgr.remove(self.uniqueName('poker-turn'))
+         nextRound = self._round + 1
+-        if nextRound > self.NumRounds or len(self._activeBettors) <= 1:
++        if nextRound >= self.NumRounds or len(self._activeBettors) <= 1:
+             self._endHand()
+         else:
+             taskMgr.doMethodLater(1.0, self._startNextRoundTask,
+@@ -480,6 +549,13 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         taskMgr.remove(self.uniqueName('poker-turn'))
+         taskMgr.remove(self.uniqueName('poker-timeout'))
+ 
++        if not self._activeBettors:
++            # Everybody left: the pot is forfeited
++            self.b_setPotSize(0)
++            self._handActive = False
++            self._broadcastTableState(self.NumRounds)
++            return
++
+         if len(self._activeBettors) == 1:
+             winner = self._activeBettors[0]
+             self._payoutWinner(winner)
+@@ -518,7 +594,9 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         if seat and seat not in (0, 1):
+             inv = self.air.inventoryManager.getInventory(seat.doId)
+             if inv:
+-                inv.addGoldInPocket(winnings)
++                # setGoldInPocket, not addGoldInPocket: the stake already left his
++                # pocket, and addGoldInPocket would double it on a gold holiday.
++                inv.setGoldInPocket(inv.getGoldInPocket() + winnings)
+                 # Quest hook
+                 if hasattr(self.air, 'questMgr'):
+                     self.air.questMgr.pokerHandWon(seat, winnings)
+@@ -540,17 +618,27 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+             self._chipsCount = self._normalizeChipsCount(self._chipsCount)
+             self._chipsCount[winnerSeat] += winnings
+ 
++        # Human stacks always mirror the gold in their pocket
++        self._chipsCount = self._normalizeChipsCount(self._chipsCount)
++        for s in range(self._availableSeats):
++            inv = self._humanInv(s)
++            if inv:
++                self._chipsCount[s] = inv.getGoldInPocket()
++
+         self.b_setPotSize(0)
+         self._broadcastTableState(self.NumRounds)
+         self._handActive = False
+ 
+         # Start next hand after a pause
++        taskMgr.remove(self.uniqueName('poker-next'))
+         taskMgr.doMethodLater(3.0, self._startHandTask,
+-            self.uniqueName('poker-turn'), appendTask=True)
++            self.uniqueName('poker-next'), appendTask=True)
+ 
+     def _startHandTask(self, task=None):
++        if self._handActive:
++            return Task.done
+         occupied = self._getOccupiedSeats()
+-        if len(occupied) >= 2:
++        if len(occupied) >= 2 and self._hasHuman():
+             self._startHand()
+         else:
+             self._handActive = False
+-- 
+2.53.0
+

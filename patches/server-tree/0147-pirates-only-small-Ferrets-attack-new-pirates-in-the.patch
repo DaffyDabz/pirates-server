@@ -1,0 +1,104 @@
+From f8c0ebc992700d2196d0dafa06a3f7686d4c2df7 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 08:39:38 -0800
+Subject: [PATCH 147/371] pirates: only small Ferrets attack new pirates in the
+ starter waters (0164)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/GameFSMShipAI.py | 12 ++++++++++++
+ pirates/ship/StarterWaters.py | 34 +++++++++++++++++++++++++++++-----
+ 2 files changed, 41 insertions(+), 5 deletions(-)
+
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index 7bf0f05..2c941a3 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -977,8 +977,20 @@ class GameFSMShipAI(FSM.FSM):
+             state = target.gameFSM.getCurrentOrNextState()
+             if state in ('Sinking', 'Sunk', 'Off', 'PutAway'):
+                 return False
++        # Family fix 0164: a ship above starter level leaves alone a target in
++        # starter waters (Port Royal, Tortuga and the strip between), so it
++        # never picks, chases or shoots a new pirate there
++        if not self._starterTargetOk(target):
++            return False
+         return True
+ 
++    def _starterTargetOk(self, target):
++        """May this ship engage target where it is (StarterWaters.targetOkForShip)?"""
++        try:
++            return StarterWaters.targetOkForShip(self.air, self.ship, target.getX(), target.getY())
++        except Exception:
++            return True
++
+     def _findNearbyAllies(self, range=None):
+         """
+         Find allied ships within range that could assist in combat.
+diff --git a/pirates/ship/StarterWaters.py b/pirates/ship/StarterWaters.py
+index 9a1d43f..5504daa 100644
+--- a/pirates/ship/StarterWaters.py
++++ b/pirates/ship/StarterWaters.py
+@@ -1,15 +1,26 @@
+ """
+ Starter waters (2026-11-17): the sea round the islands a new pirate sails from
+-first (Port Royal and Tortuga). Enemy ships there stay at starter levels:
++first (Port Royal and Tortuga). Only ships a level 1-5 pirate can beat sail
++there. One line decides it: a ship is "starter level" when its class level is
++npcship-starter-level-max or lower (default 5 since patch 0164, which of the
++regular enemy classes is only the Navy Ferret, level 2). Then:
+ 
+-- a regular enemy ship that spawns there is drawn only from the low-level
+-  classes (level npcship-starter-level-max or lower; 12 = the Navy Ferret,
+-  Bulwark and Panther, the EITC Sea Viper and the Navy Greyhound);
++- a regular enemy ship that spawns there is drawn only from the starter-level
++  classes;
+ - a flagship never spawns there (unless a test knob spawns it near an island);
+ - a ship above starter level never picks a patrol, wander or flee point inside
+   those waters, or a straight course through them;
++- a ship above starter level never picks, chases or shoots a target that is
++  inside those waters (patch 0164), so it cannot follow a new pirate in;
+ - a starter ship that spawned there keeps its patrol points there.
+ 
++Patch 0164 (2026-11-18): the old default (12) still let the Navy Bulwark (6),
++EITC Sea Viper (7), Navy Panther (9) and Navy Greyhound (12) spawn there, and
++let every one of them roam in and out freely. A level-2 pirate sank twice on
++the way to Tortuga to a Sea Viper 7, Panther 9 and Greyhound 12 at about
++(516, 6976) (patch 15 gates). And nothing stopped a big ship outside from
++chasing a pirate in, because only patrol points were checked.
++
+ The waters are a circle round each island plus, since 2026-11-18 (patch
+ 0157), the strip between them: every point within the radius of the straight
+ course from one starter island to the next. Port Royal and Tortuga are 21,400
+@@ -38,7 +49,7 @@ notify = DirectNotifyGlobal.directNotify.newCategory('StarterWaters')
+ ISLANDS = config.GetString('npcship-starter-islands',
+                            '1150922126.8dzlu 1156207188.95dzlu').split()
+ RADIUS = config.GetFloat('npcship-starter-radius', 9000.0)
+-LEVEL_MAX = config.GetInt('npcship-starter-level-max', 12)
++LEVEL_MAX = config.GetInt('npcship-starter-level-max', 5)
+ CORRIDOR = config.GetBool('npcship-starter-corridor', True)
+ 
+ _centers = None
+@@ -137,6 +148,19 @@ def crossesStarterWaters(air, x0, y0, x1, y1):
+     return False
+ 
+ 
++def targetOkForShip(air, ship, x, y):
++    """
++    May this ship pick, chase or shoot a target at (x, y)? Always yes for a
++    starter-level ship or a test spawn; otherwise only outside starter waters
++    (patch 0164), so a big ship leaves a new pirate there alone.
++    """
++    if not enabled() or getattr(ship, '_starterExempt', False):
++        return True
++    if isStarterClass(getattr(ship, 'shipClass', 0)):
++        return True
++    return not inStarterWaters(air, x, y)
++
++
+ def pointOkForShip(air, ship, x, y, fromXY=None, toXY=None):
+     """
+     May this ship sail to (x, y)? Always yes for a starter-level ship or a test
+-- 
+2.53.0
+

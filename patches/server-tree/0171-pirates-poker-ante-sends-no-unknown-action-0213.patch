@@ -1,0 +1,28 @@
+From 9cb0cb52362ff2b3ac2d2374391bef8c5fe24c0b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:27:11 -0800
+Subject: [PATCH 171/371] pirates: poker ante sends no unknown action (0213)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/DistributedPokerTableAI.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/minigame/DistributedPokerTableAI.py b/pirates/minigame/DistributedPokerTableAI.py
+index 4addfc2..201a31c 100644
+--- a/pirates/minigame/DistributedPokerTableAI.py
++++ b/pirates/minigame/DistributedPokerTableAI.py
+@@ -327,7 +327,9 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         for s in occupied:
+             cost = self._deductChips(s, ante)
+             pot += cost
+-            self._playerActions[s] = [PlayingCardGlobals.Ante, cost]
++            # The ante is not a bet in the round, and the client GUI has no case for
++            # an Ante action code ("Unknown action"): show no action
++            self._playerActions[s] = [PlayingCardGlobals.NoAction, 0]
+ 
+         # Post blinds (only what the player could actually pay goes in the pot)
+         paid = self._deductChips(sbSeat, smallBlind)
+-- 
+2.53.0
+

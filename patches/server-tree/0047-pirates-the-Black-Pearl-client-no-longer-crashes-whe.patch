@@ -1,0 +1,81 @@
+From b4d2565865a93efff741e1a4a6c0384215c48f9e Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 22:37:11 -0800
+Subject: [PATCH 047/371] pirates: the Black Pearl client no longer crashes
+ when stage two starts for a pirate who has not boarded the Pearl (no capture
+ sphere name yet), and the stage-two exit and reward exit tolerate a missing
+ camera interval
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ pirates/treasuremap/TreasureMapBlackPearl.py | 20 +++++++++++++++-----
+ 1 file changed, 15 insertions(+), 5 deletions(-)
+
+diff --git a/pirates/treasuremap/TreasureMapBlackPearl.py b/pirates/treasuremap/TreasureMapBlackPearl.py
+index 16d1a35..14577e9 100644
+--- a/pirates/treasuremap/TreasureMapBlackPearl.py
++++ b/pirates/treasuremap/TreasureMapBlackPearl.py
+@@ -35,6 +35,9 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+         self.messageHolder = None
+         self.warned = False
+         self.newEventSphereNodePath = None
++        self.newEventSphereName = None
++        self.attackShipIds = []
++        self.camIvalReward = None
+         self.fortRequest = None
+         self.forts = []
+         self.fortIds = []
+@@ -414,14 +417,18 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+             self.acceptOnce('enter' + newEventSphereName, self.handleShipCapture)
+ 
+     def disableCaptureSphere(self):
+-        self.ignore('enter' + self.newEventSphereName)
++        # the sphere is only made when this pirate boards the Pearl (handleBoardedPearl): a pirate who has not
++        # boarded when stage two starts has none (2026-11-16)
++        if self.newEventSphereName:
++            self.ignore('enter' + self.newEventSphereName)
+         if self.newEventSphereNodePath:
+             self.newEventSphereNodePath.removeNode()
+             self.newEventSphereNodePath = None
+ 
+     @report(types=['frameCount', 'deltaStamp', 'args'], dConfigParam='want-blackpearl-report')
+     def handleShipCapture(self, entry):
+-        self.ignore('enter' + self.newEventSphereName)
++        if self.newEventSphereName:
++            self.ignore('enter' + self.newEventSphereName)
+         self.sendUpdate('requestShipCapture')
+ 
+     @report(types=['frameCount', 'deltaStamp', 'args'], dConfigParam='want-blackpearl-report')
+@@ -483,7 +490,8 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+ 
+     @report(types=['frameCount', 'deltaStamp', 'args'], dConfigParam='want-blackpearl-report')
+     def exitStageTwo(self):
+-        self.camIval.finish()
++        if self.camIval:
++            self.camIval.finish()
+     
+     def filterStageTwo(self, request, args = []):
+         if request in ['StageThree', 'NotCompleted']:
+@@ -513,7 +521,7 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+         camera.reparentTo(localAvatar)
+         camera.setPos(0, 0, 0)
+         camera.setHpr(0, 0, 0)
+-        pearl = self.getPearl()
++        pearl = self.getPearl() or localAvatar
+         dummyNode = pearl.attachNewNode('cameraDummy')
+         dummyNode.setPos(-20, 10, 45)
+         dummyNode.lookAt(firstShip)
+@@ -776,7 +784,9 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+         base.musicMgr.request('victory', priority = 1, looping = 0)
+ 
+     def exitReward(self):
+-        self.camIvalReward.finish()
++        if self.camIvalReward:
++            self.camIvalReward.finish()
++            self.camIvalReward = None
+         base.transitions.letterboxOff()
+         localAvatar.cameraFSM.request('FPS')
+     
+-- 
+2.53.0
+

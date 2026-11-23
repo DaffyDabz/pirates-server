@@ -1,0 +1,507 @@
+From 444b2bd8768564e39c00c92a55f5e2fd00339cf7 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 00:25:12 -0800
+Subject: [PATCH 193/371] pirates: the Sea Battle manager keeps the French and
+ Spanish teams, the score and team chat (0250)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pvp/SeaBattleManagerAI.py | 377 ++++++++++++++++++++++++++++++
+ pirates/pvp/SiegeAnnouncerAI.py   |  16 +-
+ pirates/pvp/SiegeManagerAI.py     |  67 +++++-
+ 3 files changed, 456 insertions(+), 4 deletions(-)
+ create mode 100644 pirates/pvp/SeaBattleManagerAI.py
+
+diff --git a/pirates/pvp/SeaBattleManagerAI.py b/pirates/pvp/SeaBattleManagerAI.py
+new file mode 100644
+index 0000000..ddd538e
+--- /dev/null
++++ b/pirates/pvp/SeaBattleManagerAI.py
+@@ -0,0 +1,377 @@
++"""Sea Battle (ship PvP) on the family server, patch 0250.
++
++Two teams, French (1) and Spanish (2). A ship launched from the dinghy on a team's dock
++(the two Ship PvP islands, pvpShipIsland1 and pvpShipIsland2) sails for that team, with
++everyone aboard: the captain, his crew and any friend who boards. Ships of the other team
++can be shot and rammed, and each sink scores a point for the team that sank it. A sunk
++ship's pirates go back to their team's dock, and the ship comes back repaired, free, with
++its hold (cargo) kept, ready to launch again from the dinghy.
++
++The original game's SiegeManager is generated on the district (the client already
++expects it), with its SiegeAnnouncer under it, so the client's team chat, team colours
++and "X sank Y" messages work without a client change.
++
++One manager serves the whole AI (air.seaBattleMgr). It is made when the first team dock's
++dinghy is built (at AI start-up), and only if `want-sea-battle` is on (default on).
++"""
++import time
++
++from direct.directnotify import DirectNotifyGlobal
++from direct.task import Task
++
++from pirates.piratesbase import PiratesGlobals
++from pirates.quest import QuestEvent
++
++FRENCH = 1
++SPANISH = 2
++TEAMS = (FRENCH, SPANISH)
++
++WEAPON_CANNON = PiratesGlobals.ShipPVPKillCannon  # a deck cannon a pirate mans
++WEAPON_SHIP = PiratesGlobals.ShipPVPKillShip      # the ship itself: broadsides and rams
++
++MANAGEMENT_ZONE = 2      # OTPGlobals.UberZone, where the client looks for the district's managers
++ANNOUNCER_ZONE = 555     # SiegeManager._addAnnouncerInterest
++SYNC_PERIOD = 2.0
++MAX_CHAT = 200
++
++TEAM_NAMES = {FRENCH: 'French', SPANISH: 'Spanish'}
++
++
++def otherTeam(team):
++    return SPANISH if team == FRENCH else FRENCH
++
++
++def getSeaBattleManager(air):
++    """The AI's one Sea Battle manager, made on first use. None when Sea Battle is off."""
++    mgr = getattr(air, 'seaBattleMgr', None)
++    if mgr is not None:
++        return mgr
++
++    if not config.GetBool('want-sea-battle', True):
++        return None
++
++    mgr = SeaBattleManagerAI(air)
++    air.seaBattleMgr = mgr
++    mgr.start()
++    return mgr
++
++
++class SeaBattleManagerAI:
++    notify = DirectNotifyGlobal.directNotify.newCategory('SeaBattleManagerAI')
++
++    def __init__(self, air):
++        self.air = air
++        self.hqUids = {}            # team -> the uid of its dock island
++        self.ships = {}             # shipId -> team
++        self.members = {}           # avId -> team
++        self.awaySince = {}         # avId -> when he was first seen away from the match
++        self.scores = {FRENCH: 0, SPANISH: 0}
++        self.scoreLimit = max(1, config.GetInt('sea-battle-score-limit', 5))
++        self.awayGrace = max(0.0, config.GetFloat('sea-battle-away-grace', 60.0))
++        self.blockOtherShipHits = config.GetBool('sea-battle-only-ship-pvp', True)
++        self.siegeManager = None
++        self.announcer = None
++        self._taskName = 'seaBattleSync-%d' % id(self)
++        self.clock = time.time
++
++    # ---- start-up
++    def start(self):
++        from pirates.pvp.SiegeManagerAI import SiegeManagerAI
++        from pirates.pvp.SiegeAnnouncerAI import SiegeAnnouncerAI
++
++        districtId = getattr(self.air, 'districtId', 0)
++        if districtId:
++            self.siegeManager = SiegeManagerAI(self.air)
++            self.siegeManager.seaBattle = self
++            self.siegeManager.generateWithRequired(MANAGEMENT_ZONE)
++            self.announcer = SiegeAnnouncerAI(self.air)
++            self.announcer.generateWithRequiredAndId(self.air.allocateChannel(), self.siegeManager.doId, ANNOUNCER_ZONE)
++        else:
++            self.notify.warning('no district yet: Sea Battle runs without the siege manager (no team chat, no announcements)')
++
++        taskMgr.doMethodLater(SYNC_PERIOD, self._syncTask, self._taskName)
++        self.notify.info('Sea Battle is on (first to %d sinks wins)' % self.scoreLimit)
++
++    def stop(self):
++        taskMgr.remove(self._taskName)
++
++    def addHq(self, team, islandUid):
++        # a team's dock: its dinghy launches that team's ships, and its sunk crews land there
++        if team in TEAMS and islandUid:
++            self.hqUids.setdefault(team, islandUid)
++
++    def getHqUid(self, team):
++        return self.hqUids.get(team)
++
++    # ---- who is on which team
++    def teamOf(self, avatar):
++        # his own team, or the team of the match ship he stands on (a crewmate who
++        # boarded in the last two seconds, before the sync adopted him)
++        if avatar is None:
++            return 0
++
++        team = avatar.getSiegeTeam() if hasattr(avatar, 'getSiegeTeam') else 0
++        if team:
++            return team
++
++        parent = avatar.getParentObj() if hasattr(avatar, 'getParentObj') else None
++        if parent is not None and getattr(parent, 'doId', None) in self.ships:
++            return self.ships[parent.doId]
++
++        return 0
++
++    def shipLaunched(self, avatar, ship, dinghyTeam, teamSpec=0):
++        """The dinghy launched his ship (DistributedDinghyAI.selectOwnShip)."""
++        if dinghyTeam in TEAMS:
++            # the client's "this team is full" pop-up asks for the other team (teamSpec)
++            team = teamSpec if teamSpec in TEAMS else dinghyTeam
++            self.joinShip(avatar, ship, team)
++            return team
++
++        # launched anywhere else: not a Sea Battle ship, and he has left the match
++        if ship.doId in self.ships or ship.getSiegeTeam():
++            self.leaveShip(ship)
++        if avatar.doId in self.members:
++            self.leaveAvatar(avatar)
++        return 0
++
++    def joinShip(self, avatar, ship, team):
++        self.ships[ship.doId] = team
++        if ship.getSiegeTeam() != team:
++            ship.b_setSiegeTeam(team)
++
++        for pirate in [avatar] + list(self._piratesAboard(ship)):
++            self.joinAvatar(pirate, team)
++
++        self.notify.info('ship %d (%s) sails for the %s' % (ship.doId, ship.getName(), TEAM_NAMES[team]))
++        self._sendQuestEvent(avatar, QuestEvent.ShipPVPSpawn())
++        avatar.d_setSystemMessage(0, 'You sail for the %s! Sink the %s ships. First team to %d sinks wins.' % (
++            TEAM_NAMES[team], TEAM_NAMES[otherTeam(team)], self.scoreLimit))
++
++    def joinAvatar(self, avatar, team):
++        self.awaySince.pop(avatar.doId, None)
++        if self.members.get(avatar.doId) == team and avatar.getSiegeTeam() == team:
++            return
++
++        self.members[avatar.doId] = team
++        avatar.b_setSiegeTeam(team)
++
++    def leaveAvatar(self, avatar):
++        self.members.pop(avatar.doId, None)
++        self.awaySince.pop(avatar.doId, None)
++        if avatar.getSiegeTeam():
++            avatar.b_setSiegeTeam(0)
++
++    def leaveShip(self, ship):
++        self.ships.pop(ship.doId, None)
++        if ship.getSiegeTeam():
++            ship.b_setSiegeTeam(0)
++
++    def _piratesAboard(self, ship):
++        try:
++            return [av for av in ship.getPiratesAboard() if av is not None]
++        except Exception:
++            return []
++
++    # ---- the sync: crews, friends who board, ships put away, pirates who left
++    def _syncTask(self, task):
++        try:
++            self.sync()
++        except Exception as e:
++            self.notify.warning('sync failed: %s' % e)
++        return Task.again
++
++    def sync(self):
++        now = self.clock()
++        aboard = {}
++        for shipId, team in list(self.ships.items()):
++            ship = self.air.doId2do.get(shipId)
++            if ship is None:
++                self.ships.pop(shipId, None)
++                continue
++
++            state = ship.gameState[0] if getattr(ship, 'gameState', None) else ''
++            if ship.zoneId == 0 and state not in ('Sinking', 'Sunk'):
++                # docked or put away without sinking: out of the match
++                self.leaveShip(ship)
++                continue
++
++            for pirate in self._piratesAboard(ship):
++                aboard[pirate.doId] = team
++                pirateTeam = pirate.getSiegeTeam()
++                if not pirateTeam:
++                    self.joinAvatar(pirate, team)  # a crewmate or friend who boarded
++                else:
++                    # a boarder from the other team keeps his own side
++                    self.awaySince.pop(pirate.doId, None)
++                    self.members.setdefault(pirate.doId, pirateTeam)
++
++        for avId, team in list(self.members.items()):
++            avatar = self.air.doId2do.get(avId)
++            if avatar is None:
++                # logged off: nothing to send
++                self.members.pop(avId, None)
++                self.awaySince.pop(avId, None)
++                continue
++
++            if avId in aboard or self._atHq(avatar, team):
++                self.awaySince.pop(avId, None)
++                continue
++
++            since = self.awaySince.setdefault(avId, now)
++            if now - since >= self.awayGrace:
++                self.leaveAvatar(avatar)
++                avatar.d_setSystemMessage(0, 'You have left the Sea Battle.')
++
++    def _atHq(self, avatar, team):
++        hqUid = self.hqUids.get(team)
++        if not hqUid:
++            return False
++
++        obj = avatar.getParentObj()
++        for _ in range(6):
++            if obj is None:
++                return False
++            getUid = getattr(obj, 'getUniqueId', None)
++            if getUid is not None and getUid() == hqUid:
++                return True
++            obj = obj.getParentObj() if hasattr(obj, 'getParentObj') else None
++        return False
++
++    # ---- fighting
++    def isPlayerShip(self, ship):
++        getOwnerId = getattr(ship, 'getOwnerId', None)
++        return not getattr(ship, 'npcShip', 0) and getOwnerId is not None and bool(getOwnerId())
++
++    def allowShipHit(self, attacker, targetShip):
++        """May this pirate's shot (or ram) hurt this ship? Ships of the other team, yes;
++        your own team, no. Outside Sea Battle one player's ship never hurts another's
++        (the client already treats them as friends; `sea-battle-only-ship-pvp 0` lets
++        the old rules decide). NPC ships are not touched by this."""
++        if not self.isPlayerShip(targetShip):
++            return True
++
++        from pirates.pirate.DistributedPlayerPirateAI import DistributedPlayerPirateAI
++        if not isinstance(attacker, DistributedPlayerPirateAI):
++            return True
++
++        mine = self.teamOf(attacker)
++        theirs = getattr(targetShip, 'getSiegeTeam', lambda: 0)()
++        if mine and theirs:
++            return mine != theirs
++        if mine or theirs:
++            return False  # a Sea Battle ship and an outsider leave each other alone
++        if getattr(targetShip, 'getPVPTeam', lambda: 0)() and getattr(attacker, 'getPVPTeam', lambda: 0)():
++            return True  # another PvP mode's teams decide
++        return not self.blockOtherShipHits
++
++    def weaponKind(self, weapon):
++        from pirates.battle.DistributedShipBroadsideAI import DistributedShipBroadsideAI
++        if weapon == 'ram' or isinstance(weapon, DistributedShipBroadsideAI):
++            return WEAPON_SHIP
++        return WEAPON_CANNON
++
++    def shipHit(self, attacker, targetShip, damage, weapon, sunk):
++        """A pirate's shot or ram hurt a Sea Battle ship: quest credit, and a point on a sink."""
++        team = self.teamOf(attacker)
++        theirs = getattr(targetShip, 'getSiegeTeam', lambda: 0)()
++        if not team or not theirs or team == theirs:
++            return
++
++        kind = self.weaponKind(weapon)
++        enemyClass = theirs - 1  # PiratesGlobals.ShipPVPFrench is 0, ShipPVPSpanish 1
++        damage = int(damage)
++        if damage > 0:
++            self._sendQuestEvent(attacker, QuestEvent.ShipPVPShipDamage(
++                enemyClass=enemyClass, gameType=PiratesGlobals.ShipPVPSiege,
++                damage=damage, damageWeapon=kind))
++
++        if not sunk:
++            return
++
++        # the sink counts for the shooter and for his crewmates on his ship
++        credited = [attacker]
++        myShip = attacker.getParentObj()
++        if getattr(myShip, 'doId', None) in self.ships:
++            credited += [av for av in self._piratesAboard(myShip) if av is not attacker and self.teamOf(av) == team]
++        for pirate in credited:
++            self._sendQuestEvent(pirate, QuestEvent.ShipPVPEnemyDefeated(
++                enemyClass=enemyClass, gameType=PiratesGlobals.ShipPVPSiege, num=1,
++                killType=PiratesGlobals.ShipPVPShip, killWeapon=kind))
++
++        myShipName = myShip.getName() if getattr(myShip, 'doId', None) in self.ships else attacker.getName()
++        self.score(team, myShipName, theirs, targetShip.getName())
++
++    def score(self, team, shipName, sunkTeam, sunkShipName):
++        self.scores[team] = self.scores.get(team, 0) + 1
++        self.notify.info('%s sank %s: French %d, Spanish %d' % (shipName, sunkShipName, self.scores[FRENCH], self.scores[SPANISH]))
++        self.air.writeServerEvent('sea-battle-sink', team=team, ship=shipName, sunkShip=sunkShipName,
++            french=self.scores[FRENCH], spanish=self.scores[SPANISH])
++        if self.announcer is not None:
++            self.announcer.announceSink(team, shipName, sunkTeam, sunkShipName)
++
++        self.tellAll('Score: French %d, Spanish %d.' % (self.scores[FRENCH], self.scores[SPANISH]))
++        if self.scores[team] >= self.scoreLimit:
++            self.tellAll('The %s win the Sea Battle, %d to %d! A new battle starts now.' % (
++                TEAM_NAMES[team], self.scores[team], self.scores[otherTeam(team)]))
++            self.air.writeServerEvent('sea-battle-won', team=team, french=self.scores[FRENCH], spanish=self.scores[SPANISH])
++            self.scores = {FRENCH: 0, SPANISH: 0}
++
++    def tellAll(self, text):
++        for avId in list(self.members):
++            avatar = self.air.doId2do.get(avId)
++            if avatar is not None:
++                avatar.d_setSystemMessage(0, text)
++
++    # ---- sinking
++    def shipSunk(self, ship):
++        """A Sea Battle ship's hull reached 0 (DistributedShipAI.setHp)."""
++        for pirate in self._piratesAboard(ship):
++            self._sendQuestEvent(pirate, QuestEvent.ShipPVPSink())
++
++    def shipPutAway(self, ship):
++        """The sunk ship is off the sea (DistributedShipAI.putAwaySunk). A Sea Battle ship
++        comes back repaired, free: True. Any other ship: False (the usual rules)."""
++        if ship.doId not in self.ships and not ship.getSiegeTeam():
++            return False
++
++        self.leaveShip(ship)
++        ship.shipwrightRepaired()
++        self.air.writeServerEvent('sea-battle-ship-repaired', shipId=ship.doId, avatarId=ship.getOwnerId())
++        owner = self.air.doId2do.get(ship.getOwnerId())
++        if owner is not None and hasattr(owner, 'd_setSystemMessage'):
++            owner.d_setSystemMessage(0, 'Your ship sank in the Sea Battle. It is repaired and its hold is safe. Launch it again from the dinghy!')
++        return True
++
++    # ---- quests
++    def _sendQuestEvent(self, avatar, questEvent):
++        questMgr = getattr(self.air, 'questMgr', None)
++        parent = avatar.getParentObj() if avatar is not None else None
++        if questMgr is None or parent is None or not hasattr(parent, 'getUniqueId'):
++            return
++
++        try:
++            questEvent.setLocation(parent.getUniqueId())
++            questMgr.completeTaskState(avatar, questEvent)
++        except Exception as e:
++            self.notify.warning('quest event for %s failed: %s' % (avatar.doId, e))
++
++    # ---- team chat (SiegeManagerAI passes it here)
++    def teamChat(self, sender, message, chatFlags, kind):
++        team = self.teamOf(sender)
++        if not team:
++            return 0
++
++        if kind != 'sc':
++            message = str(message)[:MAX_CHAT]  # a speed chat message is its phrase number
++        count = 0
++        for avId, avTeam in list(self.members.items()):
++            if avTeam != team or avId not in self.air.doId2do:
++                continue
++            if kind == 'sc':
++                self.siegeManager.sendUpdateToAvatarId(avId, 'recvSpeedChat', [sender.doId, message, sender.getName()])
++            else:
++                field = 'recvWLChat' if kind == 'wl' else 'recvChat'
++                self.siegeManager.sendUpdateToAvatarId(avId, field, [sender.doId, message, chatFlags, 0, sender.getName()])
++            count += 1
++        return count
+diff --git a/pirates/pvp/SiegeAnnouncerAI.py b/pirates/pvp/SiegeAnnouncerAI.py
+index 304f26f..b7da20f 100644
+--- a/pirates/pvp/SiegeAnnouncerAI.py
++++ b/pirates/pvp/SiegeAnnouncerAI.py
+@@ -1,8 +1,20 @@
+-from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from direct.directnotify import DirectNotifyGlobal
++from direct.distributed.DistributedObjectAI import DistributedObjectAI
++
+ 
+ class SiegeAnnouncerAI(DistributedObjectAI):
++    """Tells every Sea Battle pirate who sank whom (the client shows it in the chat).
++    It lives under the siege manager in zone 555, which a pirate on a team listens to."""
+     notify = DirectNotifyGlobal.directNotify.newCategory('SiegeAnnouncerAI')
+ 
+     def __init__(self, air):
+-        DistributedObjectAI.__init__(self, air)
+\ No newline at end of file
++        DistributedObjectAI.__init__(self, air)
++
++    def announceSink(self, team, shipName, sunkTeam, sunkShipName):
++        self.sendUpdate('announceSink', [team, shipName, sunkTeam, sunkShipName])
++
++    def announceSinkWithAssist(self, team, shipName, assistTeam, assistShipName, sunkTeam, sunkShipName):
++        self.sendUpdate('announceSinkWithAssist', [team, shipName, assistTeam, assistShipName, sunkTeam, sunkShipName])
++
++    def announceSinkStreak(self, team, shipName, streak):
++        self.sendUpdate('announceSinkStreak', [team, shipName, streak])
+diff --git a/pirates/pvp/SiegeManagerAI.py b/pirates/pvp/SiegeManagerAI.py
+index 630939c..3dad374 100644
+--- a/pirates/pvp/SiegeManagerAI.py
++++ b/pirates/pvp/SiegeManagerAI.py
+@@ -1,8 +1,71 @@
+-from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from direct.directnotify import DirectNotifyGlobal
++from direct.distributed.DistributedObjectAI import DistributedObjectAI
++
+ 
+ class SiegeManagerAI(DistributedObjectAI):
++    """The district's siege manager, which the client looks for (SiegeManager.generate).
++    Sea Battle (pirates/pvp/SeaBattleManagerAI.py) makes it, and team chat goes through it."""
+     notify = DirectNotifyGlobal.directNotify.newCategory('SiegeManagerAI')
+ 
+     def __init__(self, air):
+-        DistributedObjectAI.__init__(self, air)
+\ No newline at end of file
++        DistributedObjectAI.__init__(self, air)
++        self.seaBattle = None
++        self.pvpEnabled = True
++        self.teamsJoinable = [[1, True], [2, True]]
++        self.useIslandRegen = False
++        self.useRepairSpots = False
++        self.useRepairKit = False
++
++    # ---- required fields
++    def getPvpEnabled(self):
++        return self.pvpEnabled
++
++    def setPvpEnabled(self, enabled):
++        self.pvpEnabled = bool(enabled)
++
++    def getTeamsJoinable(self):
++        return self.teamsJoinable
++
++    def setTeamsJoinable(self, teamsJoinable):
++        self.teamsJoinable = teamsJoinable
++
++    def getUseIslandRegen(self):
++        return self.useIslandRegen
++
++    def setUseIslandRegen(self, value):
++        self.useIslandRegen = bool(value)
++
++    def getUseRepairSpots(self):
++        return self.useRepairSpots
++
++    def setUseRepairSpots(self, value):
++        self.useRepairSpots = bool(value)
++
++    def getUseRepairKit(self):
++        return self.useRepairKit
++
++    def setUseRepairKit(self, value):
++        self.useRepairKit = bool(value)
++
++    # ---- team chat from a pirate on a Sea Battle team
++    def _sender(self):
++        avId = self.air.getAvatarIdFromSender()
++        avatar = self.air.doId2do.get(avId)
++        if avatar is None or self.seaBattle is None:
++            return None
++        return avatar
++
++    def sendChat(self, message, chatFlags, DISLid):
++        sender = self._sender()
++        if sender is not None:
++            self.seaBattle.teamChat(sender, message, chatFlags, 'chat')
++
++    def sendWLChat(self, message, chatFlags, DISLid):
++        sender = self._sender()
++        if sender is not None:
++            self.seaBattle.teamChat(sender, message, chatFlags, 'wl')
++
++    def sendSC(self, msgIndex):
++        sender = self._sender()
++        if sender is not None:
++            self.seaBattle.teamChat(sender, msgIndex, 0, 'sc')
+-- 
+2.53.0
+

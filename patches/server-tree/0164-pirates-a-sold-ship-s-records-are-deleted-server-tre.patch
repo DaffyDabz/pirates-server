@@ -1,0 +1,130 @@
+From dd7b1c0ffd4c2a992d7fdc92c6275b7ed150700a Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:56:11 -0800
+Subject: [PATCH 164/371] pirates: a sold ship's records are deleted,
+ server-tree patch 0201
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/economy/DistributedShopKeeperAI.py | 95 ++++++++++++++++++++++
+ 1 file changed, 95 insertions(+)
+
+diff --git a/pirates/economy/DistributedShopKeeperAI.py b/pirates/economy/DistributedShopKeeperAI.py
+index 150bbe3..0856ae0 100644
+--- a/pirates/economy/DistributedShopKeeperAI.py
++++ b/pirates/economy/DistributedShopKeeperAI.py
+@@ -17,6 +17,10 @@ from pirates.uberdog.UberDogGlobals import InventoryType, InventoryCategory
+ WARDROBE_DIR = 'wardrobe'
+ SELL_FRACTION = 0.25
+ FEMALE_UID_START = 80000
++# patch 0201: a ship sold to the shipwright is deleted from the database, but never these ships, nor any ship
++# sold by these pirates (the family's own pirate and ship, and the test ship)
++SOLD_SHIP_KEEP_SHIPS = (100000173, 100000043)
++SOLD_SHIP_KEEP_AVATARS = (100000170,)
+ TATTOO_FIELDS = ['Chest', 'Zone2', 'Zone3', 'Zone4', 'Zone5', 'Zone6', 'Zone7', 'Zone8']
+ # jewelry type (JewelryGlobals) -> dna zone number (setJewelryZoneN), exactly as JewelryStoreGUI.closePanel maps them
+ JEWELRY_ZONE = {
+@@ -976,9 +980,100 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+             inventory.setGoldInPocket(inventory.getGoldInPocket() + price)
+             self.logShopkeepTransaction(type='requestSellShip', shipId=shipId, price=price, purchaser=avatar.doId)
+             self.d_makeSaleResponse(avatar.doId, 2)
++            self._deleteSoldShip(avatar.doId, shipId, fields)
+ 
+         self._withOwnedShip(shipId, _got)
+ 
++    def _deleteSoldShip(self, avId, shipId, shipFields):
++        """
++        patch 0201: a sold ship's database objects (the ship, its own inventory,
++        and the hull and masts that inventory lists) stayed on disk with no owner,
++        one set for every sale. They are deleted once the sale is paid. Each
++        record is read back first and must belong to this ship (the inventory's
++        owner is the ship, each part's ship is this ship and its owner the
++        seller); if any does not, nothing is deleted. A part already missing is
++        skipped. The YAML database only hands a freed id out again after the
++        whole id range (to 399999999) is used, so a deleted id is never reused.
++        A copy still loaded in the state server goes at logout, as before.
++        """
++        if shipId in SOLD_SHIP_KEEP_SHIPS or avId in SOLD_SHIP_KEEP_AVATARS:
++            self.notify.info('sold ship %d of pirate %d: kept in the database' % (shipId, avId))
++            return
++
++        inventoryId = (shipFields.get('setInventoryId') or (0,))[0]
++        if not inventoryId:
++            self._deleteSoldShipRecords(avId, shipId, [shipId])
++            return
++
++        def _gotInventory(dclass, fields):
++            owner = (fields.get('setOwnerId') or (0,))[0] if fields else 0
++            if owner != shipId:
++                self.notify.warning('sold ship %d: inventory %d belongs to %s, not to it; nothing deleted' % (
++                    shipId, inventoryId, owner))
++                return
++
++            parts = []
++            for entry in (fields.get('setDoIds') or ([],))[0]:
++                if len(entry) == 2 and entry[1]:
++                    parts.append(entry[1])
++
++            self._checkSoldShipParts(avId, shipId, inventoryId, parts, [])
++
++        self.air.dbInterface.queryObject(self.air.dbId, inventoryId, _gotInventory)
++
++    def _checkSoldShipParts(self, avId, shipId, inventoryId, pending, checked):
++        # reads the sold ship's parts one at a time, then deletes them all
++        if not pending:
++            self._deleteSoldShipRecords(avId, shipId, checked + [inventoryId, shipId])
++            return
++
++        partId, rest = pending[0], pending[1:]
++
++        def _gotPart(dclass, fields):
++            if not fields:
++                self.notify.info('sold ship %d: part %d is not in the database, skipped' % (shipId, partId))
++                self._checkSoldShipParts(avId, shipId, inventoryId, rest, checked)
++                return
++
++            owner = (fields.get('setOwnerId') or (0,))[0]
++            partShip = (fields.get('setShipId') or (0,))[0]
++            if owner != avId or partShip != shipId:
++                self.notify.warning('sold ship %d: part %d is owned by %s for ship %s; nothing deleted' % (
++                    shipId, partId, owner, partShip))
++                return
++
++            self._checkSoldShipParts(avId, shipId, inventoryId, rest, checked + [partId])
++
++        self.air.dbInterface.queryObject(self.air.dbId, partId, _gotPart)
++
++    def _deleteSoldShipRecords(self, avId, shipId, doIds):
++        from direct.distributed.PyDatagram import PyDatagram
++        from otp.distributed.MsgTypes import DBSERVER_OBJECT_DELETE
++
++        inventory = self.air.inventoryManager.getInventory(avId)
++        if inventory is not None and shipId in inventory.getShipDoIdList():
++            self.notify.warning('sold ship %d is back on pirate %d\'s list; nothing deleted' % (shipId, avId))
++            return
++
++        # never the pirate, his own inventory, or a kept ship or pirate
++        keep = set(SOLD_SHIP_KEEP_SHIPS) | set(SOLD_SHIP_KEEP_AVATARS) | set([avId])
++        if inventory is not None:
++            keep.add(inventory.doId)
++
++        deleted = []
++        for doId in doIds:
++            if doId in keep or doId in deleted:
++                continue
++
++            datagram = PyDatagram()
++            datagram.addServerHeader(self.air.dbId, self.air.ourChannel, DBSERVER_OBJECT_DELETE)
++            datagram.addUint32(doId)
++            self.air.send(datagram)
++            deleted.append(doId)
++
++        self.notify.info('sold ship %d of pirate %d: deleted from the database: %s' % (shipId, avId, deleted))
++        self.air.writeServerEvent('sold-ship-deleted', avId=avId, shipId=shipId, doIds=deleted)
++
+     def d_makeSaleResponse(self, avatarId, results):
+         self.sendUpdateToAvatarId(avatarId, 'makeSaleResponse', [results])
+ 
+-- 
+2.53.0
+

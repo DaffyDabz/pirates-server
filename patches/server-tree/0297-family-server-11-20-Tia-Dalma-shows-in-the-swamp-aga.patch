@@ -1,0 +1,133 @@
+From 3261a2183f22e6cfa95cc34e113028bcfb65b19e Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:33:36 -0800
+Subject: [PATCH 297/371] family server (11-20): Tia Dalma shows in the swamp
+ again, and quest hand-ins after a re-login no longer fail or close the server
+
+Game: objects that arrive before their area (a server-opened interest generates them at once, the client's own
+interest holding the area plays back later) were never placed. The swamp's Tia Dalma stayed off the scene graph,
+so nobody could see or talk to her for "visit Tia Dalma". An area now places its early children right after it
+generates (OTPClientRepository.__doGenerate -> DistributedGameArea.adoptEarlyChildren).
+
+Server: a pirate's quest tracker was never torn down at logout, so its quest stubs kept listening for his quests'
+drop announce (quests keep their doIds across logins). After a re-login every quest hand-in raised TypeError in
+the old stub: the next quest never came (Darby Drydock's copper rod for both boys), and a quest finished by a kill
+closed the whole district (17:20). DistributedPlayerPirateAI.delete now deletes questStatus, and
+QuestStub.handleQuestDropped ignores the argument-less announce.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ otp/distributed/OTPClientRepository.py      |  5 ++++
+ pirates/pirate/DistributedPlayerPirateAI.py |  7 ++++++
+ pirates/quest/QuestLadder.py                |  7 +++++-
+ pirates/world/DistributedGameArea.py        | 28 +++++++++++++++++++++
+ 4 files changed, 46 insertions(+), 1 deletion(-)
+
+diff --git a/otp/distributed/OTPClientRepository.py b/otp/distributed/OTPClientRepository.py
+index 46a6988..de3d74e 100644
+--- a/otp/distributed/OTPClientRepository.py
++++ b/otp/distributed/OTPClientRepository.py
+@@ -1994,6 +1994,7 @@ class OTPClientRepository(ClientRepositoryBase):
+         dclass = self.dclassesByNumber[classId]
+         # if self._isInvalidPlayerAvatarGenerate(doId, dclass, parentId, zoneId):
+         #    return
++        isNew = doId not in self.doId2do
+         dclass.startGenerate()
+         if other:
+             distObj = self.generateWithRequiredOtherFields(
+@@ -2002,6 +2003,10 @@ class OTPClientRepository(ClientRepositoryBase):
+             distObj = self.generateWithRequiredFields(
+                 dclass, doId, di, parentId, zoneId)
+         dclass.stopGenerate()
++        # family server (11-20): a parent that generates after its children never gave them their handleChildArrive;
++        # an area places them now (DistributedGameArea.adoptEarlyChildren)
++        if isNew and distObj is not None and hasattr(distObj, 'adoptEarlyChildren'):
++            distObj.adoptEarlyChildren()
+ 
+     def handleGenerateWithRequiredOwner(self, di, other=False):
+         doId = di.getUint32()
+diff --git a/pirates/pirate/DistributedPlayerPirateAI.py b/pirates/pirate/DistributedPlayerPirateAI.py
+index cfa3d4c..60a1074 100644
+--- a/pirates/pirate/DistributedPlayerPirateAI.py
++++ b/pirates/pirate/DistributedPlayerPirateAI.py
+@@ -974,6 +974,13 @@ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI,
+             self.air.questMgr.deactivateQuests(self)
+             self.air.inventoryManager.removeInventory(inventory)
+ 
++        # family server (11-20): his quest tracker was never torn down at logout, so its quest stubs kept listening for
++        # his quests' drop announce (a quest keeps its doId across logins). After he logged back in, every quest hand-in
++        # raised TypeError in the old stub: the next quest never came, and a quest finished by a kill took the whole
++        # district down (17:20:38).
++        if self.questStatus:
++            self.questStatus.delete()
++
+         taskMgr.remove(self.uniqueName('process-groggy'))
+         taskMgr.remove(self.uniqueName('process-double-xp'))
+ 
+diff --git a/pirates/quest/QuestLadder.py b/pirates/quest/QuestLadder.py
+index c5c60c9..e7bfee6 100644
+--- a/pirates/quest/QuestLadder.py
++++ b/pirates/quest/QuestLadder.py
+@@ -454,7 +454,12 @@ class QuestStub(QuestContainer):
+ 
+         return True
+ 
+-    def handleQuestDropped(self, quest):
++    def handleQuestDropped(self, quest = None):
++        # family server (11-20): QuestManagerAI.dropQuest announces the drop with no arguments, after it has handed the
++        # drop to questStatus.handleQuestDropped itself; a stub still listening raised TypeError here and stopped the
++        # quest swap halfway. Nothing is left to do for the announce.
++        if quest is None:
++            return
+         self.complete = False
+         self.parent.handleQuestDropped(quest)
+ 
+diff --git a/pirates/world/DistributedGameArea.py b/pirates/world/DistributedGameArea.py
+index e6f7a5c..40893c3 100644
+--- a/pirates/world/DistributedGameArea.py
++++ b/pirates/world/DistributedGameArea.py
+@@ -1,6 +1,7 @@
+ from panda3d.core import *
+ from direct.distributed import DistributedNode
+ from direct.distributed import DistributedObject
++from direct.distributed import GridParent
+ from direct.showbase.PythonUtil import Functor, report
+ from direct.actor import Actor
+ from pirates.world import WorldGlobals
+@@ -102,6 +103,33 @@ class DistributedGameArea(DistributedNode.DistributedNode):
+         if childObj.isLocal():
+             childObj.refreshActiveQuestStep()
+ 
++    def adoptEarlyChildren(self):
++        # family server (11-20): objects that generated before this area never got their handleChildArrive or their
++        # grid cell ("storeObjectLocation(X): parent Y not present"): a server-opened interest generates them at once,
++        # while the client's own interest that holds the area plays it back later. The swamp's Tia Dalma stayed off the
++        # scene graph, so nobody could see or talk to her. Place each one now, as its setLocation would have with the
++        # area here. OTPClientRepository calls this once, right after the area generates.
++        from pirates.world.DistributedGAConnector import DistributedGAConnector
++        for doId in self.cr._doHierarchy.getDoIds(self.cr.getDo, self.doId):
++            child = self.cr.doId2do.get(doId)
++            if child is None or child is self or child.isLocal():
++                continue
++            try:
++                zoneId = child.zoneId
++                self.handleChildArrive(child, zoneId)
++                # a grid cell only for what DistributedNode.setLocation puts in one (areas and connectors place
++                # themselves), and only if nothing has placed it since
++                if not isinstance(child, NodePath) or isinstance(child, (DistributedGameArea, DistributedGAConnector)):
++                    continue
++                if not child.getParent().isEmpty() or not self.isGridParent() or zoneId < self.startingZone:
++                    continue
++                if not child.gridParent:
++                    child.gridParent = GridParent.GridParent(child)
++                child.gridParent.setGridParent(self, zoneId)
++            except Exception as e:
++                self.notify.warning('adoptEarlyChildren: could not place %s %s: %r' % (
++                    child.__class__.__name__, doId, e))
++
+     def setUniqueId(self, uid):
+         if self.uniqueId != '':
+             self.cr.uidMgr.removeUid(self.uniqueId)
+-- 
+2.53.0
+

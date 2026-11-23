@@ -1,0 +1,119 @@
+From 60cff98545d157cc5e18ccc78e6c33053d4cc4fb Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 03:47:26 -0800
+Subject: [PATCH 065/371] tutorial: Bo Beck's boat waits at the dock, one per
+ new pirate
+
+The scene file lists the boat (a 'Ship Part' of the tutorial world) but the
+world builder makes no ships, so nothing ever spawned it: the client's boat
+scene never started and a new pirate could not leave the island.
+
+The tutorial now spawns a TutorialShipAI (class STUMPY_SHIP, uid
+1124236671.37jubutler) at its world-data spot on its own world's ocean grid,
+the way the ship manager spawns an NPC ship, when the island arrives. The
+world's teardown deletes it and frees its uid.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/tutorial/PiratesTutorialManagerAI.py | 53 ++++++++++++++++++++
+ 1 file changed, 53 insertions(+)
+
+diff --git a/pirates/tutorial/PiratesTutorialManagerAI.py b/pirates/tutorial/PiratesTutorialManagerAI.py
+index b7b23a9..bf5cc28 100644
+--- a/pirates/tutorial/PiratesTutorialManagerAI.py
++++ b/pirates/tutorial/PiratesTutorialManagerAI.py
+@@ -4,6 +4,9 @@ from direct.fsm.FSM import FSM
+ 
+ from pirates.instance.DistributedInstanceBaseAI import DistributedInstanceBaseAI
+ from pirates.piratesbase import PiratesGlobals
++from pirates.piratesbase import PLocalizer
++from pirates.ship import ShipGlobals
++from pirates.ship.TutorialShipAI import TutorialShipAI
+ from pirates.world.WorldCreatorAI import WorldCreatorAI
+ from pirates.world import WorldGlobals
+ from pirates.tutorial import TutorialGlobals
+@@ -12,6 +15,10 @@ from pirates.tutorial.DistributedPiratesTutorialAI import DistributedPiratesTuto
+ # Region UID for the tutorial world (RambleshackWorld)
+ RAMBLESHACK_REGION_UID = '1115838788a.58jubutler'
+ 
++# Bo Beck's boat at the dock, as RambleshackWorld places it (a child of the world, whose frame is the island's)
++STUMPY_BOAT_POS = (128.511, 152.104, 0.0)
++STUMPY_BOAT_HPR = (-114.033, 0.0, 0.0)
++
+ 
+ class TutorialFSM(FSM):
+     notify = DirectNotifyGlobal.directNotify.newCategory('TutorialFSM')
+@@ -29,6 +36,7 @@ class TutorialFSM(FSM):
+         self.exteriorDoor = None
+         self.tutorialHandler = None
+         self.tutorialHandlerZoneId = None
++        self.stumpyBoat = None
+         # everything the scene file load built, for the teardown in enterStop
+         self.loadedDoIds = set()
+ 
+@@ -67,10 +75,51 @@ class TutorialFSM(FSM):
+             return
+ 
+         self.notify.info('Tutorial island created for avatar %d: %s' % (self.avatar.doId, self.island))
++        self.__spawnStumpyBoat()
+ 
+         # Now wait for the interior
+         self.air.uidMgr.addUidCallback(TutorialGlobals.JAIL_INTERIOR, self.__interiorArrived)
+ 
++    # family server (11-17): the scene file lists Bo Beck's boat (a 'Ship Part' of the world), but the world
++    # builder makes no ships, so nothing spawned it: the client's boat scene (stumpyBoatHere) never started and
++    # a new pirate could not leave the island. Spawn it per tutorial world the way the ship manager spawns an NPC
++    # ship (ShipManagerAI._spawnEnemyShip), on this world's ocean grid, which the tutorial client watches from
++    # the island (DistributedPiratesTutorial forces ships visible). The world's teardown deletes it
++    def __spawnStumpyBoat(self):
++        oceanGrid = getattr(self.instance, 'oceanGrid', None)
++        if oceanGrid is None:
++            self.notify.warning('No ocean grid for the tutorial boat of avatar %d!' % self.avatar.doId)
++            return
++
++        shipClass = ShipGlobals.STUMPY_SHIP
++        shipConfig = ShipGlobals.getShipConfig(shipClass)
++        hullConfig = ShipGlobals.getHullConfig(shipClass)
++        ship = TutorialShipAI(self.air)
++        ship.setBaseTeam(ShipGlobals.getShipTeam(shipClass))
++        ship.setLevel(1)
++        ship.setShipClass(shipClass)
++        ship.setName(PLocalizer.ShipClassNames.get(shipClass, 'Unknown Ship'))
++        ship.setNPCship(1)
++        ship.setIsBoardable(1)
++        ship.setMaxHp(shipConfig['setMaxHp'][0])
++        ship.setHp(shipConfig['setHp'][0])
++        ship.setMaxSp(hullConfig.get('setMaxSp', [0])[0])
++        ship.setSp(hullConfig.get('setSp', [0])[0])
++        ship.setHullCondition(1 << 7)
++        # the client's tutorial finds it by this uid when it generates
++        ship.setUniqueId(TutorialGlobals.STUMPY_BOAT_UID)
++
++        oceanGrid.generateChildWithRequired(ship, oceanGrid.getZoneFromXYZ(STUMPY_BOAT_POS))
++        ship.setPos(oceanGrid, *STUMPY_BOAT_POS)
++        ship.setHpr(oceanGrid, *STUMPY_BOAT_HPR)
++        oceanGrid.addObjectToOceanGrid(ship)
++        ship.sendCurrentPosition()
++        ship.b_setGameState('Neutral', 0)
++        self.air.uidMgr.addUid(TutorialGlobals.STUMPY_BOAT_UID, ship.doId)
++        self.stumpyBoat = ship
++        self.notify.info('Tutorial boat created for avatar %d: %d in zone %d of ocean grid %d' % (
++            self.avatar.doId, ship.doId, ship.zoneId, oceanGrid.doId))
++
+     def __interiorArrived(self, interiorDoId):
+         self.interior = self.air.doId2do.get(interiorDoId)
+         if not self.interior:
+@@ -149,6 +198,10 @@ class TutorialFSM(FSM):
+         if self.instance:
+             found.add(self.instance.doId)
+ 
++        if self.stumpyBoat:
++            found.add(self.stumpyBoat.doId)
++            self.stumpyBoat = None
++
+         self.loadedDoIds = set()
+         if not found:
+             return
+-- 
+2.53.0
+

@@ -1,0 +1,147 @@
+From 03d37a957455ce486d9f8e015d9f043bbb978ac6 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 14:38:24 -0800
+Subject: [PATCH 073/371] pirates: arriving in Port Royal always comes with
+ Chapter 2's first quest and the tutorial never comes back, as server-tree
+ patch 0087 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/tutorial/PiratesTutorialManagerAI.py | 68 ++++++++++++++++++++
+ pirates/uberdog/PirateInventoryAI.py         | 21 +++++-
+ 2 files changed, 87 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/tutorial/PiratesTutorialManagerAI.py b/pirates/tutorial/PiratesTutorialManagerAI.py
+index 077c26e..e26a9a9 100644
+--- a/pirates/tutorial/PiratesTutorialManagerAI.py
++++ b/pirates/tutorial/PiratesTutorialManagerAI.py
+@@ -1,6 +1,7 @@
+ from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from direct.directnotify import DirectNotifyGlobal
+ from direct.fsm.FSM import FSM
++from direct.task import Task
+ 
+ from pirates.instance.DistributedInstanceBaseAI import DistributedInstanceBaseAI
+ from pirates.piratesbase import PiratesGlobals
+@@ -305,6 +306,12 @@ class TutorialFSM(FSM):
+         self.demand('Stop')
+ 
+ 
++TUTORIAL_LAST_QUEST = 'Chapter1.rung3'
++CHAPTER2_FIRST_QUEST = 'c2_visit_will_turner'
++CHAPTER2_CHECK_DELAY = 5.0     # seconds after allDone
++CHAPTER2_CHECK_TRIES = 12     # stop waiting on a busy quest job after a minute
++
++
+ class PiratesTutorialManagerAI(DistributedObjectAI):
+     notify = DirectNotifyGlobal.directNotify.newCategory('PiratesTutorialManagerAI')
+ 
+@@ -349,4 +356,65 @@ class PiratesTutorialManagerAI(DistributedObjectAI):
+ 
+             return
+ 
++        # family server: make sure Chapter 1 is finished before the tutorial world goes (see __finishChapter1)
++        try:
++            self.__finishChapter1(avatar)
++        except Exception:
++            import traceback
++            self.notify.warning('Avatar %d: finishing Chapter 1 failed:\n%s' % (avatar.doId, traceback.format_exc()))
++
+         self.avatar2fsm[avatar.doId].cleanup()
++
++    # The tutorial ends with the Jolly Roger scene, the last finalize scene of Chapter1.rung3. When the client
++    # says that scene is done, the AI completes rung3 (the MainStory ladder swaps it for Chapter 2's first
++    # quest, c2_visit_will_turner) and the client raises the tutorial flag to TUT_MET_JOLLY_ROGER. If that
++    # 'scene done' message is lost, the pirate reached Port Royal still holding rung3 with the flag at 2: no
++    # Chapter 2 quest, and the next login put him back in the tutorial. allDone (sent once he is in Port
++    # Royal) is the last moment the AI hears from the tutorial, so finish both here.
++    def __finishChapter1(self, avatar):
++        questMgr = self.air.questMgr
++        rung3 = questMgr.getQuest(avatar, questId=TUTORIAL_LAST_QUEST)
++        if rung3 is not None:
++            self.notify.warning('Avatar %d left the tutorial still on %s; finishing it' % (
++                avatar.doId, TUTORIAL_LAST_QUEST))
++            # a late 'scene done' must not complete it a second time
++            questMgr.ignore('quest-finalize-%d' % rung3.doId)
++            if rung3.isComplete():
++                questMgr.completeQuest(avatar, rung3)
++            else:
++                self.notify.warning('Avatar %d: %s was never completed (Bo Beck\'s boat not visited)' % (
++                    avatar.doId, TUTORIAL_LAST_QUEST))
++
++        if avatar.getTutorial() < PiratesGlobals.TUT_MET_JOLLY_ROGER:
++            self.notify.info('Avatar %d: tutorial flag %d -> %d (tutorial done)' % (
++                avatar.doId, avatar.getTutorial(), PiratesGlobals.TUT_MET_JOLLY_ROGER))
++            avatar.b_setTutorial(PiratesGlobals.TUT_MET_JOLLY_ROGER)
++
++        # the ladder makes Chapter 2's quest a moment later; check it arrived
++        taskName = 'tutorialChapter2-%d' % avatar.doId
++        taskMgr.remove(taskName)
++        taskMgr.doMethodLater(CHAPTER2_CHECK_DELAY, self.__checkChapter2, taskName,
++            extraArgs=[avatar.doId], appendTask=True)
++
++    def __checkChapter2(self, avatarId, task):
++        avatar = self.air.doId2do.get(avatarId)
++        if avatar is None:
++            return Task.done
++
++        questMgr = self.air.questMgr
++        task.tries = getattr(task, 'tries', 0) + 1
++        if avatarId in questMgr.avatar2fsm and task.tries < CHAPTER2_CHECK_TRIES:
++            # a quest job is still running for him
++            return Task.again
++
++        if questMgr.quests.get(avatarId):
++            # the ladder gave Chapter 2 (or he holds another quest already)
++            return Task.done
++
++        from pirates.quest import QuestDB
++        if QuestDB.QuestDict[CHAPTER2_FIRST_QUEST].getQuestInt() in (avatar.getQuestHistory() or []):
++            return Task.done
++
++        self.notify.warning('Avatar %d left the tutorial with no quest; giving %s' % (avatarId, CHAPTER2_FIRST_QUEST))
++        questMgr.createQuest(avatar, CHAPTER2_FIRST_QUEST)
++        return Task.done
+diff --git a/pirates/uberdog/PirateInventoryAI.py b/pirates/uberdog/PirateInventoryAI.py
+index 8c35af1..436ffab 100644
+--- a/pirates/uberdog/PirateInventoryAI.py
++++ b/pirates/uberdog/PirateInventoryAI.py
+@@ -7,6 +7,9 @@ from pirates.battle import WeaponGlobals
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.ship import ShipGlobals
+ 
++CHAPTER2_LADDER_INT = 2100  # QuestLadderDB MainStory 'Chapter 2'
++
++
+ class PirateInventoryAI(DistributedInventoryAI):
+     notify = DirectNotifyGlobal.directNotify.newCategory('PirateInventoryAI')
+ 
+@@ -173,9 +176,23 @@ class PirateInventoryAI(DistributedInventoryAI):
+             if avatar.getTutorial() < PiratesGlobals.TUT_MET_JOLLY_ROGER:
+                 return
+ 
+-            if self.getQuestList() or avatar.getQuestHistory() or avatar.getQuestLadderHistory():
++            if self.getQuestList():
+                 return
+-            self.notify.info('first quest: giving c2_visit_will_turner to avatar %d' % avatar.doId)
++
++            questHistory = avatar.getQuestHistory() or []
++            ladderHistory = avatar.getQuestLadderHistory() or []
++            if questHistory or ladderHistory:
++                # family server: a pirate who finished the tutorial (Chapter1.rung3 done) but never got Chapter 2's
++                # first quest (he logged out between the two) had no quest at all, for good
++                from pirates.quest import QuestDB
++                rung3Int = QuestDB.QuestDict['Chapter1.rung3'].getQuestInt()
++                c2Int = QuestDB.QuestDict['c2_visit_will_turner'].getQuestInt()
++                if rung3Int not in questHistory or c2Int in questHistory or CHAPTER2_LADDER_INT in ladderHistory:
++                    return
++                self.notify.info('Chapter 2: giving c2_visit_will_turner to avatar %d (tutorial done, no quest)' % (
++                    avatar.doId))
++            else:
++                self.notify.info('first quest: giving c2_visit_will_turner to avatar %d' % avatar.doId)
+             self.air.questMgr.createQuest(avatar, 'c2_visit_will_turner')
+ 
+         self.air.questMgr.activateQuests(avatar, callback=_questsActivated)
+-- 
+2.53.0
+

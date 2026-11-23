@@ -1,0 +1,31 @@
+From c4a7e0a9e598530e3d1933d950f15973e09c5b5d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:57:29 -0800
+Subject: [PATCH 186/371] pirates: a knocked-out pirate in PvP gets back up, no
+ jail (0244)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/PlayerPirateGameFSMAI.py | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/pirates/pirate/PlayerPirateGameFSMAI.py b/pirates/pirate/PlayerPirateGameFSMAI.py
+index e320dab..5620faa 100644
+--- a/pirates/pirate/PlayerPirateGameFSMAI.py
++++ b/pirates/pirate/PlayerPirateGameFSMAI.py
+@@ -22,6 +22,12 @@ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+         self.avatar.stopToonUp()
+ 
+     def enterDeath(self):
++        # family server (11-18): a Skirmish knockout gets the pirate up again where he fell: no jail,
++        # no groggy, nothing taken. Any other knockout goes on below as before.
++        pvpManager = getattr(self.air, 'pvpManager', None)
++        if pvpManager and pvpManager.handleKnockout(self.avatar):
++            return
++
+         inventory = self.avatar.getInventory()
+         assert(inventory is not None)
+ 
+-- 
+2.53.0
+

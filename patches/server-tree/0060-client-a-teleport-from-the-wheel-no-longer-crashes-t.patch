@@ -1,0 +1,58 @@
+From 9c06843139d42f382d2b75a1a6631952f6396ae4 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 01:08:59 -0800
+Subject: [PATCH 060/371] client: a teleport from the wheel no longer crashes
+ the game when the ship he left comes back
+
+SHIPTELE3 leg B: a server teleport to Tortuga from the wheel went to
+TeleportOut, then 3 s later the client crashed in readerPollTask. The
+ship he left (PlayerShip on the ocean grid) was generated again while
+the teleport zone was the active world, and DistributedShip.createWake
+raised notify.error "'NoneType' object has no attribute 'patch'": the
+teleport zone has no water.
+
+createWake's own guard was meant to catch a world with no water but
+read "not world and world.getWater()", so it never did. It now reads
+"not (world and world.getWater())" and warns, as it meant to, and the
+'patch' check warns and returns instead of raising. A ship with no
+water to sail in just gets no wake; the wake comes back when its zone
+level 2 loads or it un-sinks in a world with water.
+
+Client file only (pirates/ship/DistributedShip.py), no server restart.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShip.py | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/ship/DistributedShip.py b/pirates/ship/DistributedShip.py
+index 9a1c025..4e8f3bd 100644
+--- a/pirates/ship/DistributedShip.py
++++ b/pirates/ship/DistributedShip.py
+@@ -2061,7 +2061,11 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+         self.stopShipRocking()
+ 
+     def createWake(self):
+-        if not base.cr.activeWorld and base.cr.activeWorld.getWater():
++        # family server (11-17): no wake without the world's water. This read "not world and world.getWater()",
++        # so a world with no water went on to the notify.error below and crashed the game: in a server teleport
++        # from the wheel the ship he left is generated again on the ocean grid while the teleport zone is the
++        # active world (SHIPTELE3). The wake comes back at zone level 2 or when the ship un-sinks
++        if not (base.cr.activeWorld and base.cr.activeWorld.getWater()):
+             self.notify.warning('Ship %s is trying to create a wake without an ocean. (world: %s)' % (self.doId, base.cr.activeWorld))
+             return
+ 
+@@ -2069,8 +2073,9 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+             self.removeWake()
+             if base.options.getSpecialEffectsSetting() >= base.options.SpecialEffectsMedium:
+                 if not hasattr(base.cr.activeWorld.getWater(), 'patch'):
+-                    self.notify.error("Ship %s is in location %s,%s (%s[%s]).\nThis causes Attribute Error: 'NoneType' object has no attribute 'patch'\n" % (
++                    self.notify.warning("Ship %s is in location %s,%s (%s[%s]).\nThis causes Attribute Error: 'NoneType' object has no attribute 'patch'\n" % (
+                         self.doId, self.getLocation()[0], self.getLocation()[1], type(self.getParentObj()), safeRepr(self.getParentObj())))
++                    return
+ 
+                 self.wake = Wake.getEffect()
+                 if self.wake:
+-- 
+2.53.0
+

@@ -1,0 +1,56 @@
+From c9e0ced5f3fd7de5ef7eebc0454d088a177734da Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 23:53:28 -0800
+Subject: [PATCH 137/371] pirates: logging in can no longer close the game with
+ a filename assertion while the islands preload (the model path is made
+ absolute before the background load starts)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/IslandPreload.py | 23 +++++++++++++++++++++++
+ 1 file changed, 23 insertions(+)
+
+diff --git a/pirates/world/IslandPreload.py b/pirates/world/IslandPreload.py
+index 8315ca1..267cd83 100644
+--- a/pirates/world/IslandPreload.py
++++ b/pirates/world/IslandPreload.py
+@@ -11,6 +11,7 @@ def start():
+     if _started:
+         return
+     _started = True
++    absoluteModelPath()
+     try:
+         fn = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'IslandPreload.txt')
+         with open(fn) as f:
+@@ -23,6 +24,28 @@ def start():
+     notify.info('preloading %d island models' % len(paths))
+     base.loader.loadModel(paths, callback=_done)
+ 
++def absoluteModelPath():
++    # Panda's ExecutionEnvironment::get_cwd() fills one shared buffer with no lock. With a relative
++    # model-path entry (config/dev.prc: ../resources) every model load asks it for the current folder,
++    # so the loader thread (this preload) and the main thread (the login teleport's own loads) could ask
++    # at the same instant; one then read a half-written buffer, got an empty name, and Panda closed the
++    # game (Assertion failed: !_filename.empty(), filename.cxx line 928). Absolute entries never ask.
++    # Runs on the main thread before the first background load starts.
++    try:
++        from panda3d.core import getModelPath, Filename
++        mp = getModelPath()
++        dirs = [Filename(mp.getDirectory(i)) for i in range(mp.getNumDirectories())]
++        if not [d for d in dirs if d.isLocal()]:
++            return
++        for d in dirs:
++            d.makeAbsolute()
++        # Put the absolute copies in front, in the same order. (clear() cannot drop the folders the
++        # prc files declare, so the old relative ones stay behind these and are never reached.)
++        for d in reversed(dirs):
++            mp.prependDirectory(d)
++    except Exception as e:
++        notify.warning('could not make the model path absolute: %s' % e)
++
+ def _done(*models):
+     global _models
+     _models = models
+-- 
+2.53.0
+

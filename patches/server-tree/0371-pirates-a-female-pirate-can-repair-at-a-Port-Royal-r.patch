@@ -1,0 +1,40 @@
+From adaf2e26e69eaedb0ab1bb7822794dd781ae74cc Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 11:56:18 -0800
+Subject: [PATCH 371/371] pirates: a female pirate can repair at a Port Royal
+ repair bench without the game closing (the original fp_repairfloor_into is
+ one frame with every joint at scale 0, so playing it shrank her name_tag
+ joint to nothing and the drop shadow's getPos asserted has_pos() in
+ shadowReach, as at 11:39:10); enterBenchRepair plays repairfloor_into only
+ when it has more than one frame and otherwise starts the repair_bench loop at
+ once (male pirates unchanged), as server-tree patch 0455 (client patch 65,
+ client code only, 1 file, no DC change, no restart)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/BattleAvatarGameFSM.py | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/pirate/BattleAvatarGameFSM.py b/pirates/pirate/BattleAvatarGameFSM.py
+index 78faeef..349f9cf 100644
+--- a/pirates/pirate/BattleAvatarGameFSM.py
++++ b/pirates/pirate/BattleAvatarGameFSM.py
+@@ -783,7 +783,14 @@ class BattleAvatarGameFSM(FSM.FSM):
+             self.putAwayHammerTrack.finish()
+             self.putAwayHammerTrack = None
+ 
+-        self.repairHammerTrack = Sequence(Func(self.av.play, 'repairfloor_into', fromFrame = 0, toFrame = 35), Wait(0.5), Func(self.repairHammer.reparentTo, self.av.rightHandNode), Wait(0.5), Func(self.av.loop, 'repair_bench', blendT = 0))
++        # The female repairfloor_into is one frame with every joint at scale 0 (original game art);
++        # playing it shrinks her nametag joint to nothing and her drop shadow's getPos asserts. Skip it.
++        if (self.av.getNumFrames('repairfloor_into') or 0) > 1:
++            intoAnim = Func(self.av.play, 'repairfloor_into', fromFrame = 0, toFrame = 35)
++        else:
++            intoAnim = Func(self.av.loop, 'repair_bench', blendT = 0)
++
++        self.repairHammerTrack = Sequence(intoAnim, Wait(0.5), Func(self.repairHammer.reparentTo, self.av.rightHandNode), Wait(0.5), Func(self.av.loop, 'repair_bench', blendT = 0))
+         self.repairHammerTrack.start()
+ 
+     def exitBenchRepair(self):
+-- 
+2.53.0
+

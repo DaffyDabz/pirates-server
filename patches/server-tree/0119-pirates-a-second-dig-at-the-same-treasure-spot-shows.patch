@@ -1,0 +1,38 @@
+From 82f37d6c59bca4eeeaec27201d596545003aefa2 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 20:57:24 -0800
+Subject: [PATCH 119/371] pirates: a second dig at the same treasure spot shows
+ the chest and dirt again, as server-tree patch 0133 (1 client file)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/treasuremap/DistributedBuriedTreasure.py | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/pirates/treasuremap/DistributedBuriedTreasure.py b/pirates/treasuremap/DistributedBuriedTreasure.py
+index 0fba94c..990efc3 100644
+--- a/pirates/treasuremap/DistributedBuriedTreasure.py
++++ b/pirates/treasuremap/DistributedBuriedTreasure.py
+@@ -114,7 +114,19 @@ class DistributedBuriedTreasure(DistributedInteractive.DistributedInteractive):
+         dirtZ = min(z + 0.5, -1.5)
+         dirtOldZ = min(oldZ + 0.5, -1.5)
+         if self.currentDepth == self.startingDepth:
++            # Family server: the spot was reset for the next dig. The last
++            # dig faded the whole spot out (alpha 0) and left the lids open,
++            # and nothing undid that, so the next dig here showed no chest
++            # and no dirt. Undo the fade and close the lids.
++            if self.showTreasureIval:
++                self.showTreasureIval.pause()
++                self.showTreasureIval = None
++            self.clearColorScale()
++            self.clearTransparency()
+             if self.chest:
++                for lid in (self.chestLidHigh, self.chestLidMed, self.chestLidLow):
++                    if not lid.isEmpty():
++                        lid.setHpr(0, 0, 0)
+                 self.chest.stash()
+                 self.dirt.stash()
+                 self.chest.setZ(z)
+-- 
+2.53.0
+

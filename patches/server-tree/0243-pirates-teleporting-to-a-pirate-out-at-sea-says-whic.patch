@@ -1,0 +1,29 @@
+From 2941db90667cde191d4277e2b24c3c2214f7163c Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:58:05 -0800
+Subject: [PATCH 243/371] pirates: teleporting to a pirate out at sea says
+ which sea he is in and how to join him (0313, patch 22)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/piratesbase/PLocalizerEnglish.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/piratesbase/PLocalizerEnglish.py b/pirates/piratesbase/PLocalizerEnglish.py
+index 95130dd..ec8b08a 100644
+--- a/pirates/piratesbase/PLocalizerEnglish.py
++++ b/pirates/piratesbase/PLocalizerEnglish.py
+@@ -5021,7 +5021,9 @@ NoTeleportToInJail = 'Sorry, %s is in jail.'
+ NoTeleportToNoPermission = "Sorry, %s is on a ship that\nyou don't have permission to board yet."
+ NoTeleportToFlagshipBattle = 'Sorry, %s is battling a flagship!'
+ NoTeleportToIgnore = 'Sorry, %s\\ is ignoring you.'
+-NoTeleportToNoSpaceOnShip = "Sorry, %s's ship is full at the moment."
++# family server (0313): every teleport onto a ship is refused (TFOnShip, 0048), full or not; the old line said the
++# ship was full. Say where the pirate is and how to reach him. One %s only: both callers fill it with % avName.
++NoTeleportToNoSpaceOnShip = "Sorry, %s is out at sea on a ship.\nJoin their crew, then sail out from a dock's dinghy."
+ NoTeleportToTreasureMap = TeleportPlayerNotAvailable
+ NoTeleportToWelcomeWorld = NoTeleportToInTutorial
+ NoTeleportToZombie = 'Sorry, %s is undead!'
+-- 
+2.53.0
+

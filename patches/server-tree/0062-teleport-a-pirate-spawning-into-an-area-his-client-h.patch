@@ -1,0 +1,40 @@
+From 6311314da8e2e761116f5eafecd96c44252b2bfb Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 01:45:38 -0800
+Subject: [PATCH 062/371] teleport: a pirate spawning into an area his client
+ has not loaded yet (the tutorial's jail) is sent there
+
+readyToFinishTeleport sent the spawn parents as [area, parent, zone], but the
+client's createSpawnInterests reads them as [area, zone, parent]: when the area
+is not on the client yet it opens setInterest(parents[2], parents[1]). With the
+order swapped that check failed, the teleport was aborted, and a brand-new
+pirate was left on Rambleshack inside the jail model, 81 feet from the jail's
+exit door with no way to walk to it (TUT7). Send them in the order the client
+reads. Islands were not affected: they are always on the client already.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedTeleportHandlerAI.py | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/instance/DistributedTeleportHandlerAI.py b/pirates/instance/DistributedTeleportHandlerAI.py
+index 7760248..a632f34 100644
+--- a/pirates/instance/DistributedTeleportHandlerAI.py
++++ b/pirates/instance/DistributedTeleportHandlerAI.py
+@@ -59,8 +59,12 @@ class DistributedTeleportHandlerAI(DistributedObjectAI):
+             self.teleportFsm.cleanup()
+             return
+ 
++        # family server (11-17): the client reads parents as [area, zone, parent] (DistributedTeleportMgr.
++        # createSpawnInterests opens setInterest(parents[2], parents[1])). Sent as [area, parent, zone], a pirate whose
++        # area was not on his client yet (the tutorial's jail, in a container of its own) had his teleport aborted and
++        # was left on the island, inside the jail model but far from its exit door, so he could never walk out
+         world.d_setSpawnInfo(self.avatar.doId, xPos, yPos, zPos, h, 0, [gameArea.doId,
+-            gameArea.parentId, gameArea.zoneId])
++            gameArea.zoneId, gameArea.parentId])
+ 
+         self.sendUpdateToAvatarId(self.avatar.doId, 'teleportToInstanceCleanup', [])
+ 
+-- 
+2.53.0
+

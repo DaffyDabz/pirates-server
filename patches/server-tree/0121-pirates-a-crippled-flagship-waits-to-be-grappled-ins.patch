@@ -1,0 +1,258 @@
+From b371ab6e2a8746d25a90576ece6f0348b8598fc5 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 20:57:25 -0800
+Subject: [PATCH 121/371] pirates: a crippled flagship waits to be grappled
+ instead of sinking at once, as server-tree patch 0135 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShipAI.py | 36 ++++++++++++
+ pirates/ship/GameFSMShipAI.py     | 41 ++++++++++----
+ pirates/ship/NPCShipAI.py         | 93 +++++++++++++++++++++++++++++++
+ 3 files changed, 160 insertions(+), 10 deletions(-)
+
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index 0e77682..87c659e 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -87,6 +87,11 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         self.badge = [0, 0]
+         self.isInBoardingPosition = 0
+         self.landedGrapples = []
++        # flagship boarding (2026-11-17): on a crippled flagship, the pirate ship
++        # that may board it; on that pirate ship, the flagship. The client's grapple
++        # targets, ropes and "Board?" panel all key off it
++        self.boardableShipId = 0
++        self.sinkTimer = [0, 0]
+         self.wishName = ''
+         self.wishNameState = ''
+         self.clientControllerDoId = 0
+@@ -1158,6 +1163,37 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+     def getIsInBoardingPosition(self):
+         return self.isInBoardingPosition
+ 
++    def setBoardableShipId(self, shipId):
++        self.boardableShipId = shipId
++
++    def d_setBoardableShipId(self, shipId):
++        self.sendUpdate('setBoardableShipId', [shipId])
++
++    def b_setBoardableShipId(self, shipId):
++        self.setBoardableShipId(shipId)
++        self.d_setBoardableShipId(shipId)
++
++    def getBoardableShipId(self):
++        return self.boardableShipId
++
++    def setSinkTimer(self, duration, timestamp):
++        self.sinkTimer = [duration, timestamp]
++
++    def d_setSinkTimer(self, duration, timestamp):
++        self.sendUpdate('setSinkTimer', [duration, timestamp])
++
++    def b_setSinkTimer(self, duration, timestamp=0):
++        # the client counts down from the timestamp (its target panel, and the
++        # captain's "Board?" panel)
++        if not timestamp:
++            timestamp = globalClockDelta.getRealNetworkTime(bits=16)
++
++        self.setSinkTimer(duration, timestamp)
++        self.d_setSinkTimer(duration, timestamp)
++
++    def getSinkTimer(self):
++        return self.sinkTimer
++
+     def setLandedGrapples(self, landedGrapples):
+         self.landedGrapples = landedGrapples
+ 
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index f34621f..46b3de9 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -2837,18 +2837,39 @@ class GameFSMShipAI(FSM.FSM):
+         """
+         self._stopAllTasks()
+         self.targetShip = None
+-        
+-        # Set up the 5-minute timeout
+-        def _crippledTimeout(task):
+-            # Time's up - ship sinks without being boarded
+-            if self.ship:
++
++        # family server (2026-11-17): the timeout used self.request('Sinking'),
++        # which changed only the AI's state: no client saw the sink and nobody was
++        # paid. The ship sinks itself through b_setGameState (sinkFlagship), when
++        # the clock runs out or the pirate ship that may board it is gone or sunk
++        if hasattr(self.ship, 'getCrippledTimeout'):
++            timeout = self.ship.getCrippledTimeout()
++        else:
++            timeout = FlagshipGlobals.FLAGSHIP_CRIPPLED_TIMEOUT
++
++        self._crippledDeadline = globalClock.getFrameTime() + timeout
++
++        def _crippledCheck(task):
++            ship = self.ship
++            if ship is None:
++                return Task.done
++
++            if not hasattr(ship, 'sinkFlagship'):
+                 self.request('Sinking')
+-            return Task.done
+-        
++                return Task.done
++
++            if globalClock.getFrameTime() >= self._crippledDeadline:
++                ship.sinkFlagship('the %d s ran out' % timeout)
++                return Task.done
++
++            if ship.getBoarderShip() is None:
++                ship.sinkFlagship('pirate ship %s gone, sunk or empty' % ship._boarderShipId)
++                return Task.done
++
++            return Task.again
++
+         self._crippledTimeoutTask = taskMgr.doMethodLater(
+-            FlagshipGlobals.FLAGSHIP_CRIPPLED_TIMEOUT,
+-            _crippledTimeout,
+-            self.ship.uniqueName('crippled-timeout'))
++            5.0, _crippledCheck, self.ship.uniqueName('crippled-timeout'))
+ 
+     def exitWaitingForGrapple(self):
+         if hasattr(self, '_crippledTimeoutTask') and self._crippledTimeoutTask:
+diff --git a/pirates/ship/NPCShipAI.py b/pirates/ship/NPCShipAI.py
+index d74b1bf..4fb2dcf 100644
+--- a/pirates/ship/NPCShipAI.py
++++ b/pirates/ship/NPCShipAI.py
+@@ -1,10 +1,12 @@
+ import random
+ 
+ from direct.directnotify import DirectNotifyGlobal
++from direct.distributed.ClockDelta import globalClockDelta
+ 
+ from pirates.ship.DistributedShipAI import DistributedShipAI
+ from pirates.ship import ShipGlobals
+ from pirates.ship import ShipBalance
++from pirates.ship import FlagshipGlobals
+ from pirates.battle import EnemyGlobals
+ from pirates.battle import WeaponGlobals
+ from pirates.pirate import AvatarTypes
+@@ -62,6 +64,11 @@ class NPCShipAI(DistributedShipAI):
+         # they are paid from this when it sinks (2026-11-17)
+         self._sinkCredit = {}
+         self._sinkRewarded = False
++        # flagship boarding (2026-11-17): the pirate ship that last hurt us, the one
++        # that may board us once we are crippled, and whether a sink is on purpose
++        self._lastAttackerShipId = 0
++        self._boarderShipId = 0
++        self._forceSink = False
+ 
+     @property
+     def isNpc(self):
+@@ -73,6 +80,11 @@ class NPCShipAI(DistributedShipAI):
+         DistributedShipAI.generate(self)
+ 
+     def delete(self):
++        try:
++            self._clearBoarder()
++        except Exception as e:
++            self.notify.warning('flagship %s: could not clear its boarder: %s' % (self.doId, e))
++
+         self.air.shipManager.removeShip(self)
+         self.air.shipManager.removeFlagship(self)
+         DistributedShipAI.delete(self)
+@@ -175,11 +187,92 @@ class NPCShipAI(DistributedShipAI):
+         if ship is None or ship is self or isinstance(ship, NPCShipAI):
+             return
+ 
++        self._lastAttackerShipId = ship.doId
+         for avId in list(getattr(ship, 'crew', None) or []):
+             avatar = self.air.doId2do.get(avId)
+             if avatar is not None and hasattr(avatar, 'getInventory'):
+                 self._sinkCredit.setdefault(avId, set())
+ 
++    # =========================================================================
++    # Flagship boarding (2026-11-17)
++    # =========================================================================
++    # A flagship at 0 hp does not sink: it is crippled and waits for the pirate
++    # ship that crippled it to grapple and board it (TLOPO). setHp and takeDamage
++    # both ask for 'Sinking' on every hit at 0 hp, so while it is in one of these
++    # states that ask is ignored, until it is sunk on purpose (sinkFlagship).
++    BOARDING_STATES = ('WaitingForGrapple', 'GrappleLerping', 'InPosition', 'Boarded', 'Defeated')
++
++    def b_setGameState(self, stateName, avId, timeStamp=0):
++        if stateName == 'Sinking' and self.isFlagship and not self._forceSink:
++            current = self.gameFSM.getCurrentOrNextState() if getattr(self, 'gameFSM', None) else None
++            if current in self.BOARDING_STATES:
++                return
++
++            boarder = self._getBoarderShip(self._lastAttackerShipId)
++            if boarder is not None:
++                self._cripple(boarder)
++                return
++
++            self.notify.warning('TEMP-DIAG flagship %d at 0 hp with no pirate ship to board it (last %s): sinking' % (
++                self.doId, self._lastAttackerShipId))
++
++        DistributedShipAI.b_setGameState(self, stateName, avId, timeStamp)
++
++    def _getBoarderShip(self, shipId):
++        """The pirate ship shipId if it can still board us: afloat, with crew online."""
++        ship = self.air.doId2do.get(shipId) if shipId else None
++        if ship is None or ship is self or isinstance(ship, NPCShipAI):
++            return None
++
++        if getattr(ship, 'hp', 0) <= 0:
++            return None
++
++        state = ship.gameState[0] if getattr(ship, 'gameState', None) else None
++        if state in ('Sinking', 'Sunk', 'PutAway', 'Off'):
++            return None
++
++        if not [avId for avId in (getattr(ship, 'crew', None) or []) if avId in self.air.doId2do]:
++            return None
++
++        return ship
++
++    def getBoarderShip(self):
++        return self._getBoarderShip(self._boarderShipId)
++
++    def getCrippledTimeout(self):
++        return config.GetFloat('flagship-crippled-timeout', FlagshipGlobals.FLAGSHIP_CRIPPLED_TIMEOUT)
++
++    def _cripple(self, boarder):
++        timeout = int(self.getCrippledTimeout())
++        self._boarderShipId = boarder.doId
++        # boardable ship first: the client's WaitingForGrapple does nothing without it
++        self.b_setBoardableShipId(boarder.doId)
++        boarder.b_setBoardableShipId(self.doId)
++        self.b_setSinkTimer(timeout)
++        self.notify.warning('TEMP-DIAG flagship %d (class %s) crippled at 0 hp: waiting for grapples from ship %d (crew %s), %d s' % (
++            self.doId, self.getShipClass(), boarder.doId, list(boarder.crew), timeout))
++        DistributedShipAI.b_setGameState(self, 'WaitingForGrapple', 0)
++
++    def sinkFlagship(self, reason):
++        """Sink a crippled flagship on purpose, through the normal (paying) sink."""
++        self.notify.warning('TEMP-DIAG flagship %d not boarded: sinking (%s)' % (self.doId, reason))
++        self._clearBoarder()
++        self._forceSink = True
++        self.b_setGameState('Sinking', 0)
++
++    def _clearBoarder(self):
++        if not self._boarderShipId:
++            return
++
++        boarder = self.air.doId2do.get(self._boarderShipId) if self.air else None
++        self._boarderShipId = 0
++        if boarder is not None and getattr(boarder, 'boardableShipId', 0) == self.doId:
++            # the client clears its "fighting a flagship" teleport flag on 0
++            boarder.b_setBoardableShipId(0)
++
++        if self.air and self.air.doId2do.get(self.doId) is self:
++            self.b_setBoardableShipId(0)
++
+     def setGameState(self, stateName, avId, timeStamp=0):
+         DistributedShipAI.setGameState(self, stateName, avId, timeStamp)
+         if stateName == 'Sinking':
+-- 
+2.53.0
+

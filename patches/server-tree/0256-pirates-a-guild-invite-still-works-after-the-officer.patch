@@ -1,0 +1,30 @@
+From c16c8a0dd4812eee566f13282cde8d95be3d8762 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 07:31:25 -0800
+Subject: [PATCH 256/371] pirates: a guild invite still works after the officer
+ who sent it logs off (0343)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/friends/PCGuildManagerUD.py | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/friends/PCGuildManagerUD.py b/pirates/friends/PCGuildManagerUD.py
+index 2879d8a..6c036df 100644
+--- a/pirates/friends/PCGuildManagerUD.py
++++ b/pirates/friends/PCGuildManagerUD.py
+@@ -339,9 +339,8 @@ class PCGuildManagerUD(DistributedObjectGlobalUD):
+         invite = self.invites.pop(avId, None)
+         if invite is not None:
+             self.sendToAv(invite[0], 'guildRejectInvite', [avId, RejectCode.INVITEE_NOT_ONLINE])
+-        for inviteeId, (inviterId, guildId) in list(self.invites.items()):
+-            if inviterId == avId:
+-                del self.invites[inviteeId]
++        # family server (11-19, 0343): invites he sent stay open. The invitee's Yes/No box cannot be closed from
++        # here (the client's retractInvite only prints), so his Yes did nothing; now Yes still joins the guild.
+         guild = self.getGuild(avId)
+         if guild is not None:
+             self.sendToGuild(guild, 'recvAvatarOffline', [avId, self.av2name.get(avId, '')])
+-- 
+2.53.0
+

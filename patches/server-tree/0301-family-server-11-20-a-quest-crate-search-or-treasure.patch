@@ -1,0 +1,177 @@
+From 85aa9550f7752890160e90ace37faf2db9dcad03 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 301/371] family server (11-20): a quest crate search or
+ treasure dig always plays the search bar, and a quest that ends with one now
+ pays (0385)
+
+Server: a miss or a partial find said "Nothing interesting here." with no search bar (66 search/dig tasks), and a
+quest ending in a search/dig with no NPC to return to (Carver's list in Tortuga and 7 more) never finished.
+Lane: games. Test: test_search_dig.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../DistributedSearchableContainerAI.py       | 10 +++-
+ pirates/quest/QuestManagerAI.py               | 46 +++++++++++++++++--
+ .../DistributedBuriedTreasureAI.py            | 12 +++--
+ 3 files changed, 58 insertions(+), 10 deletions(-)
+
+diff --git a/pirates/interact/DistributedSearchableContainerAI.py b/pirates/interact/DistributedSearchableContainerAI.py
+index d43d246..46a0468 100644
+--- a/pirates/interact/DistributedSearchableContainerAI.py
++++ b/pirates/interact/DistributedSearchableContainerAI.py
+@@ -20,13 +20,19 @@ class DistributedSearchableContainerAI(DistributedInteractiveAI):
+         else:
+             return self.DENY
+ 
+-    def questProgressionCallback(self, quest):
++    def questProgressionCallback(self, quest, progress=None):
+         avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
+         if not avatar:
+             return
+ 
++        # 0 = nothing found this time (the client says "Did not find any quest items."); the quest may be
++        # handed in and gone before the search ends, so the progress is taken now
++        if progress is None:
++            progress = quest.getProgress()
++        progress = max(0, min(int(progress), 65535))
++
+         def _finalizeContainerSearch(task):
+-            self.d_stopSearching(avatar.doId, quest.getProgress())
++            self.d_stopSearching(avatar.doId, progress)
+             return task.done
+ 
+         self.d_startSearching(avatar.doId)
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 4676a70..2cdc61b 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -595,17 +595,40 @@ class QuestManagerAI(DirectObject):
+ 
+         return False
+ 
+-    def completeTaskState(self, avatar, questEvent, callback=None, npc=None):
++    def _getSearchState(self, quest):
++        # progress and attempts of every task: a search or dig that missed moves only the attempts, one that found
++        # an item moves the progress (a crate of the wrong kind moves neither: "Nothing interesting here.")
++        progress = attempts = 0
++        for taskState in quest.getTaskStates() or ():
++            progress += int(getattr(taskState, 'progress', 0) or 0)
++            attempts += int(getattr(taskState, 'attempts', 0) or 0)
++
++        return (progress, attempts)
++
++    def completeTaskState(self, avatar, questEvent, callback=None, npc=None, searchCallback=False):
++        # searchCallback: the search and dig callbacks (containerSearched, treasureChestOpened) take
++        # callback(quest, progress) and are also called for a search that moved a quest without finishing it
+         questObjects = list(self.quests.get(avatar.doId, {}).values())
+         if not questObjects:
+             return False
+ 
++        searchedQuest = None
+         for quest in questObjects:
+             if quest.getQuestDNA() is None:
+                 continue
+ 
+             wasComplete = quest.isComplete()
++            before = self._getSearchState(quest) if searchCallback else None
+             quest.handleEvent(avatar, questEvent)
++            if searchCallback and not quest.isComplete():
++                # family server (games lane): a search that found 1 of 6 chickens, or nothing this time, returned
++                # False, so the crate said "Nothing interesting here." with no search bar while the quest log moved
++                # on. It now plays the search and says when nothing was found.
++                after = self._getSearchState(quest)
++                if searchedQuest is None and after != before:
++                    searchedQuest = (quest, max(0, after[0] - before[0]) and after[0])
++
++                continue
+ 
+             # check to see if the quest event has been completed,
+             # if so then handle the callback we set...
+@@ -645,17 +668,30 @@ class QuestManagerAI(DirectObject):
+                     # for that NPC (the beam points there); talking to him hands it in. It must not swallow
+                     # other quests' events while it waits.
+                     if callback is not None:
+-                        callback(quest)
++                        if searchCallback:
++                            callback(quest, self._getSearchState(quest)[0])
++                        else:
++                            callback(quest)
+ 
+                     return True
+ 
+-                if callback is not None:
++                if callback is not None and searchCallback:
++                    # family server (games lane): the search and dig callbacks only play the search, so a quest
++                    # that ended with a search or a dig and had no NPC to go back to (stealing Carver's list in
++                    # Tortuga) was never handed in or paid. Hand it in now, as a kill does.
++                    callback(quest, self._getSearchState(quest)[0])
++                    self.completeQuest(avatar, quest)
++                elif callback is not None:
+                     callback(quest)
+                 else:
+                     self.completeQuest(avatar, quest)
+ 
+                 return True
+ 
++        if searchedQuest is not None and callback is not None:
++            callback(*searchedQuest)
++            return True
++
+         return False
+ 
+     def treasureChestOpened(self, avatar, treasureChest, callback=None):
+@@ -668,7 +704,7 @@ class QuestManagerAI(DirectObject):
+         questEvent.setTreasureId(treasureChest.getUniqueId())
+         questEvent.setTreasureType(0) #Unused value
+ 
+-        return self.completeTaskState(avatar, questEvent, callback=callback)
++        return self.completeTaskState(avatar, questEvent, callback=callback, searchCallback=True)
+ 
+     def containerSearched(self, avatar, container, callback=None):
+         parentObj = avatar.getParentObj()
+@@ -680,7 +716,7 @@ class QuestManagerAI(DirectObject):
+         questEvent.setContainerId(container.getUniqueId())
+         questEvent.setContainerType(container.getType())
+ 
+-        return self.completeTaskState(avatar, questEvent, callback=callback)
++        return self.completeTaskState(avatar, questEvent, callback=callback, searchCallback=True)
+ 
+     def deployedShip(self, avatar):
+         parentObj = avatar.getParentObj()
+diff --git a/pirates/treasuremap/DistributedBuriedTreasureAI.py b/pirates/treasuremap/DistributedBuriedTreasureAI.py
+index a7528dd..ba50270 100644
+--- a/pirates/treasuremap/DistributedBuriedTreasureAI.py
++++ b/pirates/treasuremap/DistributedBuriedTreasureAI.py
+@@ -27,19 +27,25 @@ class DistributedBuriedTreasureAI(DistributedInteractiveAI):
+         else:
+             return self.DENY
+ 
+-    def questProgressionCallback(self, quest):
++    def questProgressionCallback(self, quest, progress=None):
+         avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
+         if not avatar:
+             return
+ 
++        # 0 = nothing found this time: the client says "Did not find any quest items." and no chest comes up
++        if progress is None:
++            progress = quest.getProgress()
++        progress = max(0, min(int(progress), 65535))
++
+         def performChestDig(task):
+             if not self.currentUser:
+                 return task.done
+ 
+             self.b_setCurrentDepth(max(self.getCurrentDepth() - 1, 0))
+             if self.currentDepth <= 0:
+-                self.d_stopDigging(avatar.doId, quest.getProgress())
+-                self.d_showTreasure(avatar.doId)
++                self.d_stopDigging(avatar.doId, progress)
++                if progress:
++                    self.d_showTreasure(avatar.doId)
+                 taskMgr.doMethodLater(5, self.resetDigSpot, '%s-digResetTask' % self.doId)
+                 return task.done
+ 
+-- 
+2.53.0
+

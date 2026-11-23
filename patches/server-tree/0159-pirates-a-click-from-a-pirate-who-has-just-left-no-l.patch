@@ -1,0 +1,57 @@
+From b2073d036ed8109d682ac182d924fda2eacd712d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:24:35 -0800
+Subject: [PATCH 159/371] pirates: a click from a pirate who has just left no
+ longer crashes the server, server-tree patch 0181
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../distributed/DistributedInteractiveAI.py   | 19 ++++++++++++-------
+ 1 file changed, 12 insertions(+), 7 deletions(-)
+
+diff --git a/pirates/distributed/DistributedInteractiveAI.py b/pirates/distributed/DistributedInteractiveAI.py
+index f6c8787..c3dcdaa 100644
+--- a/pirates/distributed/DistributedInteractiveAI.py
++++ b/pirates/distributed/DistributedInteractiveAI.py
+@@ -16,11 +16,15 @@ class DistributedInteractiveAI(DistributedNodeAI):
+         self.uniqueId = ''
+ 
+     def requestInteraction(self, doId, interactType, instant):
+-        avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
++        avId = self.air.getAvatarIdFromSender()
++        avatar = self.air.doId2do.get(avId)
+         if not avatar:
++            # patch 0181: this logged avatar.doId with avatar None, so a click on any
++            # NPC, door, chest or wheel from a pirate the AI no longer has (just
++            # logged out, changed shard) raised AttributeError in the AI
+             self.air.logPotentialHacker(
+                 message='Received requestInteraction from non-existant avatar',
+-                targetAvId=avatar.doId,
++                targetAvId=avId,
+                 doId=doId,
+                 interactType=interactType,
+                 instant=instant)
+@@ -51,14 +55,15 @@ class DistributedInteractiveAI(DistributedNodeAI):
+         pass
+ 
+     def requestExit(self):
+-        avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
++        avId = self.air.getAvatarIdFromSender()
++        avatar = self.air.doId2do.get(avId)
+         if not avatar:
++            # patch 0181: this logged avatar.doId (None) and doId, interactType and
++            # instant, which requestExit does not have (AttributeError, NameError)
+             self.air.logPotentialHacker(
+                 message='Received requestExit from non-existant avatar',
+-                targetAvId=avatar.doId,
+-                doId=doId,
+-                interactType=interactType,
+-                instant=instant)
++                targetAvId=avId,
++                doId=self.doId)
+ 
+             return
+ 
+-- 
+2.53.0
+

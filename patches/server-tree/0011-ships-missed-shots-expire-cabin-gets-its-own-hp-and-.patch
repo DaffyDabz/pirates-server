@@ -1,0 +1,79 @@
+From 88091bcb1ea0b744a7517832b144c08d0708c328 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 13:23:19 -0800
+Subject: [PATCH 011/371] ships: missed shots expire, cabin gets its own hp and
+ cargo
+
+- TargetManagerAI: a projectile that never hits (lands in water) is
+  dropped after 10 s instead of piling up forever.
+- DistributedShipAI: the cabin was set up from the wrong config entries
+  (copy-paste); it now uses its own setHp and setMaxCargo.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/distributed/TargetManagerAI.py | 14 +++++++++++++-
+ pirates/ship/DistributedShipAI.py      |  4 ++--
+ 2 files changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/distributed/TargetManagerAI.py b/pirates/distributed/TargetManagerAI.py
+index 0fc368b..fe1d29d 100644
+--- a/pirates/distributed/TargetManagerAI.py
++++ b/pirates/distributed/TargetManagerAI.py
+@@ -1,4 +1,5 @@
+ import random
++import time
+ 
+ from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from direct.directnotify import DirectNotifyGlobal
+@@ -11,6 +12,9 @@ from pirates.distributed.TargetManagerBase import TargetManagerBase
+ class TargetManagerAI(DistributedObjectAI, TargetManagerBase):
+     notify = DirectNotifyGlobal.directNotify.newCategory('TargetManagerAI')
+ 
++    # seconds a fired projectile stays on record while it waits for its hit report
++    PROJECTILE_LIFETIME = 10.0
++
+     def __init__(self, air):
+         DistributedObjectAI.__init__(self, air)
+         TargetManagerBase.__init__(self)
+@@ -190,6 +194,14 @@ class TargetManagerAI(DistributedObjectAI, TargetManagerBase):
+         if not projectiles:
+             return False
+ 
++        # a cannonball that lands in the water never reports back (the client's
++        # WeaponBase.__waterHit is empty), so its entry used to stay forever and
++        # every later shot of that skill was dropped without a useProjectileSkill
++        now = time.time()
++        projectiles[:] = [p for p in projectiles if now - p[3] < self.PROJECTILE_LIFETIME]
++        if not projectiles:
++            return False
++
+         for projectile in projectiles:
+             if projectile[0] != skillId or projectile[1] != ammoSkillId:
+                 continue
+@@ -204,7 +216,7 @@ class TargetManagerAI(DistributedObjectAI, TargetManagerBase):
+             return
+ 
+         projectiles = self.projectiles.setdefault(avatarId, [])
+-        projectiles.append([skillId, ammoSkillId, timestamp])
++        projectiles.append([skillId, ammoSkillId, timestamp, time.time()])
+ 
+     def removeProjectile(self, avatarId, skillId, ammoSkillId):
+         #assert(WeaponGlobals.isProjectileSkill(skillId, ammoSkillId))
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index 418cd7e..e433899 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -321,8 +321,8 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+                 getattr(self.cabin, key)(value)
+ 
+             self.cabin.setMaxHp(cabinConfig['setMaxHp'][0])
+-            self.cabin.setMaxHp(cabinConfig['setHp'][0])
+-            self.cabin.setMaxHp(cabinConfig['setMaxCargo'][0])
++            self.cabin.setHp(cabinConfig['setHp'][0])
++            self.cabin.setMaxCargo(cabinConfig['setMaxCargo'][0])
+             self.generateChildWithRequired(self.cabin, PiratesGlobals.ShipZoneSilhouette)
+ 
+         #self.bowSprit = DistributedBowSpritAI(self.air)
+-- 
+2.53.0
+

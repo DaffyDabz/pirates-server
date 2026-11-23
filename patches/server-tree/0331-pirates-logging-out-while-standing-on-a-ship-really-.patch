@@ -1,0 +1,80 @@
+From c0858527b6c8ab61c08111de4f1a3bab6323ec09 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 21:06:36 -0800
+Subject: [PATCH 331/371] pirates: logging out while standing on a ship really
+ no longer closes the game; the ship tidies itself away (crew-0002, client
+ only)
+
+0414 got past setCrew, then the relog check at 20:59:11 crashed one step later. After LocalPirate.delete removes
+localAvatar, the ship is disabled (PlayerShip.disable -> DistributedShip.disable), and disable read the deleted pirate
+three times:
+- setZoneLevel(4) -> unloadZoneLevel(2): base.localAvatar.shipList (AttributeError, the relog traceback)
+- the crew check before localAvatarExitShip (NameError)
+- stopAutoSailing -> setIsAutoSailing(0): localAvatar.disableCloudScudEffect (NameError)
+
+All three use getattr(base, 'localAvatar', None) now, as 0414 does, and skip the pirate's part when he is gone.
+An AST walk of the 68 methods reachable from disable + delete found no other localAvatar read at logout.
+
+Client file only; the AI does not load it. Test: test_ship_logout.py (the real DistributedShip.disable) live FAIL 2/4,
+patched PASS 4/4; one or two guards alone still crash, so all three are needed; in game a ship going away still takes
+him off, drops it from his ship list and stops the cloud effect. test_crew_logout.py (0414) still PASS 3/3.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShip.py | 21 +++++++++++++++------
+ 1 file changed, 15 insertions(+), 6 deletions(-)
+
+diff --git a/pirates/ship/DistributedShip.py b/pirates/ship/DistributedShip.py
+index 8d7c0ab..7cf96ab 100644
+--- a/pirates/ship/DistributedShip.py
++++ b/pirates/ship/DistributedShip.py
+@@ -768,7 +768,11 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+             self.cr.relatedObjectMgr.abortRequest(self.pendingLandedGrapples)
+             self.pendingLandedGrapples = None
+ 
+-        if self.isInCrew(localAvatar.doId) and not base.cr.noNewInterests():
++        # family client (11-20, crew-0002): logging out while standing on a ship deletes localAvatar
++        # (LocalPirate.delete) before this ship is disabled; reading it here (and in unloadZoneLevel and
++        # setIsAutoSailing) was an error that closed the game. With no local pirate there is no one to take off.
++        av = getattr(base, 'localAvatar', None)
++        if av is not None and self.isInCrew(av.doId) and not base.cr.noNewInterests():
+             self.localAvatarExitShip()
+ 
+         if self.stormEffect:
+@@ -2299,8 +2303,10 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+ 
+             self.cr.removeInterest(self.zoneDistance)
+             self.zoneDistance = None
+-            if self.doId in base.localAvatar.shipList:
+-                base.localAvatar.shipList.remove(self.doId)
++            # family client (11-20, crew-0002): see disable; on logout localAvatar (and its shipList) is gone
++            av = getattr(base, 'localAvatar', None)
++            if av is not None and self.doId in av.shipList:
++                av.shipList.remove(self.doId)
+ 
+         elif level == 3:
+             if self.flat:
+@@ -3446,14 +3452,17 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+             return
+ 
+         self.autoSailing = value
++        # family client (11-20, crew-0002): see disable
++        av = getattr(base, 'localAvatar', None)
+         if value:
+             self.rolldownSails()
+-            if base.options.getSpecialEffectsSetting() >= base.options.SpecialEffectsHigh:
+-                localAvatar.enableCloudScudEffect()
++            if av is not None and base.options.getSpecialEffectsSetting() >= base.options.SpecialEffectsHigh:
++                av.enableCloudScudEffect()
+ 
+         else:
+             self.rollupSails()
+-            localAvatar.disableCloudScudEffect()
++            if av is not None:
++                av.disableCloudScudEffect()
+ 
+     def getIsAutoSailing(self):
+         return self.autoSailing
+-- 
+2.53.0
+

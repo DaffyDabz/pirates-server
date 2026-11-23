@@ -1,0 +1,27 @@
+From 10834d6c657b586868bce6f81e3d828aa331e5c7 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:04:41 -0800
+Subject: [PATCH 242/371] pirates: Greer's ritual quest counts any skeleton in
+ Port Royal cave B (0305, patch 22)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestDB.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/pirates/quest/QuestDB.py b/pirates/quest/QuestDB.py
+index 1fa27e5..2278915 100644
+--- a/pirates/quest/QuestDB.py
++++ b/pirates/quest/QuestDB.py
+@@ -226,7 +226,7 @@ QuestDict = {
+     'c3r2r2r10r4.5visitGreer': QuestDNA(tasks = VisitTaskDNA(npcId = NPCIds.GORDON_GREER), questInt = 3132, rewards = (ReputationReward(ExpRewards.SMALL),)),
+     'c3r2r2.10.5visitJune': QuestDNA(tasks = VisitTaskDNA(npcId = NPCIds.JUNE), questInt = 3133, rewards = (ReputationReward(ExpRewards.SMALL),)),
+     'c3r2r2.10.51visitBlakeley': QuestDNA(tasks = VisitTaskDNA(npcId = NPCIds.BLAKELEY), questInt = 3134, rewards = (ReputationReward(ExpRewards.SMALL),)),
+-    'c3r2r2.10.52disruptRitual': QuestDNA(tasks = DefeatTaskDNA(num = 8, level = 12, location = LocationIds.PORT_ROYAL_CAVE_B, enemyType = AvatarTypes.Undead), questInt = 3135, returnGiverIds = (NPCIds.BLAKELEY,), rewards = (ReputationReward(ExpRewards.LARGE),)),
++    'c3r2r2.10.52disruptRitual': QuestDNA(tasks = DefeatTaskDNA(num = 8, level = 0, location = LocationIds.PORT_ROYAL_CAVE_B, enemyType = AvatarTypes.Undead), questInt = 3135, returnGiverIds = (NPCIds.BLAKELEY,), rewards = (ReputationReward(ExpRewards.LARGE),)),  # family server (patch 0305): any Undead in the cave counts (was level 12+: a story-only pirate is about level 9 here)
+     'c3r2r2.10.53visitGreer': QuestDNA(tasks = VisitTaskDNA(npcId = NPCIds.GORDON_GREER), questInt = 3136, rewards = (ReputationReward(ExpRewards.SMALL),)),
+     'c3r2r2.11visitJoshamee': QuestDNA(tasks = VisitTaskDNA(npcId = NPCIds.JOSHAMEE), questInt = 3137, requiresVoyage = True, rewards = (ReputationReward(ExpRewards.SMALL),)),
+     'c3r2r3.1visitScarlet': QuestDNA(tasks = VisitTaskDNA(npcId = NPCIds.SCARLET), questInt = 3138, rewards = (ReputationReward(ExpRewards.SMALL),)),
+-- 
+2.53.0
+

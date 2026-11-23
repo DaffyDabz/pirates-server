@@ -1,0 +1,181 @@
+From f8796b5a7da3b1353a201153ee41b84b2a9989e9 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 15:42:39 -0800
+Subject: [PATCH 281/371] pirates: an enemy lets go of a knocked-out pirate and
+ turns to his crewmate or walks home (0367)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/distributed/TargetManagerAI.py | 27 +++++++++++
+ pirates/pirate/BattleNPCGameFSMAI.py   | 66 ++++++++++++++++++++++----
+ 2 files changed, 84 insertions(+), 9 deletions(-)
+
+diff --git a/pirates/distributed/TargetManagerAI.py b/pirates/distributed/TargetManagerAI.py
+index b40a562..0ce6844 100644
+--- a/pirates/distributed/TargetManagerAI.py
++++ b/pirates/distributed/TargetManagerAI.py
+@@ -127,6 +127,27 @@ class TargetManagerAI(DistributedObjectAI, TargetManagerBase):
+     def getAttackers(self, targetDoId):
+         return self.objectDict.get(targetDoId)
+ 
++    def isKnockedOut(self, avatar):
++        # family server (11-19, 0367): a pirate an enemy should not fight: gone, at 0 hp, knocked out (Death, on
++        # his way to the jail) or standing in a jail cell. A knocked-out pirate stayed on the enemy's list, so the
++        # enemy kept swinging at him (or at the empty spot he left for the jail) and never turned to his crewmate.
++        if avatar is None or avatar.isDeleted():
++            return True
++
++        getHp = getattr(avatar, 'getHp', None)
++        hp = getHp() if getHp else None
++        if isinstance(hp, (list, tuple)) and hp and hp[0] <= 0:
++            return True
++
++        gameFSM = getattr(avatar, 'gameFSM', None)
++        if gameFSM is not None and gameFSM.getCurrentOrNextState() in ('Death', 'ThrownInJail'):
++            return True
++
++        getParentObj = getattr(avatar, 'getParentObj', None)
++        parentObj = getParentObj() if getParentObj else None
++        # only a jail interior has cell doors
++        return parentObj is not None and hasattr(parentObj, 'getCellDoor')
++
+     def getTargetSwitchType(self):
+         targetSwitchTypes = [
+             EnemyGlobals.TARGET_SWITCH_TYPE_RANDOM,
+@@ -144,6 +165,12 @@ class TargetManagerAI(DistributedObjectAI, TargetManagerBase):
+         if not attackers:
+             return None
+ 
++        # family server (11-19, 0367): only pirates still on their feet. He stays on the list, so he is still paid
++        # if his crewmate finishes the enemy.
++        attackers = [doId for doId in attackers if not self.isKnockedOut(self.air.doId2do.get(doId))]
++        if not attackers:
++            return None
++
+         # if there is a single attacker attacking us, don't bother trying
+         # to select an attacker target from switch type...
+         if len(attackers) == 1:
+diff --git a/pirates/pirate/BattleNPCGameFSMAI.py b/pirates/pirate/BattleNPCGameFSMAI.py
+index 42956a5..4f83f69 100644
+--- a/pirates/pirate/BattleNPCGameFSMAI.py
++++ b/pirates/pirate/BattleNPCGameFSMAI.py
+@@ -110,6 +110,33 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+ 
+         return self.air.doId2do.get(attackTargetDoId)
+ 
++    def _removeAttune(self, target):
++        # family server: take off this npc's own attune only (see exitBattle)
++        if target is None or target.isDeleted():
++            return
++
++        for skillEffect in list(target.getSkillEffects()):
++            if skillEffect[0] == WeaponGlobals.C_ATTUNE and skillEffect[3] == self.avatar.doId:
++                target.skillEffects.remove(skillEffect)
++                target.d_setSkillEffects(target.skillEffects)
++                break
++
++    def _switchFromKnockedOutTarget(self):
++        # family server (11-19, 0367): his target is knocked out. Turn to a crewmate still fighting, else None (the
++        # caller breaks combat: the enemy walks home and is whole again, as when a pirate runs away).
++        oldTarget = self.avatar.currentTarget
++        newTarget = self.getNewAttackTarget()
++        if newTarget is None or newTarget is oldTarget or self.air.targetMgr.isKnockedOut(newTarget):
++            return None
++
++        # a voodoo enemy's attune moves with it (it is only on in Battle)
++        if self.state == 'Battle' and WeaponGlobals.isVoodooWeapon(self.avatar.currentWeaponId):
++            self._removeAttune(oldTarget)
++            newTarget.addSkillEffect(WeaponGlobals.C_ATTUNE, 0, self.avatar.doId)
++
++        self.avatar.b_setCurrentTarget(newTarget.doId)
++        return newTarget
++
+     def getDistFromSpawnNode(self):
+         spawnNodeNP = NodePath('spawnNode-%d' % self.avatar.doId)
+         spawnNodeNP.setPos(*self.avatar.getSpawnPos())
+@@ -138,9 +165,19 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+         skillList = baseSkills[1]
+         skillId = random.choice(skillList)
+ 
++        # family server (11-19, 0367): never at a knocked-out pirate. With nobody left, wait: the battle check
++        # breaks combat.
++        target = self.avatar.currentTarget
++        if target and self.air.targetMgr.isKnockedOut(target):
++            target = self._switchFromKnockedOutTarget()
++
++        if not target:
++            task.setDelay(0.5)
++            return task.again
++
+         areaIdList = self.air.targetMgr.getAttackers(self.avatar.doId)
+         timestamp = globalClockDelta.getRealNetworkTime(bits=16)
+-        self.avatar.useTargetedSkill(self.avatar, self.avatar.currentTarget, skillId, 0, areaIdList, timestamp, self.avatar.getPos(), 0)
++        self.avatar.useTargetedSkill(self.avatar, target, skillId, 0, areaIdList, timestamp, self.avatar.getPos(), 0)
+ 
+         # get the total delay on how long it will take the enemy to
+         # use this attack, once the enemy has completed it's attack,
+@@ -196,6 +233,10 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+                 extraArgs=[patrolPoint], appendTask=False)
+         elif state == 'AttackChase':
+             currentTarget = self.avatar.currentTarget
++            # family server (11-19, 0367): never chase a knocked-out pirate
++            if currentTarget and self.air.targetMgr.isKnockedOut(currentTarget):
++                currentTarget = self._switchFromKnockedOutTarget()
++
+             if not currentTarget:
+                 self.demand('BreakCombat')
+                 return
+@@ -227,6 +268,10 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+     def _walkToPoint(self, targetId):
+         self.__attackChaseTask = None
+         currentTarget = self.air.doId2do.get(targetId)
++        # family server (11-19, 0367): knocked out while the enemy ran at him
++        if currentTarget is not None and self.air.targetMgr.isKnockedOut(currentTarget):
++            currentTarget = self._switchFromKnockedOutTarget()
++
+         if not currentTarget or currentTarget.isEmpty():
+             self.demand('BreakCombat')
+             return
+@@ -305,6 +350,10 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+ 
+     def __updateBattleState(self, task):
+         currentTarget = self.avatar.currentTarget
++        # family server (11-19, 0367): his target was knocked out
++        if currentTarget and self.air.targetMgr.isKnockedOut(currentTarget):
++            currentTarget = self._switchFromKnockedOutTarget()
++
+         if not currentTarget:
+             self.demand('BreakCombat')
+             return task.done
+@@ -338,7 +387,12 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+     def enterBattle(self):
+         if not self.avatar.currentTarget:
+             attackTarget = self.getNewAttackTarget()
+-            assert(attackTarget is not None)
++            if attackTarget is None:
++                # family server (11-19, 0367): everyone who hit it is knocked out (a burn still running from a
++                # pirate on his way to the jail). This failed the assert and the enemy stood frozen.
++                self.demand('BreakCombat')
++                return
++
+             self.avatar.b_setCurrentTarget(attackTarget.doId)
+ 
+         self.avatar.startLookAt()
+@@ -375,13 +429,7 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+         # died, see __updateBattleState) it raised AttributeError inside a task, which ends the district.
+         # Take off this npc's own attune only.
+         if WeaponGlobals.isVoodooWeapon(self.avatar.currentWeaponId):
+-            target = self.avatar.currentTarget
+-            if target is not None and not target.isDeleted():
+-                for skillEffect in list(target.getSkillEffects()):
+-                    if skillEffect[0] == WeaponGlobals.C_ATTUNE and skillEffect[3] == self.avatar.doId:
+-                        target.skillEffects.remove(skillEffect)
+-                        target.d_setSkillEffects(target.skillEffects)
+-                        break
++            self._removeAttune(self.avatar.currentTarget)
+ 
+         self.avatar.stopLookAt()
+ 
+-- 
+2.53.0
+

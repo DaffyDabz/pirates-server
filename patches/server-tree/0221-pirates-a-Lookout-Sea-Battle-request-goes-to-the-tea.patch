@@ -1,0 +1,34 @@
+From 7a7003364afb0e33273d878f33ffc27962fc2b9e Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:47:20 -0800
+Subject: [PATCH 221/371] pirates: a Lookout Sea Battle request goes to the
+ team with room, or says both are full (0297)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedMatchMakerAI.py | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/pirates/instance/DistributedMatchMakerAI.py b/pirates/instance/DistributedMatchMakerAI.py
+index 21790d9..629a9d4 100644
+--- a/pirates/instance/DistributedMatchMakerAI.py
++++ b/pirates/instance/DistributedMatchMakerAI.py
+@@ -906,6 +906,15 @@ class DistributedMatchMakerAI(DistributedObjectGlobalAI):
+         if not hqUids.get(team):
+             team = SeaBattleManagerAI.otherTeam(team)
+ 
++        # family server (11-19, 0297): a full side (0291) sends him to the other side, if it has a dock and room
++        isTeamFull = getattr(manager, 'isTeamFull', None)
++        if isTeamFull is not None and isTeamFull(team):
++            other = SeaBattleManagerAI.otherTeam(team)
++            if not hqUids.get(other) or isTeamFull(other):
++                self.endRequest(request, 'Both Sea Battle teams are full right now. Try again soon!')
++                return
++            team = other
++
+         hqUid = hqUids.get(team)
+         teamName = SeaBattleManagerAI.TEAM_NAMES.get(team, 'your side')
+         for avId in list(request.members):
+-- 
+2.53.0
+

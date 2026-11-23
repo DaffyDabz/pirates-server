@@ -1,0 +1,98 @@
+From 0d4a05cf9b0b659cadb18d13d15e5f7114ad5490 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 19:40:19 -0800
+Subject: [PATCH 029/371] sea sight: a pirate on a ship sees the cells around
+ him, and a ship leaving sight no longer crashes the game
+
+The stock grid asks for the avatar's own cell alone and the family listener widened it only while the
+avatar stood on the grid. On a ship the pirate stands on the ship, so at sea the client saw one 2000 ft
+cell; when the AI pulled the ship back over a cell edge it left sight and was deleted under the pirate.
+Every grid visibility interest now gets the cells around it (on land this also stops the one-cell
+interest closing and reopening the neighbour cells at each crossing). PlayerShip.disable lets its repair
+spots stop watching the wheel and health first; destroying a watched StateVar raised and killed the game.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../distributed/PiratesClientRepository.py    | 26 +++++++++++++++++++
+ pirates/ship/PlayerShip.py                    |  7 +++++
+ .../shipparts/DistributedShipRepairSpot.py    |  8 ++++--
+ 3 files changed, 39 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/distributed/PiratesClientRepository.py b/pirates/distributed/PiratesClientRepository.py
+index b18a9b8..fa24288 100644
+--- a/pirates/distributed/PiratesClientRepository.py
++++ b/pirates/distributed/PiratesClientRepository.py
+@@ -120,6 +120,32 @@ class PiratesClientRepository(OTPClientRepository):
+                 grid.gridVisContext = self.addInterest(gridDoId, zones, grid.uniqueName('visibility'))
+             grid.visZone = zoneId
+ 
++    def __gridVisZones(self, parentId, zoneIdList):
++        # Family patch: the stock grid asks for the avatar's own cell alone, and the message above widens it only
++        # while the avatar stands on the grid. On a ship the pirate stands on the ship, so at sea the client saw
++        # one 2000 ft cell: other ships popped in at its edge, and when the AI pulled our own ship back over a
++        # cell edge it left the client's sight and was deleted under the pirate at the wheel. A grid's own
++        # one-cell visibility interest always gets the cells around it.
++        grid = self.doId2do.get(parentId)
++        if not isinstance(zoneIdList, int) or not hasattr(grid, 'getConcentricZones'):
++            return zoneIdList
++        zones = set([zoneIdList])
++        for radius in (1, 2, 3):
++            zones.update(grid.getConcentricZones(zoneIdList, radius))
++        return sorted(zones)
++
++    def addInterest(self, parentId, zoneIdList, description, event=None):
++        grid = self.doId2do.get(parentId)
++        if hasattr(grid, 'getConcentricZones') and description == grid.uniqueName('visibility'):
++            zoneIdList = self.__gridVisZones(parentId, zoneIdList)
++        return OTPClientRepository.addInterest(self, parentId, zoneIdList, description, event)
++
++    def alterInterest(self, handle, parentId, zoneIdList, description=None, event=None):
++        grid = self.doId2do.get(parentId)
++        if hasattr(grid, 'getConcentricZones') and handle == getattr(grid, 'gridVisContext', None):
++            zoneIdList = self.__gridVisZones(parentId, zoneIdList)
++        return OTPClientRepository.alterInterest(self, handle, parentId, zoneIdList, description, event)
++
+     def __init__(self, serverVersion, launcher=None):
+         OTPClientRepository.__init__(self, serverVersion, launcher, playGame=PlayGame.PlayGame)
+         self.accept('avatarZoneChanged', self.__handleAvatarZoneChanged)
+diff --git a/pirates/ship/PlayerShip.py b/pirates/ship/PlayerShip.py
+index 831723b..4846cc5 100644
+--- a/pirates/ship/PlayerShip.py
++++ b/pirates/ship/PlayerShip.py
+@@ -48,6 +48,13 @@ class PlayerShip(DistributedShip):
+         DistributedShip.announceGenerate(self)
+ 
+     def disable(self):
++        # Family patch: the repair spots on this ship watch _wheelInUse and the repair manager's health. A ship that
++        # leaves the client's sight goes before its repair spots, and destroying a watched StateVar raises, which
++        # crashed the game. The spots stop watching first.
++        from pirates.shipparts.DistributedShipRepairSpot import DistributedShipRepairSpot
++        for do in list(self.cr.doId2do.values()):
++            if isinstance(do, DistributedShipRepairSpot) and getattr(do, '_shipId', None) == self.doId:
++                do.stopWatchingShip()
+         self._wheelInUse.destroy()
+         if self.ownerId:
+             if self.inventoryInterest:
+diff --git a/pirates/shipparts/DistributedShipRepairSpot.py b/pirates/shipparts/DistributedShipRepairSpot.py
+index b3950fc..9d4d4b5 100644
+--- a/pirates/shipparts/DistributedShipRepairSpot.py
++++ b/pirates/shipparts/DistributedShipRepairSpot.py
+@@ -34,9 +34,13 @@ class DistributedShipRepairSpot(DistributedInteractive):
+         self.checkInUse()
+         self._statePushes = DestructiveScratchPad(evalUsable = FunctionCall(self._evalUsableState, ship._repairSpotMgr._state.fullHealth, ship.getWheelInUseSV()))
+ 
+-    def disable(self):
+-        self._statePushes.destroy()
++    def stopWatchingShip(self):
++        if getattr(self, '_statePushes', None):
++            self._statePushes.destroy()
+         self._statePushes = None
++
++    def disable(self):
++        self.stopWatchingShip()
+         if self.userId == localAvatar.doId:
+             self.stopRepairing()
+         
+-- 
+2.53.0
+

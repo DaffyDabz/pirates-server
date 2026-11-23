@@ -1,0 +1,29 @@
+From 51a8ebd19b52ff4dbefe0b0f75fd055e476dc6b9 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:57:28 -0800
+Subject: [PATCH 182/371] pirates: PvP challenge refusals have their own reject
+ codes (0240)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ otp/uberdog/RejectCode.py | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/otp/uberdog/RejectCode.py b/otp/uberdog/RejectCode.py
+index 5856ac3..f475c4e 100644
+--- a/otp/uberdog/RejectCode.py
++++ b/otp/uberdog/RejectCode.py
+@@ -74,4 +74,10 @@ class RejectCode:
+     NOT_YOUR_FRIENDS_LIST = 60009
+     ALREADY_FRIENDS_WITH_SELF = 60010
+     MAY_NOT_OPEN_INVITE = 60011
++    # family server (11-18): land Skirmish
++    ALREADY_CHALLENGED = 70000
++    PVP_IN_BATTLE = 70001
++    PVP_OTHER_IN_BATTLE = 70002
++    PVP_NOT_FRIENDS = 70003
++    PVP_NOT_HERE = 70004
+ 
+-- 
+2.53.0
+

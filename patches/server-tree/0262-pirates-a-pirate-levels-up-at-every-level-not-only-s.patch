@@ -1,0 +1,148 @@
+From 4415224f59ca1676cd37347af8b3e1c6bd6653e0 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 07:54:34 -0800
+Subject: [PATCH 262/371] pirates: a pirate levels up at every level, not only
+ some (0351)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/PirateInventoryAI.py | 116 ++++++++++++++++-----------
+ 1 file changed, 69 insertions(+), 47 deletions(-)
+
+diff --git a/pirates/uberdog/PirateInventoryAI.py b/pirates/uberdog/PirateInventoryAI.py
+index c2f1b38..ab579df 100644
+--- a/pirates/uberdog/PirateInventoryAI.py
++++ b/pirates/uberdog/PirateInventoryAI.py
+@@ -23,60 +23,82 @@ class PirateInventoryAI(DistributedInventoryAI):
+         newLevel, newReputation = ReputationGlobals.getLevelFromTotalReputation(repType, quantity)
+ 
+         if newLevel > currentLevel:
+-            # check to see if the type of reputation we're giving the avatar is
+-            # their overall reputation/level, then set their level...
+-            if repType == InventoryType.OverallRep:
+-                avatar.b_setLevel(newLevel)
+-                avatar.d_levelUpMsg(repType, avatar.getLevel(), 0)
+-
+-                # Assign level up quests...
+-                try:
+-                    level_up_quests = RepChart.getLevelUpQuest(repType, newLevel)[0]
+-                    if not self.air.questMgr.hasQuest(avatar, questId=level_up_quests):
+-                        self.air.questMgr.createQuest(avatar, level_up_quests)
+-                except IndexError:
+-                    self.notify.debug('Failed to give level up quest for %s(Level: %s); '
+-                        'They\'re not the proper level!' % (avatar.getName(), newLevel))
+-
+-                avatar.b_setHp(avatar.getMaxHp())
+-                avatar.b_setMojo(avatar.getMaxMojo())
+-            else:
+-                avatar.d_levelUpMsg(repType, newLevel, 0)
+-
+-                # Give level up skills
+-                earnedUnspent, earnedSkill = RepChart.getLevelUpSkills(repType, newLevel)
+-                for unspent in earnedUnspent:
+-                    self.b_setStackQuantity(unspent, 1)
++            # family server (11-19, patch 0351): every level crossed gets its own rewards, the way the level-up pop-up
++            # promises them: one pop-up per level, +1 skill point and that level's skill unlocks, the HP and Voodoo
++            # gain (RepChart.getHpGain / getManaGain; notoriety +25 HP +3 Voodoo) and that level's quest. Before, the
++            # skill point was SET to 1 instead of added (a pirate never held more than 1 point), notoriety gave no
++            # HP or Voodoo at all, and a jump of 2+ levels (a big quest reward, a ship sink) gave only the last
++            # level's quest, skills and gains, so a kid jumping 4 -> 6 never got the level-5 weapon quest.
++            self.giveLevelRewards(avatar, repType, currentLevel, newLevel)
+ 
+-                for earnedSkill in earnedSkill:
+-                    self.b_setStackQuantity(earnedSkill, 1)
++        self.b_setAccumulator(repType, quantity)
+ 
+-                for unspent in RepChart.getLevelUpSkills(repType, 0)[1] + RepChart.getLevelUpSkills(repType, 1)[1]:
+-                    if not self.getStackQuantity(unspent):
+-                        self.b_setStackQuantity(unspent, 1)
++    def giveLevelRewards(self, avatar, repType, fromLevel, toLevel):
++        # family server (patch 0351): the rewards for levels fromLevel+1 .. toLevel, one level at a time
++        isOverall = repType == InventoryType.OverallRep
++        maxHp, maxMojo = avatar.getMaxHp(), avatar.getMaxMojo()
++        newQuests = []
++        if isOverall:
++            avatar.b_setLevel(toLevel)
++        else:
++            for unspent in RepChart.getLevelUpSkills(repType, 0)[1] + RepChart.getLevelUpSkills(repType, 1)[1]:
++                if not self.getStackQuantity(unspent):
++                    self.b_setStackQuantity(unspent, 1)
+ 
+-                # Give weapon level up quests...
+-                try:
+-                    # family server: getWeaponLevelUpQuest reads baseOb.stacks (does he own the level-4 weapon) at
+-                    # weapon level 20; the avatar has no .stacks, so every kill that reached level 20 raised an
+-                    # AttributeError, the rep was never saved and no weapon ever passed level 19. The inventory has it.
+-                    weapon_quests = RepChart.getWeaponLevelUpQuest(repType, newLevel, self)[0]
+-                    if not self.air.questMgr.hasQuest(avatar, questId=weapon_quests):
+-                        self.air.questMgr.createQuest(avatar, weapon_quests)
+-                except IndexError:
+-                    self.notify.debug('Failed to give weapon level up quest for %s(Level: %s); '
+-                        'They\'re not the proper level!' % (avatar.getName(), newLevel))
++        for level in range(fromLevel + 1, toLevel + 1):
++            avatar.d_levelUpMsg(repType, level, 0)
++            maxHp += RepChart.getHpGain(repType)
++            maxMojo += RepChart.getManaGain(repType)
++            if isOverall:
++                quests = RepChart.getLevelUpQuest(repType, level)
++            else:
++                earnedUnspent, earnedSkills = RepChart.getLevelUpSkills(repType, level)
++                for unspent in earnedUnspent:
++                    self.b_setStackQuantity(unspent, self.getStackQuantity(unspent) + 1)
++
++                for skillId in earnedSkills:
++                    if not self.getStackQuantity(skillId):
++                        self.b_setStackQuantity(skillId, 1)
++
++                # getWeaponLevelUpQuest reads baseOb.stacks (does he own the level-4 weapon) at weapon level 20; the
++                # avatar has no .stacks (an AttributeError there kept every weapon at level 19), the inventory has it
++                quests = RepChart.getWeaponLevelUpQuest(repType, level, self)
++
++            newQuests.extend(quests)
++
++        avatar.b_setMaxHp(maxHp)
++        avatar.b_setMaxMojo(maxMojo)
++        avatar.b_setHp(maxHp)
++        avatar.b_setMojo(maxMojo)
++        self.giveLevelUpQuests(avatar, newQuests)
++
++    def giveLevelUpQuests(self, avatar, questIds, tries=10):
++        # family server (patch 0351): one quest call for all of them. The quest manager runs one quest job per pirate
++        # and drops a second one ("an FSM already running"), so two calls in a row, or a level-up from a quest
++        # reward while the next quest of the ladder is still being made, lost the level-up quest for good. Wait
++        # for the running job instead (up to 10 seconds). A quest he holds or has finished is not given again.
++        if self.air.doId2do.get(avatar.doId) is not avatar:
++            return
+ 
+-                maxMojo = avatar.getMaxMojo()
+-                maxMojo += RepChart.getManaGain(repType)
++        from pirates.quest import QuestDB
++        history = avatar.getQuestHistory() or []
++        questIds = [q for q in questIds if q in QuestDB.QuestDict and
++                    QuestDB.QuestDict[q].getQuestInt() not in history and
++                    not self.air.questMgr.hasQuest(avatar, questId=q)]
++        if not questIds:
++            return
+ 
+-                maxHp = avatar.getMaxHp()
+-                maxHp += RepChart.getHpGain(repType)
++        if avatar.doId in self.air.questMgr.avatar2fsm:
++            if tries > 0:
++                taskMgr.doMethodLater(1.0, lambda task: self.giveLevelUpQuests(avatar, questIds, tries - 1),
++                                      'levelUpQuests-%d' % avatar.doId)
++            else:
++                self.notify.warning('LEVELUP-QUEST-LOST %s for avatar %d (quest job busy)' % (questIds, avatar.doId))
+ 
+-                avatar.b_setMaxHp(maxHp)
+-                avatar.b_setMaxMojo(maxMojo)
++            return
+ 
+-        self.b_setAccumulator(repType, quantity)
++        self.notify.info('LEVELUP-QUEST %s for avatar %d' % (questIds, avatar.doId))
++        self.air.questMgr.createQuests(avatar, questIds)
+ 
+     def getReputation(self, repType):
+         return self.getAccumulator(repType)
+-- 
+2.53.0
+

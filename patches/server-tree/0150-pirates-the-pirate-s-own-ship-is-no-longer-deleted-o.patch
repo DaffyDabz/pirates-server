@@ -1,0 +1,93 @@
+From 2770bb6e00d2837859d7e57f807e474ab2d2bfac Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 20:27:00 -0800
+Subject: [PATCH 150/371] pirates: the pirate's own ship is no longer deleted
+ on the way to Tortuga (cell 2632), server-tree patch 0165
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../distributed/PiratesClientRepository.py    | 57 ++++++++++++++++++-
+ 1 file changed, 55 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/distributed/PiratesClientRepository.py b/pirates/distributed/PiratesClientRepository.py
+index d675732..8c1e7f6 100644
+--- a/pirates/distributed/PiratesClientRepository.py
++++ b/pirates/distributed/PiratesClientRepository.py
+@@ -137,19 +137,72 @@ class PiratesClientRepository(OTPClientRepository):
+             zones.update(grid.getConcentricZones(zoneIdList, radius))
+         return sorted(zones)
+ 
++    def __keepServerCells(self, parentId, zoneIdList):
++        # Family patch: the server's client agent keeps its own note of the cell each object it shows us is in,
++        # and it drops the echo of every move this client makes itself. At the wheel the client moves the pirate's
++        # own ship from cell to cell, so the agent still has the ship in the cell where the server last put it (the
++        # Port Royal berth, 2389). Once the cells around the ship slid off that berth cell (sailing from 2572 into
++        # 2632 on the way to Tortuga), the agent closed it and deleted the ship under the pirate, who was left in
++        # the sea with no area. A grid's visibility interest therefore also keeps the cell where the server last
++        # put each object this client moved itself.
++        if not isinstance(zoneIdList, list) or not self.__selfMoved:
++            return zoneIdList
++        grid = self.doId2do.get(parentId)
++        localAvId = getattr(getattr(base, 'localAvatar', None), 'doId', None)
++        zones = set(zoneIdList)
++        for doId in self.__selfMoved:
++            where = self.__serverLocations.get(doId)
++            if where is None or where[0] != parentId or doId == localAvId or doId not in self.doId2do:
++                continue
++            # Only a real cell of the grid: a ship put away or sunk sits in the grid's zone 0, and asking for that
++            # would show the client every put-away ship.
++            if where[1] >= getattr(grid, 'startingZone', 0) and grid.isValidZone(where[1]):
++                zones.add(where[1])
++        return sorted(zones)
++
++    def __noteServerLocation(self, di):
++        # Family patch: remember where the server put an object (an object entering, or a location message), as
++        # that is the cell the client agent has it in. See __keepServerCells.
++        try:
++            di2 = DatagramIterator(di.getDatagram(), di.getCurrentIndex())
++            doId = di2.getUint32()
++            parentId = di2.getUint32()
++            zoneId = di2.getUint32()
++        except Exception:
++            return
++        self.__serverLocations[doId] = (parentId, zoneId)
++
++    def handleGenerateWithRequired(self, di, other=False):
++        self.__noteServerLocation(di)
++        return OTPClientRepository.handleGenerateWithRequired(self, di, other)
++
++    def handleGenerateWithRequiredOwner(self, di, other=False):
++        self.__noteServerLocation(di)
++        return OTPClientRepository.handleGenerateWithRequiredOwner(self, di, other)
++
++    def handleObjectLocation(self, di):
++        self.__noteServerLocation(di)
++        return OTPClientRepository.handleObjectLocation(self, di)
++
++    def sendSetLocation(self, doId, parentId, zoneId):
++        self.__selfMoved.add(doId)
++        return OTPClientRepository.sendSetLocation(self, doId, parentId, zoneId)
++
+     def addInterest(self, parentId, zoneIdList, description, event=None):
+         grid = self.doId2do.get(parentId)
+         if hasattr(grid, 'getConcentricZones') and description == grid.uniqueName('visibility'):
+-            zoneIdList = self.__gridVisZones(parentId, zoneIdList)
++            zoneIdList = self.__keepServerCells(parentId, self.__gridVisZones(parentId, zoneIdList))
+         return OTPClientRepository.addInterest(self, parentId, zoneIdList, description, event)
+ 
+     def alterInterest(self, handle, parentId, zoneIdList, description=None, event=None):
+         grid = self.doId2do.get(parentId)
+         if hasattr(grid, 'getConcentricZones') and handle == getattr(grid, 'gridVisContext', None):
+-            zoneIdList = self.__gridVisZones(parentId, zoneIdList)
++            zoneIdList = self.__keepServerCells(parentId, self.__gridVisZones(parentId, zoneIdList))
+         return OTPClientRepository.alterInterest(self, handle, parentId, zoneIdList, description, event)
+ 
+     def __init__(self, serverVersion, launcher=None):
++        self.__serverLocations = {}
++        self.__selfMoved = set()
+         OTPClientRepository.__init__(self, serverVersion, launcher, playGame=PlayGame.PlayGame)
+         self.accept('avatarZoneChanged', self.__handleAvatarZoneChanged)
+         self.createAvatarClass = DistributedPlayerPirate.DistributedPlayerPirate
+-- 
+2.53.0
+

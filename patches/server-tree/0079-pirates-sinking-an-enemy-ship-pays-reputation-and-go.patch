@@ -1,0 +1,218 @@
+From 25d1eba1fda29cd6171d346fa616c90c1b1cccd3 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 15:28:51 -0800
+Subject: [PATCH 079/371] pirates: sinking an enemy ship pays reputation and
+ gold to the pirates who hurt it, and a ship's hp stays within its max, as
+ server-tree patch 0093 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShipAI.py      |   7 +-
+ pirates/ship/NPCShipAI.py              | 127 +++++++++++++++++++++++++
+ pirates/shipparts/DistributedHullAI.py |   6 ++
+ 3 files changed, 137 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index b16218d..1bd5533 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -789,8 +789,9 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+ 
+     def setHp(self, hp):
+         oldHp = self.hp
+-        self.hp = min(hp, self.maxHp)
+-        self.hp = max(hp, 0)
++        # the second clamp used the raw hp, so a hit or repair could leave a ship
++        # above its max hp; int, since a hull hit sends a float to an int16 field
++        self.hp = int(max(min(hp, self.maxHp), 0))
+         DidChange = oldHp != self.hp
+         if self.hp == 0 and DidChange:
+             self.b_setGameState('Sinking', 0)
+@@ -800,7 +801,7 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+ 
+     def b_setHp(self, hp):
+         self.setHp(hp)
+-        self.d_setHp(hp)
++        self.d_setHp(self.hp)
+ 
+     def getHp(self):
+         return self.hp
+diff --git a/pirates/ship/NPCShipAI.py b/pirates/ship/NPCShipAI.py
+index c2b9ce3..0f3fd75 100644
+--- a/pirates/ship/NPCShipAI.py
++++ b/pirates/ship/NPCShipAI.py
+@@ -4,6 +4,19 @@ from pirates.ship.DistributedShipAI import DistributedShipAI
+ from pirates.ship import ShipGlobals
+ from pirates.ship import ShipBalance
+ from pirates.battle import EnemyGlobals
++from pirates.battle import WeaponGlobals
++from pirates.pirate import AvatarTypes
++from pirates.piratesbase import Freebooter
++from pirates.uberdog.UberDogGlobals import InventoryType
++
++# the enemy faction a ship's team counts as, for its gold drop (the same map
++# QuestManagerAI.shipDefeated uses for quest credit)
++SHIP_TEAM_AVATAR_TYPES = {
++    ShipGlobals.UNDEAD_TEAM: AvatarTypes.Undead,
++    ShipGlobals.FRENCH_UNDEAD_TEAM: AvatarTypes.French,
++    ShipGlobals.SPANISH_UNDEAD_TEAM: AvatarTypes.Spanish,
++    ShipGlobals.NAVY_TEAM: AvatarTypes.Navy,
++    ShipGlobals.TRADING_CO_TEAM: AvatarTypes.TradingCo}
+ 
+ 
+ class NPCShipAI(DistributedShipAI):
+@@ -22,6 +35,11 @@ class NPCShipAI(DistributedShipAI):
+     def __init__(self, air):
+         DistributedShipAI.__init__(self, air)
+         self._isNpc = True  # Flag for WeaponGlobals damage calculations
++        # pirates who hurt this ship: {avatarId: set of reputation categories}.
++        # Sinking it paid nothing but quest credit (no reputation, no gold), so
++        # they are paid from this when it sinks (2026-11-17)
++        self._sinkCredit = {}
++        self._sinkRewarded = False
+ 
+     @property
+     def isNpc(self):
+@@ -91,6 +109,9 @@ class NPCShipAI(DistributedShipAI):
+         
+         # Apply the damage
+         damage = int(damage)
++        # a pirate ship that rammed or shelled us: its crew is paid when we sink
++        # (recorded before the hp drops, since hp 0 sinks and pays at once)
++        self._creditShipCrew(attackerDoId)
+         newHp = max(0, self.hp - damage)
+         self.b_setHp(newHp)
+         
+@@ -104,6 +125,112 @@ class NPCShipAI(DistributedShipAI):
+         
+         return newHp
+ 
++    def creditAttacker(self, avatar, skillId=0):
++        """
++        A pirate's cannonball hit this ship (DistributedHullAI.projectileWeaponHit).
++        He earns the skill's reputation (cannon, or sailing for a broadside) when
++        the ship sinks; the rest of his crew earns sailing reputation.
++        """
++        if avatar is None or not hasattr(avatar, 'getInventory'):
++            return
++
++        repCategory = 0
++        try:
++            repCategory = WeaponGlobals.getSkillReputationCategoryId(skillId)
++        except Exception:
++            pass
++
++        if repCategory not in (InventoryType.CannonRep, InventoryType.SailingRep):
++            repCategory = InventoryType.CannonRep
++
++        self._sinkCredit.setdefault(avatar.doId, set()).add(repCategory)
++        crewShipId = getattr(avatar, 'getCrewShipId', lambda: 0)()
++        if crewShipId:
++            self._creditShipCrew(crewShipId)
++
++    def _creditShipCrew(self, shipDoId):
++        ship = self.air.doId2do.get(shipDoId) if shipDoId else None
++        if ship is None or ship is self or isinstance(ship, NPCShipAI):
++            return
++
++        for avId in list(getattr(ship, 'crew', None) or []):
++            avatar = self.air.doId2do.get(avId)
++            if avatar is not None and hasattr(avatar, 'getInventory'):
++                self._sinkCredit.setdefault(avId, set())
++
++    def setGameState(self, stateName, avId, timeStamp=0):
++        DistributedShipAI.setGameState(self, stateName, avId, timeStamp)
++        if stateName == 'Sinking' and not self._sinkRewarded:
++            self._sinkRewarded = True
++            self.rewardSinkers()
++
++    def rewardSinkers(self):
++        """
++        Pay every pirate who hurt this ship, once, as it starts to sink: the ship's
++        experience (ShipGlobals.getShipExp, by level) in each reputation he used
++        (sailing if he only sailed with the shooters) plus overall reputation, and
++        the faction's gold drop for that level (EnemyGlobals.getGoldDrop, the land
++        enemies' table). The amount floats over the sinking ship.
++        """
++        credit, self._sinkCredit = self._sinkCredit, {}
++        if not credit:
++            return
++
++        try:
++            level = int(self.getLevel())
++        except Exception:
++            level = 1
++
++        exp = 0
++        try:
++            exp = int(ShipGlobals.getShipExp(level) or 0)
++        except Exception:
++            pass
++
++        if exp <= 0:
++            exp = max(1, level * 5)
++
++        avatarType = None
++        try:
++            avatarType = SHIP_TEAM_AVATAR_TYPES.get(ShipGlobals.getShipTeam(self.getShipClass()))
++        except Exception:
++            pass
++
++        goldLevel = max(1, min(level, 60))
++        for avId, categories in list(credit.items()):
++            avatar = self.air.doId2do.get(avId)
++            if avatar is None:
++                continue  # left the game since his hit
++
++            try:
++                self._rewardSinker(avatar, sorted(categories) or [InventoryType.SailingRep], exp, avatarType, goldLevel)
++            except Exception as e:
++                self.notify.warning('Could not pay pirate %d for sinking ship %d: %s' % (avId, self.doId, e))
++
++    def _rewardSinker(self, avatar, categories, exp, avatarType, goldLevel):
++        inventory = avatar.getInventory()
++        if inventory is None:
++            return
++
++        # the level cap the land enemies' reward (BattleManagerAI.rewardAttacker) keeps
++        if hasattr(avatar, 'getGameAccess'):
++            if not avatar.getGameAccess() and avatar.getLevel() >= Freebooter.FreeOverallLevelCap:
++                return
++
++        for category in categories:
++            inventory.setReputation(category, inventory.getReputation(category) + exp)
++
++        inventory.setOverallRep(inventory.getOverallRep() + exp)
++        gold = EnemyGlobals.getGoldDrop(avatarType, goldLevel)
++        if gold > 0:
++            inventory.addGoldInPocket(gold)
++
++        if hasattr(avatar, 'd_sendReputationMessage'):
++            avatar.d_sendReputationMessage(self.doId, categories, [exp] * len(categories), 0, 0, 0, 0)
++
++        self.notify.info('pirate %d sank ship %d (class %s, level %d): reputation %s +%d, gold +%d' % (
++            avatar.doId, self.doId, self.getShipClass(), goldLevel, categories, exp, gold))
++
+     def handleCannonHit(self, attackerDoId, damage, hitPos):
+         """
+         Called when this ship is hit by a cannon.
+diff --git a/pirates/shipparts/DistributedHullAI.py b/pirates/shipparts/DistributedHullAI.py
+index 478a835..3cbbdac 100644
+--- a/pirates/shipparts/DistributedHullAI.py
++++ b/pirates/shipparts/DistributedHullAI.py
+@@ -103,6 +103,12 @@ class DistributedHullAI(DistributedShippartAI, DistributedDestructibleArrayAI, D
+         armorAsorb = (left + rear + right) / 3
+         armorAsorb = min(armorAsorb, ShipBalance.ArmorAbsorb.getValue())
+         wasAfloat = self.ship.getHp() > 0
++        # an enemy ship pays the pirates who hurt it when it sinks (NPCShipAI);
++        # recorded before the hp drops, since hp 0 sinks and pays at once
++        creditAttacker = getattr(self.ship, 'creditAttacker', None)
++        if attacker and wasAfloat and creditAttacker is not None:
++            creditAttacker(attacker, skillId)
++
+         self.ship.b_setHp(self.ship.getHp() + (hullDamage - (armorAsorb * hullDamage)))
+         if attacker and wasAfloat and self.ship.getHp() <= 0:
+             self.air.questMgr.shipDefeated(attacker, self.ship)
+-- 
+2.53.0
+

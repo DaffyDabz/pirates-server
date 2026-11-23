@@ -1,0 +1,30 @@
+From e24be70ecf3826c1d684b1a0a9c4e7fa2270e1bc Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:47:20 -0800
+Subject: [PATCH 226/371] pirates: the words for trading up a ship (0265, patch
+ 20)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/piratesbase/PLocalizerEnglish.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/pirates/piratesbase/PLocalizerEnglish.py b/pirates/piratesbase/PLocalizerEnglish.py
+index a60cc57..95130dd 100644
+--- a/pirates/piratesbase/PLocalizerEnglish.py
++++ b/pirates/piratesbase/PLocalizerEnglish.py
+@@ -2010,6 +2010,11 @@ RepairConfirmDialog = 'Pay %(gold)s gold for full ship repairs?'
+ OverhaulConfirmDialog = 'Pay %(gold)s gold to reconstruct your wrecked ship?'
+ SellShipConfirmDialog = 'Sell this ship for %(gold)s gold?'
+ SellShipAreYouSureDialog = 'Are you sure you want to sell your ship? It will be permanently lost.'
++UpgradeShip = 'Trade Up Ship'
++UpgradeShipConfirmDialog = 'Trade your %(old)s for a %(new)s for %(gold)s gold? Your ship keeps its name and its cargo.'
++UpgradeShipNoNext = 'This ship is already the biggest of its kind.'
++UpgradeShipLevelWarning = 'You need Sailing level %(level)s to sail a %(new)s.'
++UpgradeShipGoldWarning = 'You need %(gold)s gold to trade up to a %(new)s.'
+ BribeConfirmYourGold = 'Your Gold: %s'
+ BribeNotEnoughGold = 'You need %(gold)s gold for this. Defeat enemies to find more gold, then come back!'
+ InteractKey = 'Shift'
+-- 
+2.53.0
+

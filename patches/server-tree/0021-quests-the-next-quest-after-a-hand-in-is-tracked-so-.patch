@@ -1,0 +1,65 @@
+From d189392d4af8fd629b1e531199680c306d9ad28f Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 15:44:16 -0800
+Subject: [PATCH 021/371] quests: the next quest after a hand-in is tracked, so
+ its arrow and beam show
+
+The arrow and the beam follow only the tracked (active) quest. Handing a quest in drops it, which clears the
+tracked quest, and the quests the ladder swaps in next (CreateQuestsFSM) were never tracked, unlike a single
+quest (CreateQuestFSM) or the ladder's quest-available path. So from the third tutorial quest (visit Tia Dalma)
+on, the pirate had no arrow and no beam at all unless the quest was tracked by hand in the journal.
+trackQuestIfNone tracks the first quest that shows its goal (else the first) when none of the pirate's quests is
+tracked: after the swap, and at login once the saved quests are loaded (fixes saves already left with none).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 26 +++++++++++++++++++++++++-
+ 1 file changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 33095da..adbd974 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -128,6 +128,7 @@ class CreateQuestsFSM(QuestOperationFSM):
+             # check to see if we're done
+             self.pendingQuestIds.remove(quest.getQuestId())
+             if not self.pendingQuestIds:
++                self.air.questMgr.trackQuestIfNone(self.avatar)
+                 self.cleanup()
+ 
+         def _questCreatedCallback(questDoId):
+@@ -312,7 +313,30 @@ class QuestManagerAI(DirectObject):
+             self.air.dclassesByName['DistributedQuestAI'])
+ 
+     def activateQuests(self, avatar, callback=None):
+-        self.runQuestFSM(ActivateQuestsFSM, avatar, callback=callback)
++        def _questsActivatedCallback(*args, **kwargs):
++            self.trackQuestIfNone(avatar)
++            if callback:
++                callback(*args, **kwargs)
++
++        self.runQuestFSM(ActivateQuestsFSM, avatar, callback=_questsActivatedCallback)
++
++    def trackQuestIfNone(self, avatar):
++        # the arrow and the beam follow only the tracked (active) quest. Handing a quest in drops it, which
++        # clears the tracked quest, and the next quests the ladder swaps in were never tracked: from the third
++        # tutorial quest on there was no arrow or beam at all. Track the first quest that shows its goal (else
++        # the first quest), as the ladder does when it hands out a single quest. Also fixes saves left with none.
++        inventory = avatar.getInventory()
++        if not inventory:
++            return
++
++        avatarQuests = self.quests.get(avatar.doId, {})
++        quests = [avatarQuests.get(questDoId) for questDoId in inventory.getDoIdListCategory(InventoryCategory.QUESTS)]
++        quests = [quest for quest in quests if quest is not None]
++        if not quests or avatar.getActiveQuest() in [quest.getQuestId() for quest in quests]:
++            return
++
++        shown = [quest for quest in quests if quest.getQuestDNA() and quest.getQuestDNA().getDisplayGoal()]
++        avatar.b_setActiveQuest((shown or quests)[0].getQuestId())
+ 
+     def deactivateQuest(self, avatar, questDoId):
+         if not self.hasQuest(avatar, questDoId):
+-- 
+2.53.0
+

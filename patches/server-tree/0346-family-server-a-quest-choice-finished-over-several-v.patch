@@ -1,0 +1,106 @@
+From a1726c206a19cb603a46de6e8280de150c1b3de1 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 11:34:42 -0800
+Subject: [PATCH 346/371] family server: a quest choice finished over several
+ visits closes, so a pirate who logged out halfway gets the next quests
+
+A quest choice (Tia Dalma's four doll materials, wdr2Materials: Straw / Pitch / Silk / Wire) keeps each finished
+quest until the others are done. At log-in QuestStub.linkQuest left a finished quest complete=False and not
+processed, so QuestChoice.isComplete counted only the hand-ins of the current visit and the choice never closed
+for a pirate who logged out halfway (claude2 100000004: 23101-23104 in the ladder history, the choice 19901 not,
+no blood quests).
+
+QuestStub.linkQuest now marks a finished quest of a choice as done again when the ladder history already has it
+(it was handed in on an earlier visit), and QuestManagerAI.finishHeldChoice, run from activateQuests' callback,
+closes a choice that is complete at log-in through the normal handleQuestComplete (history updated, the next
+quests swapped in, tracked when they arrive). One per log-in. The client copy of QuestLadder.py is not changed;
+only the AI links the quests. Offline sim with the real QuestLadder / QuestStatus.updateHistory on the WeaponDoll
+ladder (places' sim_choice_relogin.py): HEAD FAIL (4: two-visit choice never closes, 19901 never in history,
+stuck save gets no swap, Straw paid twice), patched PASS (all 5 cases, one-visit and finished-but-never-handed-in
+unchanged). AI only.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestLadder.py    | 15 +++++++++++++++
+ pirates/quest/QuestManagerAI.py | 34 ++++++++++++++++++++++++++++++++-
+ 2 files changed, 48 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/quest/QuestLadder.py b/pirates/quest/QuestLadder.py
+index e7bfee6..5ab66e3 100644
+--- a/pirates/quest/QuestLadder.py
++++ b/pirates/quest/QuestLadder.py
+@@ -407,6 +407,21 @@ class QuestStub(QuestContainer):
+                 self.acceptOnce(quest.getDroppedEventString(), self.handleQuestDropped)
+ 
+             self.complete = False
++            # family server (0430): a quest choice keeps each finished quest until the others are done too (Tia
++            # Dalma's four doll materials). After a log-out the finished ones came back as never handed in, so the
++            # choice counted only those finished in this visit and never closed: a pirate who logged out halfway
++            # could never get past the materials. A finished quest the ladder history already has was handed back
++            # in an earlier visit: it is done again, as it was.
++            parent = self.parent
++            if parent is not None and parent.isChoice() and quest.isComplete():
++                history = self.av.getQuestLadderHistory() if self.av else []
++                if self.getQuestInt() in history:
++                    self.complete = True
++                    self.processed = True
++                    self.completedQuests = [quest]
++                    if quest not in parent.completedQuests:
++                        parent.updateCompletedQuests(quest)
++
+             return True
+         else:
+             return False
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 0f848ca..5a69bac 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -322,12 +322,44 @@ class QuestManagerAI(DirectObject):
+ 
+     def activateQuests(self, avatar, callback=None):
+         def _questsActivatedCallback(*args, **kwargs):
+-            self.trackQuestIfNone(avatar)
++            # the swap a closed choice starts tracks its new quests when they arrive
++            if not self.finishHeldChoice(avatar):
++                self.trackQuestIfNone(avatar)
+             if callback:
+                 callback(*args, **kwargs)
+ 
+         self.runQuestFSM(ActivateQuestsFSM, avatar, callback=_questsActivatedCallback)
+ 
++    def finishHeldChoice(self, avatar):
++        # family server (0430): a quest choice whose quests were all handed back over several visits never closed
++        # (each visit counted only its own), so the pirate kept the finished quests and never got the next ones
++        # (claude2 held all four of Tia Dalma's doll materials). The ladder copies now remember them at log-in
++        # (QuestStub.linkQuest); close such a choice once its quests are here, as its last hand-in would have.
++        # One per log-in: the next quests come from a quest FSM, and only one runs at a time.
++        questStatus = getattr(avatar, 'questStatus', None)
++        if questStatus is None:
++            return False
++
++        history = avatar.getQuestLadderHistory()
++        for ladder in list(questStatus.ladders.values()):
++            choices = []
++            ladder.getChoiceContainers(choices)
++            for choice in choices:
++                held = choice.completedQuests
++                if choice.getQuestInt() in history or not held or choice.getParent() is None:
++                    continue
++
++                if not choice.isComplete() or not all(self.getQuest(avatar, questDoId=quest.doId) is quest
++                                                      for quest in held):
++                    continue
++
++                self.notify.info('avatar %d: closing quest choice %s held over a log-out (%s)'
++                                 % (avatar.doId, choice.getName(), [quest.getQuestId() for quest in held]))
++                choice.getParent().handleQuestComplete(held[-1], choice, held)
++                return True
++
++        return False
++
+     def trackQuestIfNone(self, avatar):
+         # the arrow and the beam follow only the tracked (active) quest. Handing a quest in drops it, which
+         # clears the tracked quest, and the next quests the ladder swaps in were never tracked: from the third
+-- 
+2.53.0
+

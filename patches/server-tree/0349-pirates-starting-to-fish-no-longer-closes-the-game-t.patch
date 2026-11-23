@@ -1,0 +1,35 @@
+From 309793789bc49e5296aa4bdec77194b87d961162 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 14:26:29 -0800
+Subject: [PATCH 349/371] pirates: starting to fish no longer closes the game;
+ the spot sends the pirate's new position only when the position broadcast is
+ running, which the walking controls had stopped (client patch 46, no DC
+ change, no restart)
+
+Fishing lane's first in-game run (FISH, claude1, 14:14): the pirate pressed Shift at the pier spot, faded out, then
+TypeError 'NoneType' object is not callable in DistributedFishingSpot.checkAndLoadFishingGame -> d_broadcastPositionNow.
+requestInteraction turns the motion FSM off, which sets d_broadcastPosHpr to None. Lane client test: live tree 1 FAILURE,
+with this patch 0 FAILURES. The server never runs this file; this keeps /opt equal to the client copy.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/DistributedFishingSpot.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/minigame/DistributedFishingSpot.py b/pirates/minigame/DistributedFishingSpot.py
+index 6393d14..336b055 100644
+--- a/pirates/minigame/DistributedFishingSpot.py
++++ b/pirates/minigame/DistributedFishingSpot.py
+@@ -90,7 +90,8 @@ class DistributedFishingSpot(DistributedInteractive.DistributedInteractive):
+         localAvatar.setPos(self, Point3(*FishingGlobals.fishingSpotPosOffset))
+         base.cam.reparentTo(self.fishingGame.fishingSpot)
+         base.cam.setHpr(0.0, 0.0, 0.0)
+-        if hasattr(localAvatar, 'd_broadcastPositionNow'):
++        # requestInteraction turned the motion FSM off, which stopped the position broadcast (d_broadcastPosHpr is None)
++        if getattr(localAvatar, 'd_broadcastPosHpr', None):
+             localAvatar.d_broadcastPositionNow()
+ 
+     def requestPlayerIdleState(self, task=None):
+-- 
+2.53.0
+

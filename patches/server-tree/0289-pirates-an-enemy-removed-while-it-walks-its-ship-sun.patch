@@ -1,0 +1,56 @@
+From 80b66ae97caa77ca97a39a9cad993ee196ad35ec Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 18:33:06 -0800
+Subject: [PATCH 289/371] pirates: an enemy removed while it walks (its ship
+ sunk) no longer closes the server (0373)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/BattleNPCGameFSMAI.py | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/pirates/pirate/BattleNPCGameFSMAI.py b/pirates/pirate/BattleNPCGameFSMAI.py
+index 4f83f69..b977906 100644
+--- a/pirates/pirate/BattleNPCGameFSMAI.py
++++ b/pirates/pirate/BattleNPCGameFSMAI.py
+@@ -217,6 +217,9 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+         self.__returnToSpawnTask = taskMgr.add(self._returnToSpawn, self.getReturnToSpawnTaskName())
+ 
+     def findNextWalkToPoint(self):
++        if self._avatarGone():
++            return
++
+         state = self.getCurrentOrNextState()
+         if state == 'Patrol' or state == 'Walk':
+             patrolPoint = self.getPatrolPoint()
+@@ -266,6 +269,10 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+             self.request(self.avatar.getStartState())
+ 
+     def _walkToPoint(self, targetId):
++        if self._avatarGone():
++            self.__attackChaseTask = None
++            return
++
+         self.__attackChaseTask = None
+         currentTarget = self.air.doId2do.get(targetId)
+         # family server (11-19, 0367): knocked out while the enemy ran at him
+@@ -278,7 +285,16 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+ 
+         self.walkToPoint(currentTarget.getPos(), currentTarget.getParent())
+ 
++    def _avatarGone(self):
++        # family server (11-19, 0373): this enemy was removed while a step was queued
++        av = self.avatar
++        return av is None or av.isEmpty() or self.air.doId2do.get(av.doId) is not av
++
+     def walkToPoint(self, walkPoint, parent=None):
++        if self._avatarGone():
++            self.__pausedTask = None
++            return
++
+         # family server (2026-11-17, boarding step 4): an enemy on a ship's deck
+         # walks in the ship's own frame (its walkFrame, set by FlagshipDeckFightAI):
+         # its position and its target's are ship-local, so measuring them from the
+-- 
+2.53.0
+

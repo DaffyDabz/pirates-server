@@ -1,0 +1,45 @@
+From 5341eacc95a1320882e2e4d7f597b657274f6a39 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:27:11 -0800
+Subject: [PATCH 169/371] pirates: blackjack tells a broke pirate he has no
+ gold (0211)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/DistributedBlackjackTableAI.py | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/minigame/DistributedBlackjackTableAI.py b/pirates/minigame/DistributedBlackjackTableAI.py
+index 44cc5ad..091b801 100644
+--- a/pirates/minigame/DistributedBlackjackTableAI.py
++++ b/pirates/minigame/DistributedBlackjackTableAI.py
+@@ -137,6 +137,15 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+                 return True
+         return False
+ 
++    def _standUpHuman(self, avatar, seatIndex):
++        # Stand a pirate up the way requestExit does, so his client is told
++        # (requestSeatResponse 2) and leaves the table instead of sitting on as a ghost
++        if self.handleRequestExit(avatar) != self.ACCEPT:
++            return
++        self.sendUpdateToAvatarId(avatar.doId, 'setUserId', [0])
++        self.handlePostRequestExit(avatar)
++        messenger.send(avatar.uniqueName('interact-canceled'))
++
+     # ------------------------------------------------------------------
+     # Game lifecycle
+     # ------------------------------------------------------------------
+@@ -243,8 +252,8 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+ 
+         if inv and inv.getGoldInPocket() < bid:
+             # Can't afford - stand them up (avatarStand also clears the waiting set
+-            # and moves the round on)
+-            self.avatarStand(seat, seatIndex)
++            # and moves the round on) and tell his client
++            self._standUpHuman(seat, seatIndex)
+             return
+ 
+         if inv:
+-- 
+2.53.0
+

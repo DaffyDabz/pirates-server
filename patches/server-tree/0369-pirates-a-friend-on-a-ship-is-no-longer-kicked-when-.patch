@@ -1,0 +1,182 @@
+From 471c89ab2828360875da392213852a7703086cdc Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 09:59:57 -0800
+Subject: [PATCH 369/371] pirates: a friend on a ship is no longer kicked when
+ the ship's captain closes his game (Astron eject 153 "session object
+ unexpectedly deleted", boy 100000656 at 09:42:43): the owner's post-remove
+ deleted his ship at once, and a pirate aboard is the ship's child, so Astron
+ deleted the friend's pirate with it. The post-remove now sends a new net
+ message shipOwnerOffline (registered last, so every other message keeps its
+ number): the AI sends each friend aboard ashore the way a sunk ship lands its
+ crew (every 10 s for 60 s, one message), and the UberDOG ship loader deletes
+ the ship 120 s later, cancelled when the owner logs back in first; as
+ server-tree patch 0453 (UberDOG + AI code, 3 files, no client patch, no DC
+ change, UberDOG + AI restart together)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../distributed/PiratesInternalRepository.py  |  3 ++
+ pirates/uberdog/DistributedShipLoaderAI.py    | 37 ++++++++++++++++
+ pirates/uberdog/DistributedShipLoaderUD.py    | 43 +++++++++++++++----
+ 3 files changed, 75 insertions(+), 8 deletions(-)
+
+diff --git a/pirates/distributed/PiratesInternalRepository.py b/pirates/distributed/PiratesInternalRepository.py
+index 3f7a1c5..785991f 100644
+--- a/pirates/distributed/PiratesInternalRepository.py
++++ b/pirates/distributed/PiratesInternalRepository.py
+@@ -76,6 +76,9 @@ class PiratesInternalRepository(OTPInternalRepository):
+         self._registerInternalNetMessage('avatarFriendsOffline')
+         # family server (2026-11-19): the guild manager's offline post-remove
+         self._registerInternalNetMessage('guildAvatarOffline')
++        # family server (2026-11-22): a ship owner's post-remove (DistributedShipLoaderUD._shipUp): the AI sends any
++        # friend aboard ashore, then the UberDOG deletes the ship
++        self._registerInternalNetMessage('shipOwnerOffline')
+ 
+     def logPotentialHacker(self, message, kickChannel=False, **kwargs):
+         self.notify.warning(message)
+diff --git a/pirates/uberdog/DistributedShipLoaderAI.py b/pirates/uberdog/DistributedShipLoaderAI.py
+index 360ccfd..ed2d8a2 100644
+--- a/pirates/uberdog/DistributedShipLoaderAI.py
++++ b/pirates/uberdog/DistributedShipLoaderAI.py
+@@ -140,6 +140,10 @@ class ActivateShipFSM(ShipLoaderOperationFSM):
+ 
+ class DistributedShipLoaderAI(DistributedObjectGlobalAI):
+     notify = DirectNotifyGlobal.directNotify.newCategory('DistributedShipLoaderAI')
++    # family server (11-22): after a ship's owner's game closes, its friends aboard are sent ashore every
++    # OWNER_OFFLINE_ASK seconds for OWNER_OFFLINE_ASHORE seconds (below the UberDOG's PUT_AWAY_GRACE)
++    OWNER_OFFLINE_ASK = 10
++    OWNER_OFFLINE_ASHORE = 60
+ 
+     def __init__(self, air):
+         DistributedObjectGlobalAI.__init__(self, air)
+@@ -154,6 +158,39 @@ class DistributedShipLoaderAI(DistributedObjectGlobalAI):
+ 
+         self.air.netMessenger.accept('createShipResponse', self, self.createShipResponse)
+         self.air.netMessenger.accept('activateShipResponse', self, self.activateShipResponse)
++        self.air.netMessenger.accept('shipOwnerOffline', self, self.shipOwnerOffline)
++
++    def shipOwnerOffline(self, avatarId, shipId):
++        # family server (11-22): the owner's game closed (his post-remove, DistributedShipLoaderUD._shipUp). The
++        # UberDOG deletes his ship soon; a friend still aboard would be deleted with it and kicked, so each one is
++        # sent ashore first, the way a sunk ship lands its crew.
++        taskMgr.remove('shipOwnerOfflineAshore-%d' % shipId)
++        self._sendFriendsAshore(avatarId, shipId, 0)
++
++    def _sendFriendsAshore(self, avatarId, shipId, elapsed):
++        ship = self.air.doId2do.get(shipId)
++        if ship is None or not hasattr(ship, 'getPiratesAboard'):
++            return
++
++        if getattr(ship, 'gameState', None) and ship.gameState[0] in ('Sinking', 'Sunk'):
++            return    # the sinking task lands its crew
++
++        aboard = [av for av in ship.getPiratesAboard() if av.doId != avatarId]
++        if not aboard:
++            return
++
++        for av in aboard:
++            try:
++                ship.releaseSeats(av)
++                if ship.sendCrewAshore(av) and not elapsed and hasattr(av, 'd_setSystemMessage'):
++                    av.d_setSystemMessage(0, 'Your captain left the game, so you are going ashore.')
++            except Exception as e:
++                self.notify.warning('ship %d: could not send %d ashore: %s' % (shipId, av.doId, e))
++
++        if elapsed + self.OWNER_OFFLINE_ASK < self.OWNER_OFFLINE_ASHORE:
++            taskMgr.doMethodLater(self.OWNER_OFFLINE_ASK, self._sendFriendsAshore,
++                'shipOwnerOfflineAshore-%d' % shipId,
++                extraArgs=[avatarId, shipId, elapsed + self.OWNER_OFFLINE_ASK])
+ 
+     def runShipLoaderFSM(self, fsmtype, avatar, *args, **kwargs):
+         fsm = self.avatar2fsm.get(avatar.doId)
+diff --git a/pirates/uberdog/DistributedShipLoaderUD.py b/pirates/uberdog/DistributedShipLoaderUD.py
+index ea78f41..4c6d9c5 100644
+--- a/pirates/uberdog/DistributedShipLoaderUD.py
++++ b/pirates/uberdog/DistributedShipLoaderUD.py
+@@ -338,13 +338,10 @@ class ActivateShipFSM(ShipLoaderOperationFSM):
+         channel = self.accountId << 32 | self.avatarId
+         self.setOwnerAgain(self.shipId, channel)
+ 
+-        datagramCleanup = PyDatagram()
+-        datagramCleanup.addServerHeader(
+-            self.shipId,
+-            channel,
+-            STATESERVER_OBJECT_DELETE_RAM)
+-        datagramCleanup.addUint32(self.shipId)
+-
++        # family server (11-22): the post-remove deleted the ship the moment its owner's game closed. A friend aboard
++        # is the ship's child, so Astron deleted his pirate with it and kicked his game ("session object unexpectedly
++        # deleted", 11-22 09:42). It now sends shipOwnerOffline: the AI sends each friend ashore and the loader
++        # deletes the ship PUT_AWAY_GRACE seconds later.
+         datagram = PyDatagram()
+         datagram.addServerHeader(
+             channel,
+@@ -352,7 +349,7 @@ class ActivateShipFSM(ShipLoaderOperationFSM):
+             CLIENTAGENT_ADD_POST_REMOVE)
+         # CLIENTAGENT_ADD_POST_REMOVE takes a blob nested datagram. Keep the
+         # raw bytes from getMessage(); latin-1/addString corrupts high bytes.
+-        datagram.addBlob(datagramCleanup.getMessage())
++        datagram.addBlob(self.air.netMessenger.prepare('shipOwnerOffline', [self.avatarId, self.shipId]).getMessage())
+         self.air.send(datagram)
+ 
+         self.air.dbInterface.queryObject(self.air.dbId,
+@@ -468,6 +465,9 @@ class ActivateShipFSM(ShipLoaderOperationFSM):
+ 
+ class DistributedShipLoaderUD(DistributedObjectGlobalUD):
+     notify = DirectNotifyGlobal.directNotify.newCategory('DistributedShipLoaderUD')
++    # family server (11-22): seconds a ship stays up after its owner's game closes, so the AI can send the friends
++    # aboard ashore first (the AI asks for OWNER_OFFLINE_ASHORE = 60 s; a sinking ship lands its crew within 95 s)
++    PUT_AWAY_GRACE = 120
+ 
+     def __init__(self, air):
+         DistributedObjectGlobalUD.__init__(self, air)
+@@ -476,12 +476,38 @@ class DistributedShipLoaderUD(DistributedObjectGlobalUD):
+         # family server (11-21): jobs waiting for the job running for that pirate: avatarId -> [(fsmtype, args,
+         # kwargs), ...], run in the order they came
+         self.avatar2queue = {}
++        # family server (11-22): ships whose owner's game closed, deleted after PUT_AWAY_GRACE: shipId -> avatarId
++        self.ship2offline = {}
+ 
+     def announceGenerate(self):
+         DistributedObjectGlobalUD.announceGenerate(self)
+ 
+         self.air.netMessenger.accept('createShip', self, self.createShip)
+         self.air.netMessenger.accept('activateShip', self, self.activateShip)
++        self.air.netMessenger.accept('shipOwnerOffline', self, self.shipOwnerOffline)
++
++    def shipOwnerOffline(self, avatarId, shipId):
++        taskName = 'shipOwnerOffline-%d' % shipId
++        taskMgr.remove(taskName)
++        self.ship2offline[shipId] = avatarId
++        taskMgr.doMethodLater(self.PUT_AWAY_GRACE, self._deleteOfflineShip, taskName, extraArgs=[shipId])
++
++    def _deleteOfflineShip(self, shipId):
++        avatarId = self.ship2offline.pop(shipId, None)
++        if avatarId is None:
++            return
++
++        datagram = PyDatagram()
++        datagram.addServerHeader(shipId, self.air.ourChannel, STATESERVER_OBJECT_DELETE_RAM)
++        datagram.addUint32(shipId)
++        self.air.send(datagram)
++        self.notify.warning('ship %d of avatar %d deleted %d s after his game closed' % (
++            shipId, avatarId, self.PUT_AWAY_GRACE))
++
++    def _keepOfflineShip(self, shipId):
++        # its owner is back before it was deleted: the ship stays, and activateUnlessUp reuses it
++        if self.ship2offline.pop(shipId, None) is not None:
++            taskMgr.remove('shipOwnerOffline-%d' % shipId)
+ 
+     def runShipLoaderFSM(self, fsmtype, avatarId, *args, **kwargs):
+         fsm = self.avatar2fsm.get(avatarId)
+@@ -520,6 +546,7 @@ class DistributedShipLoaderUD(DistributedObjectGlobalUD):
+         self.runShipLoaderFSM(CreateShipFSM, avatarId, shipClass, shipName, callback=_shipCreatedCallback)
+ 
+     def activateShip(self, avatarId, shipId):
++        self._keepOfflineShip(shipId)
+ 
+         def _shipActivatedCallback(success):
+             self.air.netMessenger.send('activateShipResponse', [avatarId, shipId, success])
+-- 
+2.53.0
+

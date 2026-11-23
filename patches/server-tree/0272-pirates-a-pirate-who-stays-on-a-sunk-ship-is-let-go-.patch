@@ -1,0 +1,179 @@
+From 266c789111449b6424082812c3d7d37326eae7c1 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 10:46:54 -0800
+Subject: [PATCH 272/371] pirates: a pirate who stays on a sunk ship is let go
+ of the wheel or cannon and sent ashore, and the ship is always put away
+ (0364)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShipAI.py | 37 +++++++++-------
+ pirates/ship/GameFSMShipAI.py     | 74 +++++++++++++++++++++++++++----
+ 2 files changed, 86 insertions(+), 25 deletions(-)
+
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index 4c39608..d31fd62 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -532,13 +532,30 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+             return
+ 
+         self.removeCrewMember(avatar)
+-        for spot in self.repairSpots:
+-            if spot.userId == avatar.doId:
+-                spot.b_setUserId(0)
++        self.releaseSeats(avatar)
++        avatar.b_setShipId(0)
++        avatar.b_setActiveShipId(0)
++        avatar.b_setCrewShipId(0)
++        self.air.worldGridManager.clearAvatarInterest(self.getParentObj(), avatar)
+ 
++        # properly handle disabling the ship when no players remain on it:
++        if len(self.crew) == 0:
++            if self.gameState[0] == 'Sinking':
++                return    # the sinking task deletes a sunk ship once nobody is aboard
++
++            self.b_setGameState('PutAway', 0)
++            self._leaveOceanGrid()
++            self.b_setLocation(self.parentId, 0)
++
++    def releaseSeats(self, avatar):
+         # family server (11-19, 0340): a pirate who logs off, crashes or leaves the ship while at the wheel or a
+         # cannon lets go of it, as if he had stepped away. The wheel kept him as its user, so nobody else could
+         # take it ("someone is at the wheel") or repair the ship, and the ship stayed under his steering.
++        # (11-19, 0364: one method, so a sunk ship also frees them before it sends him ashore.)
++        for spot in self.repairSpots:
++            if spot.userId == avatar.doId:
++                spot.b_setUserId(0)
++
+         wheel = self.steeringWheel
+         if wheel is not None and wheel.userId == avatar.doId:
+             wheel.b_setUserId(0)
+@@ -553,20 +570,6 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+                 cannon.stopWeapon(avatar.doId)
+                 cannon.b_setUserId(0)
+ 
+-        avatar.b_setShipId(0)
+-        avatar.b_setActiveShipId(0)
+-        avatar.b_setCrewShipId(0)
+-        self.air.worldGridManager.clearAvatarInterest(self.getParentObj(), avatar)
+-
+-        # properly handle disabling the ship when no players remain on it:
+-        if len(self.crew) == 0:
+-            if self.gameState[0] == 'Sinking':
+-                return    # the sinking task deletes a sunk ship once nobody is aboard
+-
+-            self.b_setGameState('PutAway', 0)
+-            self._leaveOceanGrid()
+-            self.b_setLocation(self.parentId, 0)
+-
+     def _leaveOceanGrid(self):
+         # The ocean grid tracks every ship launched onto it (addObjectToOceanGrid
+         # in the deployer) and its update task puts each one back in the zone of
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index cb1a7af..e674d3e 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -2817,7 +2817,45 @@ class GameFSMShipAI(FSM.FSM):
+     def enterSinking(self):
+         self._stopAllTasks()
+         self.targetShip = None
+-        self._sunkTries = 0
++        # family server (11-19, 0364): after the sinking scene every pirate still on the deck goes ashore within a
++        # fixed time, then the ship is put away. Before, he was asked 5 times and then the ship waited in Sinking
++        # until he logged off, so a kid at the wheel, on a cannon, in a menu or with a stuck game kept it sinking.
++        # Now he is asked again every 10 s, his seat let go of first. One still aboard 60 s after the first ask is
++        # disconnected with the gentle "connect again" box and logs in again on his return island (Port Royal if
++        # none). One whose own teleport is under way is left to it, and disconnected only 20 s later if it never
++        # ends. 15 s after the last of those the ship is put away whoever is still listed, so the timer always ends.
++        askAgain = 10
++        ejectAfter = 60
++        teleportGrace = 20
++        giveUpAfter = 15
++        self._sunkElapsed = 0
++        self._sunkEjected = set()
++
++        def _teleporting(av):
++            teleportMgr = getattr(self.air, 'teleportMgr', None)
++            if teleportMgr is not None and av.doId in getattr(teleportMgr, 'avatar2fsm', {}):
++                return True
++
++            try:
++                return bool(av.testTeleportFlag(PiratesGlobals.TFInTeleport))
++            except Exception:
++                return False
++
++        def _eject(av, why):
++            self._sunkEjected.add(av.doId)
++            self.notify.warning('sunk ship %s: %s still aboard %d s after the first ask (%s); disconnecting him, he '
++                'logs in again on his return island' % (self.ship.doId, av.doId, self._sunkElapsed, why))
++            self.air.writeServerEvent('sunk-ship-eject', shipId=self.ship.doId, avatarId=av.doId,
++                                      seconds=self._sunkElapsed, why=why)
++            try:
++                self.ship.releaseSeats(av)
++            except Exception as e:
++                self.notify.warning('sunk ship %s: could not free the seat of %s: %s' % (self.ship.doId, av.doId, e))
++
++            try:
++                self.air.eject(av.GetPuppetConnectionChannel(av.doId), 1, 'His ship sank and he never left the deck.')
++            except Exception as e:
++                self.notify.warning('sunk ship %s: could not disconnect %s: %s' % (self.ship.doId, av.doId, e))
+ 
+         def _shipSunk(task):
+             # a sunk player ship still carries its crew: deleting it with them aboard
+@@ -2831,6 +2869,20 @@ class GameFSMShipAI(FSM.FSM):
+                 return Task.done
+ 
+             aboard = self.ship.getPiratesAboard()
++            if aboard and self._sunkElapsed >= ejectAfter + teleportGrace + giveUpAfter:
++                # he was disconnected and is still listed (that should not happen): the ship is put away anyway
++                self.notify.warning('sunk ship %s: %s still listed aboard %d s after the first ask; putting it away'
++                    % (self.ship.doId, [av.doId for av in aboard], self._sunkElapsed))
++                self.air.writeServerEvent('sunk-ship-give-up', shipId=self.ship.doId,
++                                          avatarIds=[av.doId for av in aboard])
++                for av in aboard:
++                    try:
++                        self.ship._playerDeparted(av)
++                    except Exception as e:
++                        self.notify.warning('sunk ship %s: could not take %s off: %s' % (self.ship.doId, av.doId, e))
++
++                aboard = []
++
+             if not aboard:
+                 if getattr(self.ship, 'npcShip', True):
+                     self.ship.requestDelete()
+@@ -2843,18 +2895,24 @@ class GameFSMShipAI(FSM.FSM):
+ 
+                 return Task.done
+ 
+-            self._sunkTries += 1
+-            if self._sunkTries <= 5:
+-                for av in aboard:
++            for av in aboard:
++                if av.doId in self._sunkEjected:
++                    continue    # disconnected already: his avatar goes in a moment
++
++                teleporting = _teleporting(av)
++                if self._sunkElapsed >= ejectAfter + (teleportGrace if teleporting else 0):
++                    _eject(av, 'his teleport never ended' if teleporting else 'he never left the deck')
++                elif teleporting:
++                    continue    # his own teleport takes him off the deck
++                else:
+                     try:
++                        self.ship.releaseSeats(av)
+                         self.ship.sendCrewAshore(av)
+                     except Exception as e:
+                         self.notify.warning('sunk ship %s: could not send %s ashore: %s' % (self.ship.doId, av.doId, e))
+-            elif self._sunkTries == 6:
+-                self.notify.warning('sunk ship %s: %s still aboard; it stays until they leave'
+-                    % (self.ship.doId, [av.doId for av in aboard]))
+ 
+-            task.delayTime = 15
++            task.delayTime = askAgain
++            self._sunkElapsed += askAgain
+             return Task.again
+ 
+         # the crew's sinking scene runs about 15 s and ends on a black screen
+-- 
+2.53.0
+

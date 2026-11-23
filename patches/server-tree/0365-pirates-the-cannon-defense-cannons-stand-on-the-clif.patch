@@ -1,0 +1,55 @@
+From 90a4f16673da51fff472b4e81aca9ecef5c2f829 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 23:48:41 -0800
+Subject: [PATCH 365/371] pirates: the cannon defense cannons stand on the
+ cliff next to the pirate instead of all four at the middle of the map (the AI
+ sets each cannon's island-local position before the generate, so it is sent;
+ the client puts a cannon with no grid parent under its island), as
+ server-tree patch 0449 (client patch 62 = v505, client code + AI code, no DC
+ change, AI restart)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedIslandCannon.py    | 7 +++++++
+ pirates/minigame/DistributedDefendWorldAI.py | 6 ++++--
+ 2 files changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/battle/DistributedIslandCannon.py b/pirates/battle/DistributedIslandCannon.py
+index 61908b5..405b332 100644
+--- a/pirates/battle/DistributedIslandCannon.py
++++ b/pirates/battle/DistributedIslandCannon.py
+@@ -32,6 +32,13 @@ class DistributedIslandCannon(DistributedPCCannon.DistributedPCCannon):
+             self.notify.debug('putCannon %s on island %s' % (self.doId, islandId))
+             self.island = island
+             self.island.attachCannon(self)
++            # family client (11-21, cannon defense run 3): a cannon generated in the island's ship-deployer zone (101, below the
++            # island's grid cells) is never given a parent by setLocation, so it sat unparented at the world origin and the
++            # pirate found no cannon to man. Put it under its island (its own position is island-local). A cannon that
++            # setLocation already put in a grid cell (the Black Pearl forts) has a parent and is left alone.
++            if self.getParent().isEmpty():
++                self.reparentTo(island)
++
+             self.accept(island.uniqueName('disable'), self.islandDisable)
+             self.cannonExitEvent = island.uniqueName('stopCannon')
+             self.pendingPlacement = None
+diff --git a/pirates/minigame/DistributedDefendWorldAI.py b/pirates/minigame/DistributedDefendWorldAI.py
+index 41bed62..a567af3 100644
+--- a/pirates/minigame/DistributedDefendWorldAI.py
++++ b/pirates/minigame/DistributedDefendWorldAI.py
+@@ -110,9 +110,11 @@ class DistributedDefendWorldAI(DistributedTreasureMapInstanceAI):
+             cannon.setIslandId(island.doId)
+             cannon.setFortId(0)
+             cannon.setCannonIndex(index)
+-            island.generateChildWithRequired(cannon, PiratesGlobals.IslandShipDeployerZone)
+-            cannon.setPos(island, x, y, z)
++            # island-local, and BEFORE the generate: X Y Z H P R are required fields sent with the generate message, so a
++            # position set afterwards is never broadcast (run 3, 11-21 23:26: all four cannons arrived at 0,0,0)
++            cannon.setPos(x, y, z)
+             cannon.setHpr(*DefendGlobals.CANNON_HPR)
++            island.generateChildWithRequired(cannon, PiratesGlobals.IslandShipDeployerZone)
+             self.air.uidMgr.addUid(uid, cannon.doId)
+             self.cannons.append(cannon)
+ 
+-- 
+2.53.0
+

@@ -1,0 +1,29 @@
+From 2f2d80c24077a267248bf807b3713febd74fd7f4 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:53:20 -0800
+Subject: [PATCH 110/371] pirates: health and voodoo regenerate after a hit
+ with the weapon put away, as server-tree patch 0124 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/DistributedPlayerPirateAI.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/pirate/DistributedPlayerPirateAI.py b/pirates/pirate/DistributedPlayerPirateAI.py
+index 6f74a1b..3dddaec 100644
+--- a/pirates/pirate/DistributedPlayerPirateAI.py
++++ b/pirates/pirate/DistributedPlayerPirateAI.py
+@@ -665,7 +665,9 @@ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI,
+ 
+     def toonUp(self, task):
+         if self.getHp()[0] >= self.getMaxHp() and self.getMojo() >= self.getMaxMojo():
+-            return task.done
++            # family server: this was task.done, so regen stopped for good once he was full; a pirate hit with his
++            # weapon put away (he stays in LandRoam) then never healed until he drew and sheathed it again
++            return task.again
+ 
+         if self.getHp()[0] < self.getMaxHp():
+             self.b_setHp(min(self.getMaxHp(), self.getHp()[0] + 10 * self.getLevel() / 1.25))
+-- 
+2.53.0
+

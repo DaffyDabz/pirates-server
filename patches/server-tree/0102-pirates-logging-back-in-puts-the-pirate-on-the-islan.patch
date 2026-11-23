@@ -1,0 +1,51 @@
+From 31675e855b2c40a2752e8f812527ccd5c6b8580c Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:12:29 -0800
+Subject: [PATCH 102/371] pirates: logging back in puts the pirate on the
+ island he was last on, as server-tree patch 0116 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/DistributedPlayerPirateAI.py | 26 +++++++++++----------
+ 1 file changed, 14 insertions(+), 12 deletions(-)
+
+diff --git a/pirates/pirate/DistributedPlayerPirateAI.py b/pirates/pirate/DistributedPlayerPirateAI.py
+index 858c7bf..6f74a1b 100644
+--- a/pirates/pirate/DistributedPlayerPirateAI.py
++++ b/pirates/pirate/DistributedPlayerPirateAI.py
+@@ -108,18 +108,20 @@ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI,
+         parentObj = self.getParentObj()
+         if parentObj:
+             if isinstance(parentObj, DistributedIslandAI):
+-                if self.currentIsland:
+-                    validReturns = [
+-                        LocationIds.PORT_ROYAL_ISLAND,
+-                        LocationIds.TORTUGA_ISLAND,
+-                        LocationIds.DEL_FUEGO_PORT,
+-                        LocationIds.CUBA_ISLAND
+-                    ]
+-
+-                    if self.currentIsland in validReturns:
+-                        self.b_setReturnLocation(self.currentIsland)
+-
+-                self.b_setCurrentIsland(parentObj.getUniqueId())
++                # family server (11-17): the return location is the island he is on NOW. It used to save the island he
++                # came from, so it was always one trip behind and a relog or a failed teleport put him back there
++                validReturns = [
++                    LocationIds.PORT_ROYAL_ISLAND,
++                    LocationIds.TORTUGA_ISLAND,
++                    LocationIds.DEL_FUEGO_PORT,
++                    LocationIds.CUBA_ISLAND
++                ]
++
++                newIsland = parentObj.getUniqueId()
++                if newIsland in validReturns and newIsland != self.getReturnLocation():
++                    self.b_setReturnLocation(newIsland)
++
++                self.b_setCurrentIsland(newIsland)
+ 
+     def getInventory(self):
+         return self.air.inventoryManager.getInventory(self.doId)
+-- 
+2.53.0
+

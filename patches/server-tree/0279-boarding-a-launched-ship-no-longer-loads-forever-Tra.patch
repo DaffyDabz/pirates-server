@@ -1,0 +1,63 @@
+From 033af04fbfc07f933d7c3011b0c3d238a2c39d97 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 15:14:51 -0800
+Subject: [PATCH 279/371] boarding a launched ship no longer loads forever;
+ Track with no quest picked does nothing (0328, 0329)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../distributed/PiratesClientRepository.py    | 21 ++++++++++++++++++-
+ pirates/piratesgui/QuestPage.py               |  3 +++
+ 2 files changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/distributed/PiratesClientRepository.py b/pirates/distributed/PiratesClientRepository.py
+index 8c1e7f6..20c4ed3 100644
+--- a/pirates/distributed/PiratesClientRepository.py
++++ b/pirates/distributed/PiratesClientRepository.py
+@@ -196,9 +196,28 @@ class PiratesClientRepository(OTPClientRepository):
+ 
+     def alterInterest(self, handle, parentId, zoneIdList, description=None, event=None):
+         grid = self.doId2do.get(parentId)
++        carried = []
+         if hasattr(grid, 'getConcentricZones') and handle == getattr(grid, 'gridVisContext', None):
+             zoneIdList = self.__keepServerCells(parentId, self.__gridVisZones(parentId, zoneIdList))
+-        return OTPClientRepository.alterInterest(self, handle, parentId, zoneIdList, description, event)
++            # Family patch (0328): changing an interest that is still loading throws away the events that were
++            # waiting on it. Boarding a launched ship waits on the sea grid's 'visibility' event to drop the
++            # loading screen; when the avatar-zone message above widened the cells while the first load was
++            # still on its way, that event was lost and the pirate sat on the loading screen for good. A grid
++            # visibility change keeps whatever was still waiting and fires it when the new cells are in.
++            state = DoInterestManager.DoInterestManager._interests.get(handle.asInt()) if hasattr(handle, 'asInt') else None
++            if state is not None and state.context != DoInterestManager.NO_CONTEXT:
++                carried = state.getEvents()
++        result = OTPClientRepository.alterInterest(self, handle, parentId, zoneIdList, description, event)
++        if carried:
++            state = DoInterestManager.DoInterestManager._interests.get(handle.asInt())
++            if state is not None and state.context != DoInterestManager.NO_CONTEXT:
++                for waiting in carried:
++                    if waiting not in state.events:
++                        state.addEvent(waiting)
++            else:
++                for waiting in carried:
++                    messenger.send(waiting)
++        return result
+ 
+     def __init__(self, serverVersion, launcher=None):
+         self.__serverLocations = {}
+diff --git a/pirates/piratesgui/QuestPage.py b/pirates/piratesgui/QuestPage.py
+index 634be81..ccb89bd 100644
+--- a/pirates/piratesgui/QuestPage.py
++++ b/pirates/piratesgui/QuestPage.py
+@@ -95,6 +95,9 @@ class QuestPage(InventoryPage.InventoryPage):
+ 
+     def trackQuest(self):
+         questId = self.detailId
++        if questId is None:
++            # family patch (0329): Track pressed with no quest picked (a kid's crash, 11-19 14:17)
++            return
+         if questId == localAvatar.activeQuestId:
+             localAvatar.b_requestActiveQuest('')
+             self.titleList.showTracked('')
+-- 
+2.53.0
+

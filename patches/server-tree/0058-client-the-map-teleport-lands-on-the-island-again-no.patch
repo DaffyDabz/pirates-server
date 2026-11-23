@@ -1,0 +1,98 @@
+From 1b70561c480b9a57a86fca26d3c17f4546f7709b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 23:55:53 -0800
+Subject: [PATCH 058/371] client: the map teleport lands on the island again,
+ not in the sea off it
+
+A map teleport from a ship's wheel to Port Royal put the pirate in the
+water 1,850 ft south of the town (SHIPTELE2 leg A: WaterRoam at
+-87.8,-1848.4). Any player who logged in or teleported, then used the
+map to an island that loaded during it, landed at that island's origin.
+
+The map's local teleport asks the active world for one of the island's
+spawn points and uses (0,0,0) when there is none. WorldCreator stored
+the spawn points on cr.activeWorld while the island loaded. In a server
+teleport (login too) the teleport zone generates first and makes itself
+the active world; the main world is already on the client, so the
+islands load while the teleport zone is active and their spawn points
+went into its table. The teleport zone is deleted when he lands, and
+the main world had none for the island. Port Royal's origin is the sea
+south of the town.
+
+Spawn points, boot points and cutscene origins now go to the world the
+area belongs to (the island's parentWorld, or its parent's), and to
+the active world only when the area names none.
+
+Offline replay of the real createObject and spawn table over Port
+Royal's 33 spawn nodes (6 cases: login then the map, boot and cutscene
+points, an island that loads in the main world, a tutorial island, an
+interior, an area with no world): the old code fails 3, the new code
+passes all.
+
+Client file only (pirates/world/WorldCreator.py), no server restart.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/WorldCreator.py | 25 ++++++++++++++++++++++---
+ 1 file changed, 22 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/world/WorldCreator.py b/pirates/world/WorldCreator.py
+index 962e39d..2984012 100644
+--- a/pirates/world/WorldCreator.py
++++ b/pirates/world/WorldCreator.py
+@@ -108,6 +108,25 @@ class WorldCreator(WorldCreatorBase.WorldCreatorBase, DirectObject.DirectObject)
+         self.objectCatCache[objectType] = None
+         return None
+ 
++    def getAreaWorld(self, area):
++        # family server (11-16): the world an area belongs to, which keeps its spawn points. They went to
++        # cr.activeWorld, but in a server teleport (login too) the islands load while the teleport zone is the
++        # active world, and it is deleted when he lands, the spawn points with it: the map teleport then found
++        # none and put him at the island's origin, for Port Royal the sea 1,850 ft south of the town
++        from pirates.instance.DistributedInstanceBase import DistributedInstanceBase
++        obj = area
++        for i in range(10):
++            if obj is None or isinstance(obj, DistributedInstanceBase):
++                break
++            world = getattr(obj, 'parentWorld', None)
++            if isinstance(world, DistributedInstanceBase):
++                return world
++            getParentObj = getattr(obj, 'getParentObj', None)
++            obj = getParentObj() if getParentObj else None
++        if isinstance(obj, DistributedInstanceBase):
++            return obj
++        return self.cr.activeWorld
++
+     def createObject(self, object, parent, parentUid, objKey, dynamic, zoneLevel = 0, startTime = None, fileName = None, actualParentObj = None):
+         objType = WorldCreatorBase.WorldCreatorBase.createObject(self, object, parent, parentUid, objKey, dynamic, zoneLevel = zoneLevel, startTime = startTime, fileName = fileName)
+         if objType == None:
+@@ -181,7 +200,7 @@ class WorldCreator(WorldCreatorBase.WorldCreatorBase, DirectObject.DirectObject)
+                 ownerPos = objParent.getPos()
+                 ownerHpr = objParent.getHpr()
+                 posHpr = (pos[0], pos[1], pos[2], hpr[0], hpr[1], hpr[2])
+-                self.cr.activeWorld.addPlayerSpawnPt(objParent, posHpr, index)
++                self.getAreaWorld(objParent).addPlayerSpawnPt(objParent, posHpr, index)
+                 newObj = posHpr
+ 
+         elif objType == 'Player Boot Node':
+@@ -190,7 +209,7 @@ class WorldCreator(WorldCreatorBase.WorldCreatorBase, DirectObject.DirectObject)
+                 hpr = object['Hpr']
+                 tgtAreaUid = object['AreaUid']
+                 posHpr = (pos[0], pos[1], pos[2], hpr[0], hpr[1], hpr[2])
+-                self.cr.activeWorld.addPlayerBootPt(tgtAreaUid, posHpr, objParent.getDoId())
++                self.getAreaWorld(objParent).addPlayerBootPt(tgtAreaUid, posHpr, objParent.getDoId())
+                 newObj = posHpr
+ 
+         elif objType == 'Cutscene Origin Node':
+@@ -200,7 +219,7 @@ class WorldCreator(WorldCreatorBase.WorldCreatorBase, DirectObject.DirectObject)
+                 name = object['CutsceneId']
+                 node = objParent.attachNewNode(name)
+                 node.setPosHpr(pos, hpr)
+-                self.cr.activeWorld.addCutsceneOriginNode(node, name)
++                self.getAreaWorld(objParent).addCutsceneOriginNode(node, name)
+                 newObj = node
+ 
+         elif objType == 'Effect Node':
+-- 
+2.53.0
+

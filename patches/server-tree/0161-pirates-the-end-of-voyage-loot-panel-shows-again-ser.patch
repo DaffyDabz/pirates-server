@@ -1,0 +1,182 @@
+From 15aac3b9d7f19c4139359e7a275b428389a1081f Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:24:35 -0800
+Subject: [PATCH 161/371] pirates: the end-of-voyage loot panel shows again,
+ server-tree patch 0183
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/economy/EconomyGlobals.py         |  8 ++--
+ pirates/pirate/DistributedPlayerPirate.py |  9 +++-
+ pirates/piratesgui/HighSeasScoreboard.py  |  4 ++
+ pirates/ship/DistributedShipAI.py         | 52 ++++++++++++++++++++---
+ pirates/ship/NPCShipAI.py                 |  2 +
+ 5 files changed, 63 insertions(+), 12 deletions(-)
+
+diff --git a/pirates/economy/EconomyGlobals.py b/pirates/economy/EconomyGlobals.py
+index 8368e06..c237ba2 100644
+--- a/pirates/economy/EconomyGlobals.py
++++ b/pirates/economy/EconomyGlobals.py
+@@ -247,11 +247,9 @@ __crateCargoList = {
+     ItemId.CARGO_CHEST: 45,
+     ItemId.CARGO_SKCHEST: 5}
+ 
+-def getCargoValue(itemId):
+-    entry = __crateCargoList.get(itemId)
+-    if entry:
+-        return entry[0]
+-    return None
++# patch 0183: a first getCargoValue that read this table (and would have raised on
++# entry[0]) was always shadowed by the one below; removed. The table stays: it is
++# NPCShipAI's crate/chest/royal-chest roll weights.
+     
+ 
+ __cargoList = {
+diff --git a/pirates/pirate/DistributedPlayerPirate.py b/pirates/pirate/DistributedPlayerPirate.py
+index cf8ebac..bb146a1 100644
+--- a/pirates/pirate/DistributedPlayerPirate.py
++++ b/pirates/pirate/DistributedPlayerPirate.py
+@@ -720,8 +720,13 @@ class DistributedPlayerPirate(DistributedPirateBase, DistributedPlayer, Distribu
+             return
+ 
+         portName = ''
+-        if not base.localAvatar.ship.getSiegeTeam():
+-            self.guiMgr.createHighSeasScoreboard(portName, missionData, playerData, base.localAvatar.ship)
++        ship = base.localAvatar.ship
++        if ship is None:
++            # patch 0183: the panel came after the pirate left his ship; no crash
++            return
++
++        if not ship.getSiegeTeam():
++            self.guiMgr.createHighSeasScoreboard(portName, missionData, playerData, ship)
+ 
+     def createTitle(self, textIndex):
+         base.localAvatar.guiMgr.createTitle(textIndex)
+diff --git a/pirates/piratesgui/HighSeasScoreboard.py b/pirates/piratesgui/HighSeasScoreboard.py
+index 552272b..48c85ce 100644
+--- a/pirates/piratesgui/HighSeasScoreboard.py
++++ b/pirates/piratesgui/HighSeasScoreboard.py
+@@ -162,6 +162,10 @@ class HighSeasScoreboard(GuiPanel.GuiPanel):
+         
+         avId = base.localAvatar.getDoId()
+         cargoValue = EconomyGlobals.getCargoTotalValue(pCargo)
++        if dummyCrew > 1 and cargoValue > 0:
++            # patch 0183: the crew shares the hold evenly (DistributedShipAI.sellPlunder
++            # sends how many pirates share it here)
++            cargoValue = max(1, cargoValue // dummyCrew)
+         totalGold = cargoValue + pGold
+         bonusGold = 0
+         if base.localAvatar.ship:
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index ae4e657..130bfc5 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -974,12 +974,27 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+ 
+             return []
+ 
++        if getattr(self, '_voyageStart', None) is None:
++            # patch 0183: the voyage panel's Total Time runs from the first plunder
++            import time
++            self._voyageStart = time.time()
++
+         self.b_setCargo(cargo + taken)
+         self.sendUpdate('notifyReceivedLoot', [taken])
+         self.notify.info('ship %s: plunder %s into the hold (%d/%d)' % (
+             self.doId, taken, len(self.cargo), self.maxCargo))
+         return taken
+ 
++    def noteShipSunk(self):
++        """
++        patch 0183: an enemy ship this crew hurt went down (NPCShipAI._givePlunder);
++        counted for the voyage panel's Ships Sunk.
++        """
++        import time
++        self._voyageSunk = getattr(self, '_voyageSunk', 0) + 1
++        if getattr(self, '_voyageStart', None) is None:
++            self._voyageStart = time.time()
++
+     def sellPlunder(self):
+         """
+         Dropping anchor at a port sells the hold: each crate or chest is opened
+@@ -994,32 +1009,59 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         if self.npcShip or not cargo:
+             return
+ 
+-        value = 0
++        found = []
+         for container in cargo:
+             goods = EconomyGlobals.getAllCargoType(container)
+             if not goods:
+                 continue
+ 
+             weights = [EconomyGlobals.getCargoRarity(good) or 1 for good in goods]
+-            value += EconomyGlobals.getCargoValue(random.choices(goods, weights)[0]) or 0
++            found.append(random.choices(goods, weights)[0])
+ 
++        value = sum(EconomyGlobals.getCargoValue(good) or 0 for good in found)
+         self.b_setCargo([])
++
++        # patch 0183: the voyage's numbers for the end-of-voyage panel
++        # (endMissionPanel, HighSeasScoreboard), which nothing ever sent
++        import time
++        start = getattr(self, '_voyageStart', None)
++        missionTime = int(max(0, time.time() - start)) if start else 0
++        sunk = min(65535, getattr(self, '_voyageSunk', 0))
++        self._voyageStart = None
++        self._voyageSunk = 0
++
+         crew = [self.air.doId2do.get(avId) for avId in self.crew]
+         crew = [avatar for avatar in crew if avatar is not None and avatar.getInventory()]
+         if not crew or value <= 0:
+             return
+ 
++        maxHp = int(self.maxHp or 0)
++        shipDamage = 0
++        if maxHp > 0:
++            shipDamage = int(max(0, min(100, round(100 - 100.0 * int(self.hp or 0) / maxHp))))
++
++        numCrew = min(255, len(self.crew))
++        goodsShown = list(found[:255])
++        # the whole crew's haul, and each pirate's own line: the same goods, no gold
++        # of its own (the panel adds up the goods' values itself) and the number of
++        # pirates the hold is shared by, so the panel's Your Plunder Share is the
++        # gold paid below (the client patch divides by it; HighSeasScoreboard)
++        team = [missionTime, shipDamage, 0, 0, 0, 0, 0, 0, sunk, 0, 0, 0, goodsShown, numCrew]
++        player = [missionTime, shipDamage, 0, 0, 0, 0, 0, 0, sunk, 0, 0, 0, goodsShown, min(255, len(crew))]
++
+         share = max(1, value // len(crew))
+         for avatar in crew:
+             gold = share
+-            if len(crew) > 1 and avatar.doId == self.getOwnerId():
++            if len(self.crew) > 1 and avatar.doId == self.getOwnerId():
++                # as the panel works it out: a captain with a crew gets the bonus
+                 gold += int(share * EconomyGlobals.CAPTAIN_LOOT_MULTIPLIER)
+ 
+             avatar.getInventory().addGoldInPocket(gold)
+             avatar.d_setSystemMessage(0, 'You sold your plunder for %d gold!' % gold)
++            avatar.sendUpdate('endMissionPanel', [team, player])
+ 
+-        self.notify.info('ship %s: sold %d containers of plunder for %d gold, %d crew' % (
+-            self.doId, len(cargo), value, len(crew)))
++        self.notify.info('ship %s: sold %d containers of plunder (%s) for %d gold, %d crew, %d ships sunk' % (
++            self.doId, len(cargo), found, value, len(crew), sunk))
+ 
+     def setMaxCrew(self, maxCrew):
+         self.maxCrew = maxCrew
+diff --git a/pirates/ship/NPCShipAI.py b/pirates/ship/NPCShipAI.py
+index 1dff098..b18e66e 100644
+--- a/pirates/ship/NPCShipAI.py
++++ b/pirates/ship/NPCShipAI.py
+@@ -698,6 +698,8 @@ class NPCShipAI(DistributedShipAI):
+             ships[ship.doId] = ship
+ 
+         for ship in ships.values():
++            if hasattr(ship, 'noteShipSunk'):
++                ship.noteShipSunk()  # patch 0183: Ships Sunk on the voyage panel
+             ship.addPlunder(rollPlunder(level))
+ 
+     def _rewardSinker(self, avatar, categories, exp, avatarType, goldLevel):
+-- 
+2.53.0
+

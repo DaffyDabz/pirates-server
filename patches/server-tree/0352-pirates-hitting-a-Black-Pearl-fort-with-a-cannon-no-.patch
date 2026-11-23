@@ -1,0 +1,115 @@
+From ab730bc601b860311fdac7d05f0ff505047318dd Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 16:15:11 -0800
+Subject: [PATCH 352/371] pirates: hitting a Black Pearl fort with a cannon no
+ longer closes the game; a fort sets itself up at its first hit when its
+ island setup is still waiting (client patch 50, no DC change, no restart)
+
+Boats' BPFORT11 (16:05): a real ship cannonball struck fort 401041730 (the island's collision tags named it), the
+server sent its new hp, and DistributedFort.setHp -> setupHpMeter closed the game with AttributeError 'DistributedFort'
+object has no attribute 'fortNode'. The fort had been sent again with the same doId while the island was at a far zone
+level, so its island setup waited on a post-load call that only the next area load runs; the old fort's collision
+tags still pointed at it. Now: __init__ starts fortNode / hpAnchor as None; setupHpMeter first runs the island setup
+itself (setupIslandNow: collisions + drawbridges, only when the drawbridges are in render and the fort model is found)
+and builds no meter when there is no fort model; setHp skips the meter, drawbridge and smoke steps without a meter; a
+waiting post-load call skips a fort already set up (no second drawbridge set); died() and showHpText skip a missing
+hpAnchor (a fort brought to 0 by its first hp, or its renown text). Sim sim_fort_hp.py (the real methods compiled onto
+Panda's DistributedObject, real NodePaths): live tree 3 of 4 cases close the game with the BPFORT11 error, this tree
+4 of 4 PASS (meter, smoke, one drawbridge set).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedFort.py | 35 ++++++++++++++++++++++++++------
+ 1 file changed, 29 insertions(+), 6 deletions(-)
+ mode change 100644 => 100755 pirates/world/DistributedFort.py
+
+diff --git a/pirates/world/DistributedFort.py b/pirates/world/DistributedFort.py
+old mode 100644
+new mode 100755
+index fea4b54..3a5c259
+--- a/pirates/world/DistributedFort.py
++++ b/pirates/world/DistributedFort.py
+@@ -33,6 +33,9 @@ class DistributedFort(DistributedBattleAvatar.DistributedBattleAvatar):
+         self.level = 1
+         self.meterHp = self.maxHp
+         self.hpMeter = None
++        self.fortNode = None
++        self.hpAnchor = None
++        self.smokeZAdj = 50
+         self.meterMp = 0
+         self.maxMojo = 0
+         self.currentAttack = 0
+@@ -100,7 +103,7 @@ class DistributedFort(DistributedBattleAvatar.DistributedBattleAvatar):
+         # a fort whose drawbridges had not loaded keeps a post-load call waiting; when the pirate left the Black Pearl
+         # the fort was deleted (cr None) and the next area's post-load calls ran it and closed the game (boats'
+         # BPFORT8, 11-21). A fort that is gone has nothing to set up.
+-        if self.cr is None or self.isDisabled():
++        if self.cr is None or self.isDisabled() or self.islandDependedObjectsSetup:
+             return
+         self.notify.debug('setupIslandDependentObjects')
+         if not self.areDrawbridgesLoaded():
+@@ -166,10 +169,27 @@ class DistributedFort(DistributedBattleAvatar.DistributedBattleAvatar):
+     def getLevel(self):
+         return self.level
+     
++    def setupIslandNow(self):
++        # a fort sent again (same doId) while the island was still at a far zone level waits for a post-load call
++        # that only comes with the next area load; the old fort's collision tags still name it, so a cannonball
++        # struck it and its first hp closed the game with no fortNode (boats' BPFORT11, 11-21). Set up at that hit.
++        if self.islandDependedObjectsSetup or self.cr is None or self.isDisabled():
++            return
++        if not self.areDrawbridgesLoaded():
++            return
++        self.setupCollisions()
++        if self.fortNode is not None and not self.fortNode.isEmpty():
++            self.setupDrawbridges()
++            self.islandDependedObjectsSetup = 1
++
+     def setupHpMeter(self):
+         if self.hpMeter:
+             return
+-        
++
++        self.setupIslandNow()
++        if self.fortNode is None or self.fortNode.isEmpty():
++            return
++
+         zAdj = 50
+         self.smokeZAdj = zAdj
+         self.fortPart = self.fortNode.find('**/top_interior_wall_collision')
+@@ -209,7 +229,10 @@ class DistributedFort(DistributedBattleAvatar.DistributedBattleAvatar):
+         if self.isGenerated():
+             if not self.hpMeter:
+                 self.setupHpMeter()
+-            
++
++            if not self.hpMeter:
++                return
++
+             self.hpMeter.update(self.hp, self.maxHp)
+             if self.drawbridges:
+                 self.updateDrawbridges()
+@@ -226,7 +249,7 @@ class DistributedFort(DistributedBattleAvatar.DistributedBattleAvatar):
+     def died(self):
+         if self.cr and self.cr.wantSpecialEffects != 0:
+             shipDebrisEffect = ShipDebris.getEffect()
+-            if shipDebrisEffect and not self.hpAnchor.isEmpty():
++            if shipDebrisEffect and self.hpAnchor is not None and not self.hpAnchor.isEmpty():
+                 shipDebrisEffect.reparentTo(self.hpAnchor)
+                 shipDebrisEffect.setZ(shipDebrisEffect.getZ() - self.smokeZAdj)
+                 shipDebrisEffect.endPlaneZ = 0
+@@ -375,9 +398,9 @@ class DistributedFort(DistributedBattleAvatar.DistributedBattleAvatar):
+             holidayBonus])
+ 
+     def showHpText(self, number, bonus = 0, duration = 2.0, scale = 1.0, basicPenalty = 0, crewBonus = 0, doubleXPBonus = 0, holidayBonus = 0):
+-        if self.isEmpty():
++        if self.isEmpty() or self.hpAnchor is None:
+             return
+-        
++
+         distance = camera.getDistance(self)
+         scale *= max(1.0, distance / 50.0)
+         height = self.hpAnchor.getZ() + 25.0
+-- 
+2.53.0
+

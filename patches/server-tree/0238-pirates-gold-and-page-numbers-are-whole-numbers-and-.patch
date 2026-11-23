@@ -1,0 +1,148 @@
+From 11632f874081c594b3944cb38481bf6ff13839ad Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:04:41 -0800
+Subject: [PATCH 238/371] pirates: gold and page numbers are whole numbers, and
+ the blackjack bid moves in fives (0302, patch 22)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/economy/AccessoriesStoreGUI.py   | 2 +-
+ pirates/economy/BarberStoreGUI.py        | 2 +-
+ pirates/economy/DistributedShopKeeper.py | 4 ++--
+ pirates/economy/JewelryStoreGUI.py       | 2 +-
+ pirates/economy/TattooStoreGUI.py        | 2 +-
+ pirates/minigame/BlackjackTableGUI.py    | 2 +-
+ pirates/piratesgui/HighSeasScoreboard.py | 2 +-
+ pirates/piratesgui/LootPopupPanel.py     | 2 +-
+ pirates/piratesgui/ShipItemGUI.py        | 2 +-
+ 9 files changed, 10 insertions(+), 10 deletions(-)
+
+diff --git a/pirates/economy/AccessoriesStoreGUI.py b/pirates/economy/AccessoriesStoreGUI.py
+index e9baa79..ffdabce 100644
+--- a/pirates/economy/AccessoriesStoreGUI.py
++++ b/pirates/economy/AccessoriesStoreGUI.py
+@@ -1677,7 +1677,7 @@ class AccessoriesStoreGUI(DirectFrame):
+             if remainder > 0:
+                 numPages += 1.0 - remainder
+ 
+-            page = startIndex / self.buttonsPerPage + 1
++            page = startIndex // self.buttonsPerPage + 1  # family server (patch 0302): whole-number division, as in the 2008 Python 2 code
+         else:
+             numPages = 1
+             page = 1
+diff --git a/pirates/economy/BarberStoreGUI.py b/pirates/economy/BarberStoreGUI.py
+index c9390d8..56d256a 100644
+--- a/pirates/economy/BarberStoreGUI.py
++++ b/pirates/economy/BarberStoreGUI.py
+@@ -700,7 +700,7 @@ class BarberStoreGUI(DirectFrame):
+             if remainder > 0:
+                 numPages += 1.0 - remainder
+ 
+-            page = startIndex / self.buttonsPerPage + 1
++            page = startIndex // self.buttonsPerPage + 1  # family server (patch 0302): whole-number division, as in the 2008 Python 2 code
+         else:
+             numPages = 1
+             page = 1
+diff --git a/pirates/economy/DistributedShopKeeper.py b/pirates/economy/DistributedShopKeeper.py
+index 9b2e3f3..30fbcf2 100644
+--- a/pirates/economy/DistributedShopKeeper.py
++++ b/pirates/economy/DistributedShopKeeper.py
+@@ -469,7 +469,7 @@ class DistributedShopKeeper:
+             return
+         
+         modelType = ShipGlobals.getModelClass(shipOV.shipClass)
+-        cost = EconomyGlobals.getItemCost(modelType) / 2
++        cost = EconomyGlobals.getItemCost(modelType) // 2  # family server (patch 0302): whole-number division, as in the 2008 Python 2 code
+         r = Functor(self.doubleConfirmSellShip, shipId)
+         if self.confirmDialog:
+             self.confirmDialog.destroy()
+@@ -496,7 +496,7 @@ class DistributedShopKeeper:
+             return
+         
+         modelType = ShipGlobals.getModelClass(shipOV.shipClass)
+-        cost = EconomyGlobals.getItemCost(modelType) / 2
++        cost = EconomyGlobals.getItemCost(modelType) // 2  # family server (patch 0302): whole-number division, as in the 2008 Python 2 code
+         if choice == 1:
+             inventory = base.localAvatar.getInventory()
+             if inventory:
+diff --git a/pirates/economy/JewelryStoreGUI.py b/pirates/economy/JewelryStoreGUI.py
+index 5083489..6814d8e 100644
+--- a/pirates/economy/JewelryStoreGUI.py
++++ b/pirates/economy/JewelryStoreGUI.py
+@@ -1377,7 +1377,7 @@ class JewelryStoreGUI(DirectFrame):
+             if remainder > 0:
+                 numPages += 1.0 - remainder
+ 
+-            page = startIndex / self.buttonsPerPage + 1
++            page = startIndex // self.buttonsPerPage + 1  # family server (patch 0302): whole-number division, as in the 2008 Python 2 code
+         else:
+             numPages = 1
+             page = 1
+diff --git a/pirates/economy/TattooStoreGUI.py b/pirates/economy/TattooStoreGUI.py
+index 2024462..ba147eb 100644
+--- a/pirates/economy/TattooStoreGUI.py
++++ b/pirates/economy/TattooStoreGUI.py
+@@ -1304,7 +1304,7 @@ class TattooStoreGUI(DirectFrame):
+             if remainder > 0:
+                 numPages += 1.0 - remainder
+ 
+-            page = startIndex / self.buttonsPerPage + 1
++            page = startIndex // self.buttonsPerPage + 1  # family server (patch 0302): whole-number division, as in the 2008 Python 2 code
+         else:
+             numPages = 1
+             page = 1
+diff --git a/pirates/minigame/BlackjackTableGUI.py b/pirates/minigame/BlackjackTableGUI.py
+index 75a5d54..d208ead 100644
+--- a/pirates/minigame/BlackjackTableGUI.py
++++ b/pirates/minigame/BlackjackTableGUI.py
+@@ -91,7 +91,7 @@ class BlackjackTableGUI(DirectFrame, TableGUI, SplitBase):
+     
+     def sliderValueToBid(self, value):
+         bid = int(value * self.table.betMultiplier * 50)
+-        bid = bid / 5
++        bid = bid // 5  # family server (patch 0302): whole-number division, as in the 2008 Python 2 code
+         bid = bid * 5
+         if bid < 2:
+             bid = 2
+diff --git a/pirates/piratesgui/HighSeasScoreboard.py b/pirates/piratesgui/HighSeasScoreboard.py
+index 48c85ce..d595531 100644
+--- a/pirates/piratesgui/HighSeasScoreboard.py
++++ b/pirates/piratesgui/HighSeasScoreboard.py
+@@ -224,7 +224,7 @@ class HighSeasScoreboard(GuiPanel.GuiPanel):
+             self.results.append({
+                 'Type': 'Entry',
+                 'Text': PLocalizer.DoubleGoldBonus,
+-                'Value1': str(totalGold / 2) + ' ' + PLocalizer.MoneyName,
++                'Value1': str(totalGold // 2) + ' ' + PLocalizer.MoneyName,  # family server (patch 0302): whole-number division, as in the 2008 Python 2 code
+                 'UnwrapMode': 1})
+         
+         self.results.append({
+diff --git a/pirates/piratesgui/LootPopupPanel.py b/pirates/piratesgui/LootPopupPanel.py
+index ecee9b4..bc71a24 100644
+--- a/pirates/piratesgui/LootPopupPanel.py
++++ b/pirates/piratesgui/LootPopupPanel.py
+@@ -190,7 +190,7 @@ class LootPopupPanel(StackMessage, DirectObject.DirectObject):
+             elif itemType == ItemId.GOLD:
+                 textInfo = PLocalizer.LootGold % str(quantity)
+                 if base.getHoliday(PiratesGlobals.DOUBLEGOLDHOLIDAYPAID) and Freebooter.getPaidStatus(base.localAvatar.getDoId()) or base.getHoliday(PiratesGlobals.DOUBLEGOLDHOLIDAY):
+-                    textInfo = PLocalizer.LootGold % str(quantity / 2) + '\n + ' + PLocalizer.LootGoldDouble % str(quantity / 2)
++                    textInfo = PLocalizer.LootGold % str(quantity // 2) + '\n + ' + PLocalizer.LootGoldDouble % str(quantity // 2)  # family server (patch 0302): whole-number division, as in the 2008 Python 2 code
+                 
+                 lootIcon = self.icons.get(itemType)[0]
+                 iconScale = 0.27
+diff --git a/pirates/piratesgui/ShipItemGUI.py b/pirates/piratesgui/ShipItemGUI.py
+index 2513d89..152f2ea 100644
+--- a/pirates/piratesgui/ShipItemGUI.py
++++ b/pirates/piratesgui/ShipItemGUI.py
+@@ -30,7 +30,7 @@ class ShipItemGUI(InventoryItemGui.InventoryItemGui):
+         itemTypeName = PLocalizer.InventoryTypeNames.get(repId)
+         self.itemType = itemTypeName
+         if self.sell:
+-            self.price /= 2
++            self.price //= 2  # family server (patch 0302): whole-number division, as in the 2008 Python 2 code
+         
+         card = loader.loadModelCopy('models/textureCards/shipRenders')
+         if item in [
+-- 
+2.53.0
+

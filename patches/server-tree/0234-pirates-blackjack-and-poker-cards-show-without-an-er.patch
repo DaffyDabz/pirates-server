@@ -1,0 +1,51 @@
+From a3967f60c74befc682bbc4f8e0a9a0997f9ebe39 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 03:53:17 -0800
+Subject: [PATCH 234/371] pirates: blackjack and poker cards show without an
+ error (0289, patch 21)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/PlayingCard.py | 3 ++-
+ pirates/minigame/TableGUI.py    | 4 ++--
+ 2 files changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/minigame/PlayingCard.py b/pirates/minigame/PlayingCard.py
+index f8f4abf..21f321f 100644
+--- a/pirates/minigame/PlayingCard.py
++++ b/pirates/minigame/PlayingCard.py
+@@ -32,7 +32,8 @@ class PlayingCardBase:
+             self.rank = None
+             self.turnDown()
+         else:
+-            self.suit = value / 13
++            # family server (patch 0289): whole-number suit (Python 3 `/` gave 2.07 and the card picture lookup failed)
++            self.suit = value // 13
+             self.rank = value % 13
+         self.setImage()
+ 
+diff --git a/pirates/minigame/TableGUI.py b/pirates/minigame/TableGUI.py
+index d7ac144..ae9426f 100644
+--- a/pirates/minigame/TableGUI.py
++++ b/pirates/minigame/TableGUI.py
+@@ -355,7 +355,7 @@ class TableGUI:
+         self.hideButtonArray(self.rankButtonArray)
+         self.cancelButton.hide()
+         self.table.card_id = card_id
+-        suit = card_id / 13
++        suit = card_id // 13  # family server (patch 0289): whole-number suit
+         rank = card_id % 13
+         card = -1
+         hand = self.table.getLocalAvatarHand()
+@@ -373,7 +373,7 @@ class TableGUI:
+                     card = hand[6]
+ 
+         if card >= 0 and card < 52:
+-            original_suit = card / 13
++            original_suit = card // 13  # family server (patch 0289): whole-number suit
+             original_rank = card % 13
+             string = PLocalizer.PokerSwapConfirmMessage % (PLocalizer.getPlayingCardName(original_suit, original_rank), PLocalizer.getPlayingCardName(suit, rank))
+             self.swapDialog = PDialog.PDialog(text = string, style = OTPDialog.YesNo, giveMouse = False, command = self.swapCallback)
+-- 
+2.53.0
+

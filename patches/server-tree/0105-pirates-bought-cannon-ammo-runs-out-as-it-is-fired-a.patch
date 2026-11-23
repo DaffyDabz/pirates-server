@@ -1,0 +1,96 @@
+From 7939fa6c47f20c664619ccac134e9b430146f4f9 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:53:20 -0800
+Subject: [PATCH 105/371] pirates: bought cannon ammo runs out as it is fired,
+ as server-tree patch 0119 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/BattleManagerAI.py |  6 ++++-
+ pirates/battle/WeaponBaseAI.py    | 40 +++++++++++++++++++++++++++++++
+ 2 files changed, 45 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/battle/BattleManagerAI.py b/pirates/battle/BattleManagerAI.py
+index c7890c6..f0744f2 100644
+--- a/pirates/battle/BattleManagerAI.py
++++ b/pirates/battle/BattleManagerAI.py
+@@ -116,7 +116,11 @@ class BattleManagerAI(BattleManagerBase):
+             inventory = avatar.getInventory()
+             if ammoSkillId and not WeaponGlobals.isInfiniteAmmo(ammoSkillId):
+                 ammoId = WeaponGlobals.getSkillAmmoInventoryId(ammoSkillId)
+-                if ammoId and self.getIsWeaponAmmo(ammoId):
++                # cannon ammo is paid when the shot is fired
++                # (WeaponBaseAI._useCannonAmmo), so a ball that hits a target on
++                # land does not cost it a second time
++                isCannonAmmo = InventoryType.begin_WeaponCannonAmmo <= ammoId <= InventoryType.end_WeaponCannonAmmo if ammoId else False
++                if ammoId and self.getIsWeaponAmmo(ammoId) and not isCannonAmmo:
+                     ammoAmt = inventory.getStackQuantity(ammoId)
+ 
+                     # We should not attempt to remove ammo if we don't have any for that type.
+diff --git a/pirates/battle/WeaponBaseAI.py b/pirates/battle/WeaponBaseAI.py
+index 9d1b1c1..b78199a 100644
+--- a/pirates/battle/WeaponBaseAI.py
++++ b/pirates/battle/WeaponBaseAI.py
+@@ -6,7 +6,9 @@ from direct.distributed.ClockDelta import globalClockDelta
+ from otp.avatar.DistributedAvatarAI import DistributedAvatarAI
+ 
+ from pirates.battle.WeaponBaseBase import WeaponBaseBase
++from pirates.battle import WeaponGlobals
+ from pirates.piratesbase import PiratesGlobals
++from pirates.uberdog.UberDogGlobals import InventoryType
+ from pirates.world.DistributedGameAreaAI import DistributedGameAreaAI
+ 
+ 
+@@ -63,11 +65,49 @@ class WeaponBaseAI(WeaponBaseBase):
+         # timestamp so we know when the projectile request expires...
+         timestamp = globalClockDelta.getRealNetworkTime(bits=32)
+         self.air.targetMgr.addProjectile(avatar.doId, skillId, ammoSkillId, timestamp)
++        self._useCannonAmmo(avatar, ammoSkillId)
+ 
+         # send the projectile skill update so everyone in the same zone
+         # will see the projectile...
+         self.sendUpdate('useProjectileSkill', [skillId, ammoSkillId, posHpr, timestamp, power])
+ 
++    @staticmethod
++    def isCannonAmmo(ammoId):
++        return bool(ammoId) and InventoryType.begin_WeaponCannonAmmo <= ammoId <= InventoryType.end_WeaponCannonAmmo
++
++    def _useCannonAmmo(self, avatar, ammoSkillId):
++        """
++        One shot of a limited cannon ammo (chain shot, grape shot, firebrand...)
++        is paid when it is fired. The server only took ammo off when a ball hit a
++        target on land (BattleManagerAI.getTargetedSkillResult), never for a ball
++        fired at a ship or into the sea, and the client rereads its shot count
++        from the inventory each time the pirate takes a cannon, so the 25 rounds
++        bought at the shop never ran out. Round shot is infinite and costs
++        nothing. A pirate with none left is not stopped here: his own cannon
++        already refuses the shot at 0 (DistributedPCCannon).
++        """
++        if not ammoSkillId or not hasattr(avatar, 'getInventory'):
++            return
++
++        try:
++            if WeaponGlobals.isInfiniteAmmo(ammoSkillId):
++                return
++
++            ammoId = WeaponGlobals.getSkillAmmoInventoryId(ammoSkillId)
++        except Exception:
++            return
++
++        if not self.isCannonAmmo(ammoId):
++            return
++
++        inventory = avatar.getInventory()
++        if inventory is None:
++            return
++
++        amount = inventory.getStackQuantity(ammoId)
++        if amount > 0:
++            inventory.b_setStackQuantity(ammoId, amount - 1)
++
+     def suggestProjectileSkillResult(self, skillId, ammoSkillId, result, targetId, areaIdList, pos, normal, codes, timestamp):
+         avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
+         if not avatar:
+-- 
+2.53.0
+

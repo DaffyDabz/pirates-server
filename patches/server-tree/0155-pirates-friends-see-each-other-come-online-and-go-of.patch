@@ -1,0 +1,67 @@
+From 54343ba2106b5f6fdbe3c186ce91ed01ed2105aa Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:18:52 -0800
+Subject: [PATCH 155/371] pirates: friends see each other come online and go
+ offline, server-tree patch 0169
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../distributed/PiratesInternalRepository.py   |  5 +++++
+ pirates/uberdog/ClientServicesManagerUD.py     | 18 ++++++++++++++++++
+ 2 files changed, 23 insertions(+)
+
+diff --git a/pirates/distributed/PiratesInternalRepository.py b/pirates/distributed/PiratesInternalRepository.py
+index 423e37d..4b596a1 100644
+--- a/pirates/distributed/PiratesInternalRepository.py
++++ b/pirates/distributed/PiratesInternalRepository.py
+@@ -70,6 +70,11 @@ class PiratesInternalRepository(OTPInternalRepository):
+         self._registerInternalNetMessage('activateShip')
+         self._registerInternalNetMessage('activateShipResponse')
+ 
++        # family server (2026-11-18): sent by a client post-remove when a
++        # pirate's game closes; PCAvatarFriendsManagerUD marks it offline.
++        # Added last so the numbers of the messages above do not move.
++        self._registerInternalNetMessage('avatarFriendsOffline')
++
+     def logPotentialHacker(self, message, kickChannel=False, **kwargs):
+         self.notify.warning(message)
+ 
+diff --git a/pirates/uberdog/ClientServicesManagerUD.py b/pirates/uberdog/ClientServicesManagerUD.py
+index 48bafbe..1459ef4 100644
+--- a/pirates/uberdog/ClientServicesManagerUD.py
++++ b/pirates/uberdog/ClientServicesManagerUD.py
+@@ -945,6 +945,15 @@ class LoadAvatarFSM(AvatarOperationFSM):
+ 
+         def inventoryActivatedCallback(inventoryId):
+             self.csm.air.writeServerEvent('avatarChosen', avId=self.avId, target=self.target)
++            # family server (2026-11-18): the friends manager shows this pirate
++            # online to its friends, sends it its friends list, and adds the
++            # post-remove that marks it offline when the game closes
++            friendsManager = getattr(self.csm.air, 'avatarFriendsManager', None)
++            if friendsManager is not None and hasattr(friendsManager, 'avatarOnline'):
++                try:
++                    friendsManager.avatarOnline(self.avId, self.csm.GetAccountConnectionChannel(self.target))
++                except Exception as e:
++                    self.notify.warning('friends online for %d failed: %r' % (self.avId, e))
+             self.demand('Off')
+ 
+         # activate the avatar's inventory on the DBSS
+@@ -1060,6 +1069,15 @@ class UnloadAvatarFSM(OperationFSM):
+         datagram.addUint32(self.avId)
+         self.csm.air.send(datagram)
+ 
++        # family server (2026-11-18): CLEAR_POST_REMOVES above also cleared the
++        # friends offline post-remove, so tell the friends manager here
++        friendsManager = getattr(self.csm.air, 'avatarFriendsManager', None)
++        if friendsManager is not None and hasattr(friendsManager, 'avatarOffline'):
++            try:
++                friendsManager.avatarOffline(self.avId)
++            except Exception as e:
++                self.notify.warning('friends offline for %d failed: %r' % (self.avId, e))
++
+         # Done!
+         self.csm.air.writeServerEvent('avatarUnload', avId=self.avId)
+         self.demand('Off')
+-- 
+2.53.0
+

@@ -1,0 +1,38 @@
+From db89dab2ff643be731baf565e4ee68826d30d4fa Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:04:41 -0800
+Subject: [PATCH 240/371] pirates: pirates far away switch to the right level
+ of detail without an error (0304, patch 22)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/MasterHuman.py | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/pirate/MasterHuman.py b/pirates/pirate/MasterHuman.py
+index dd7ee0e..aaff79d 100644
+--- a/pirates/pirate/MasterHuman.py
++++ b/pirates/pirate/MasterHuman.py
+@@ -519,8 +519,8 @@ class MasterHuman(HumanBase.HumanBase, Biped.Biped):
+             
+         else:
+             numPaths = self.model.body.getNumPaths()
+-            medIdx = numPaths / 3
+-            lowIdx = (numPaths / 3) * 2
++            medIdx = numPaths // 3  # family server (patch 0304): whole-number division, as in the 2008 Python 2 code
++            lowIdx = (numPaths // 3) * 2  # family server (patch 0304): whole-number division, as in the 2008 Python 2 code
+             if self.zombie:
+                 self.model.body.setColorScale(Vec4(1, 1, 1, 1))
+                 if self.optimizeLOD:
+@@ -635,7 +635,7 @@ class MasterHuman(HumanBase.HumanBase, Biped.Biped):
+             
+             def tempColorParts(parts, ct):
+                 numPaths = parts.getNumPaths()
+-                lowIdx = (numPaths / 3) * 2
++                lowIdx = (numPaths // 3) * 2  # family server (patch 0304): whole-number division, as in the 2008 Python 2 code
+                 for j in range(lowIdx):
+                     parts[j].setColorScale(ct)
+                 
+-- 
+2.53.0
+

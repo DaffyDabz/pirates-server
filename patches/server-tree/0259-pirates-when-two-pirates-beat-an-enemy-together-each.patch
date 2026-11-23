@@ -1,0 +1,66 @@
+From ac12328349af6c28a7de02bf248b28d30d9b878b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 07:54:34 -0800
+Subject: [PATCH 259/371] pirates: when two pirates beat an enemy together,
+ each one is paid once (0345)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/BattleManagerAI.py      | 11 ++++++++++-
+ pirates/distributed/TargetManagerAI.py |  9 +++++++--
+ 2 files changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/battle/BattleManagerAI.py b/pirates/battle/BattleManagerAI.py
+index 5edd196..af21c95 100644
+--- a/pirates/battle/BattleManagerAI.py
++++ b/pirates/battle/BattleManagerAI.py
+@@ -502,7 +502,7 @@ class BattleManagerAI(BattleManagerBase):
+         attacker.comboDiary.clear()
+ 
+     def rewardAttackers(self, target):
+-        attackers = self.air.targetMgr.getAttackers(target.doId)
++        attackers = list(self.air.targetMgr.getAttackers(target.doId) or [])
+         for attackerId in attackers:
+             attacker = self.air.doId2do.get(attackerId)
+             if attacker is None:
+@@ -511,6 +511,15 @@ class BattleManagerAI(BattleManagerBase):
+ 
+             self.rewardAttacker(attacker, target)
+ 
++        # family server (11-19, 0345): each pirate is done with this enemy once he is paid. His skill diary (the
++        # notoriety he earned) was only cleared when the body was deleted 5 seconds later, and then only for every
++        # second pirate: the other pirate's notoriety for this enemy was paid again at his next kill, and his
++        # regeneration never started again. A pirate who was already on his next enemy lost those hits.
++        for attackerId in attackers:
++            attacker = self.air.doId2do.get(attackerId)
++            if attacker is not None:
++                self.air.targetMgr.removeAttacker(attacker, target)
++
+     def rewardAttacker(self, attacker, target):
+         inventory = attacker.getInventory()
+         assert(inventory is not None)
+diff --git a/pirates/distributed/TargetManagerAI.py b/pirates/distributed/TargetManagerAI.py
+index fe1d29d..b40a562 100644
+--- a/pirates/distributed/TargetManagerAI.py
++++ b/pirates/distributed/TargetManagerAI.py
+@@ -48,10 +48,15 @@ class TargetManagerAI(DistributedObjectAI, TargetManagerBase):
+             return
+ 
+         # clear all of our previously targeted attackers
++        # family server (11-19, 0345): over a copy. removeAttacker takes each one off this same list, so the loop
++        # skipped every second attacker: with two pirates on one enemy, the second was never cleared.
+         attackerDoIds = self.objectDict[target.doId]
+-        for attackerDoId in attackerDoIds:
++        for attackerDoId in list(attackerDoIds):
+             attacker = self.air.doId2do.get(attackerDoId)
+-            assert(attacker is not None)
++            if attacker is None:
++                attackerDoIds.remove(attackerDoId)
++                continue
++
+             self.removeAttacker(attacker, target)
+ 
+         del self.objectDict[target.doId]
+-- 
+2.53.0
+

@@ -1,0 +1,68 @@
+From 97f5eafb25e8fb5666feabd5214657d4db34fbe1 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 15:33:11 -0800
+Subject: [PATCH 019/371] quests: a finished quest not yet handed in points the
+ arrow and beam at the NPC it goes back to
+
+Every task done but the hand-in scene cut short (logout, crash, game closed mid-dialog) left the
+quest with no active task, so requestQuestStep sent nothing: no arrow, no beam, and the player had
+no idea the quest only needed one more talk with that NPC. The step now goes to the quest's return
+giver (its own, else a finished task's, else whoever gave it), preferring one that is spawned.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/DistributedQuestAvatarAI.py | 30 +++++++++++++++++++----
+ 1 file changed, 25 insertions(+), 5 deletions(-)
+
+diff --git a/pirates/quest/DistributedQuestAvatarAI.py b/pirates/quest/DistributedQuestAvatarAI.py
+index f7dd491..85a9e13 100644
+--- a/pirates/quest/DistributedQuestAvatarAI.py
++++ b/pirates/quest/DistributedQuestAvatarAI.py
+@@ -136,12 +136,18 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+             return
+ 
+         activeTask = self.air.questMgr.getActiveTask(activeQuest)
+-        if not activeTask:
+-            return
++        if activeTask:
++            # attempt to get the quest step object in which,
++            # the ray of light will hover over...
++            goalUid = activeTask.getGoalUid()
++        else:
++            # every task is done but the quest was never handed in: the finishing scene with the NPC was cut short
++            # (a logout, a crash, the game closed mid-dialog). Talking to that NPC again plays the scene and finishes
++            # the quest, so point the beam there as the original game did; the arrow and beam used to just vanish.
++            goalUid = self._getReturnGiverUid(activeQuest)
++            if not goalUid:
++                return
+ 
+-        # attempt to get the quest step object in which,
+-        # the ray of light will hover over...
+-        goalUid = activeTask.getGoalUid()
+         if goalUid is not None and not isinstance(goalUid, str):
+             # "defeat / recover from any <enemy type>" tasks carry a QuestGoal, not a uid:
+             # point the beam at a live enemy that counts (the original game's preferred
+@@ -172,6 +178,20 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+         originDoId = goalParent.doId if goalParent else self.doId
+         self.sendUpdate('setQuestStep', [[originDoId, goalObject.doId, stepType, [x, y, z, h], self._getIslandUidOf(goalObject)]])
+ 
++    def _getReturnGiverUid(self, quest):
++        # the NPC a finished quest goes back to: the quest's return givers, else its tasks' (a visit task's NPC),
++        # else whoever gave it; one that is spawned first
++        dna = quest.getQuestDNA()
++        uids = list((dna.getReturnGiverIds() if dna else None) or ())
++        for task in quest.getTasks() or ():
++            uids += list(task.getReturnGiverIds() or ())
++        uids.append(quest.getGiverId())
++        uids = [uid for uid in uids if isinstance(uid, str) and uid not in ('', '0')]
++        for uid in uids:
++            if self.air.uidMgr.justGetMeMeObject(uid) is not None:
++                return uid
++        return uids[0] if uids else None
++
+     def _getIslandUidOf(self, obj):
+         # the last slot of a quest step is the island the client puts the world-map quest dart on
+         # (uid2doId of it); it used to carry the goal's own uid, so the map never marked the quest
+-- 
+2.53.0
+

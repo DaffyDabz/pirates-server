@@ -1,0 +1,50 @@
+From 84d4ad9245dad981aabd793d403c57a7590af45c Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 23:46:05 -0800
+Subject: [PATCH 057/371] tutorial: a brand-new pirate is sent into the jail
+ with Jack instead of waiting forever on a black screen
+
+The jail is an interior in its own container, not in the tutorial world. The
+teleport handler told the client to open the world at the jail's zone, where
+nothing is, so it never received the world's ocean grid (zone 110, with the
+islands) and its teleport waited for it forever; it also waited on the
+container for the spawn info, which readyToFinishTeleport sets on the world.
+For a game area outside the world, open the world at the ocean grid's zone and
+wait on the world; the jail still arrives through its container's zone.
+Islands (game areas in the world) are sent exactly as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedTeleportHandlerAI.py | 15 +++++++++++++--
+ 1 file changed, 13 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/instance/DistributedTeleportHandlerAI.py b/pirates/instance/DistributedTeleportHandlerAI.py
+index 954e817..7760248 100644
+--- a/pirates/instance/DistributedTeleportHandlerAI.py
++++ b/pirates/instance/DistributedTeleportHandlerAI.py
+@@ -28,9 +28,20 @@ class DistributedTeleportHandlerAI(DistributedObjectAI):
+         # crashed on 'Data file not found for area'. Send that file as the instance file: the client loads it next to the
+         # world file (which still gives the ocean data), as it would have after walking in through the island's door
+         instanceFileName = getattr(gameArea, 'interiorFile', None) or world.getFileName()
++
++        # family server (11-16): an interior (the tutorial's jail) is not in the world but in a container of its own.
++        # The client opened the world at the interior's zone, where nothing is, so it never saw the world's ocean grid
++        # (zone 110, with the islands) and waited for it forever on a black screen; and it looked for its spawn info
++        # on the container, while readyToFinishTeleport sets it on the world. Open the world at the ocean grid's zone
++        # and wait on the world itself; the interior still comes in through its container's zone
++        if gameArea.parentId == world.doId:
++            worldZoneId, spawnDoId = gameArea.zoneId, gameArea.parentId
++        else:
++            worldZoneId, spawnDoId = world.oceanGrid.zoneId, world.doId
++
+         self.sendUpdateToAvatarId(self.avatar.doId, 'continueTeleportToInstance', [world.doId,
+-            gameArea.zoneId, world.doId, instanceFileName, gameArea.parentId, gameArea.zoneId,
+-            gameArea.parentId, world.getFileName(), world.oceanGrid.doId])
++            worldZoneId, world.doId, instanceFileName, gameArea.parentId, gameArea.zoneId,
++            spawnDoId, world.getFileName(), world.oceanGrid.doId])
+ 
+     def readyToFinishTeleport(self, instanceDoId):
+         world = self.teleportFsm.world
+-- 
+2.53.0
+

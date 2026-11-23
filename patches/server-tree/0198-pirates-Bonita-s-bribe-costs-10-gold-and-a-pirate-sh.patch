@@ -1,0 +1,82 @@
+From f60bf107cdcaf66403c463798b30ad3ee5d9de05 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 01:07:55 -0800
+Subject: [PATCH 198/371] pirates: Bonita's bribe costs 10 gold and a pirate
+ short of gold is told how to get more (0192, patch 19)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/npc/DistributedNPCTownfolk.py    | 8 +++++++-
+ pirates/piratesbase/PLocalizerEnglish.py | 3 ++-
+ pirates/quest/QuestDB.py                 | 2 +-
+ 3 files changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/npc/DistributedNPCTownfolk.py b/pirates/npc/DistributedNPCTownfolk.py
+index 50ca321..7e412a1 100644
+--- a/pirates/npc/DistributedNPCTownfolk.py
++++ b/pirates/npc/DistributedNPCTownfolk.py
+@@ -413,6 +413,7 @@ class DistributedNPCTownfolk(DistributedBattleNPC.DistributedBattleNPC, Distribu
+ 
+     def confirmBribe(self):
+         gold = 0
++        bribeType = 0
+         for quest in localAvatar.getInventory().getQuestList():
+             if quest.isComplete():
+                 continue
+@@ -420,13 +421,18 @@ class DistributedNPCTownfolk(DistributedBattleNPC.DistributedBattleNPC, Distribu
+             for task in quest.questDNA.getTasks():
+                 if isinstance(task, QuestTaskDNA.BribeNPCTaskDNA) and task.getNpcId() == self.getUniqueId() and task.getGold() > gold:
+                     gold = task.getGold()
++                    bribeType = task.getBribeType()
+ 
+         if self.confirmDialog:
+             self.confirmDialog.destroy()
+         
+         avGold = localAvatar.getMoney()
+         if avGold >= gold:
+-            self.confirmDialog = PDialog.PDialog(text = PLocalizer.BribeConfirmDialog % {
++            # patch 0192: the "Pay Gold" option (bribeType 1) asks "Pay <name> N gold?", not "Bribe <name> for N gold?"
++            confirmText = PLocalizer.BribeConfirmDialog
++            if bribeType == 1:
++                confirmText = getattr(PLocalizer, 'BribeAltConfirmDialog', confirmText)
++            self.confirmDialog = PDialog.PDialog(text = confirmText % {
+                 'name': self.getName(),
+                 'gold': gold }, style = OTPDialog.YesNo, command = self.__handleBribeConfirmation)
+         else:
+diff --git a/pirates/piratesbase/PLocalizerEnglish.py b/pirates/piratesbase/PLocalizerEnglish.py
+index 3e4f1e8..a60cc57 100644
+--- a/pirates/piratesbase/PLocalizerEnglish.py
++++ b/pirates/piratesbase/PLocalizerEnglish.py
+@@ -2003,6 +2003,7 @@ InteractPvPHatHelp = 'Spend PvP Infamy on unique hats'
+ RespecConfirmDialog = 'Pay %(gold)s gold to retrain your %(weapon)s? Retraining will refund all of your spent skill points so that you can redistribute them.'
+ RespecPriceIncreaseDialog = ' \n\nChoose carefully! The next time you Retrain, it will cost more Gold!'
+ BribeConfirmDialog = 'Bribe %(name)s for %(gold)s gold?'
++BribeAltConfirmDialog = 'Pay %(name)s %(gold)s gold?'
+ HealHpConfirmDialog = 'Pay %(gold)s gold for full healing?'
+ HealMojoConfirmDialog = 'Pay %(gold)s gold for full voodoo recharge?'
+ RepairConfirmDialog = 'Pay %(gold)s gold for full ship repairs?'
+@@ -2010,7 +2011,7 @@ OverhaulConfirmDialog = 'Pay %(gold)s gold to reconstruct your wrecked ship?'
+ SellShipConfirmDialog = 'Sell this ship for %(gold)s gold?'
+ SellShipAreYouSureDialog = 'Are you sure you want to sell your ship? It will be permanently lost.'
+ BribeConfirmYourGold = 'Your Gold: %s'
+-BribeNotEnoughGold = 'You cannot afford %(gold)s gold for the bribe.'
++BribeNotEnoughGold = 'You need %(gold)s gold for this. Defeat enemies to find more gold, then come back!'
+ InteractKey = 'Shift'
+ TabKey = 'Tab'
+ CtrlKey = 'Ctrl'
+diff --git a/pirates/quest/QuestDB.py b/pirates/quest/QuestDB.py
+index 236d3a0..1fa27e5 100644
+--- a/pirates/quest/QuestDB.py
++++ b/pirates/quest/QuestDB.py
+@@ -125,7 +125,7 @@ QuestDict = {
+     'c3r2r1.4deliverGrog': QuestDNA(tasks = DeliverItemTaskDNA(item = QuestItems.CoinBag, npcId = NPCIds.DOC_GROG), questInt = 3008, velvetRoped = False, rewards = (ReputationReward(ExpRewards.SMALL),), returnGiverIds = (NPCIds.DOC_GROG,)),
+     'c3r2r1.5visitCarver': QuestDNA(tasks = VisitTaskDNA(npcId = NPCIds.CARVER), questInt = 3009, velvetRoped = False, rewards = (ReputationReward(ExpRewards.SMALL),)),
+     'c3r2r1.6deliverBonita': QuestDNA(tasks = DeliverItemTaskDNA(item = QuestItems.TattooPattern, npcId = NPCIds.BONITA), questInt = 3010, velvetRoped = False, rewards = (ReputationReward(ExpRewards.SMALL),), returnGiverIds = (NPCIds.BONITA,)),
+-    'c3r2r1.6.5bribeBonita': QuestDNA(tasks = BribeNPCTaskDNA(npcId = NPCIds.BONITA, gold = Bribes.MEDIUM), questInt = 3011, velvetRoped = False, rewards = (ReputationReward(ExpRewards.SMALL),)),
++    'c3r2r1.6.5bribeBonita': QuestDNA(tasks = BribeNPCTaskDNA(npcId = NPCIds.BONITA, gold = Bribes.SMALL), questInt = 3011, velvetRoped = False, rewards = (ReputationReward(ExpRewards.SMALL),)),
+     'c3r2r1r1.1recoverClaw': QuestDNA(tasks = RecoverAvatarItemTaskDNA(item = QuestItems.CrabClaw, maxAttempts = Attempts.FREQUENT, probability = Probability.FREQUENT, num = 3, enemyType = AvatarTypes.Crab), questInt = 3012, velvetRoped = False, rewards = (ReputationReward(ExpRewards.SMALL),)),
+     'c3r2r1r1.2recoverRod': QuestDNA(tasks = RecoverShipItemTaskDNA(item = QuestItems.CopperRod, maxAttempts = Attempts.VERY_FREQUENT, probability = Probability.FREQUENT, num = 1, faction = AvatarTypes.Navy), questInt = 3013, requiresVoyage = True, velvetRoped = False, rewards = (ReputationReward(ExpRewards.SMALL),)),
+     'c3r2r1r1.3recoverBlood': QuestDNA(tasks = RecoverAvatarItemTaskDNA(item = QuestItems.Blood, maxAttempts = Attempts.FREQUENT, probability = Probability.FREQUENT, num = 5, enemyType = AvatarTypes.Scorpion), questInt = 3014, velvetRoped = False, rewards = (ReputationReward(ExpRewards.SMALL),)),
+-- 
+2.53.0
+

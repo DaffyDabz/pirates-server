@@ -1,0 +1,57 @@
+From e86f7fe5cd8d98f70a45792425cbe92d11fd98a8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:24:35 -0800
+Subject: [PATCH 160/371] pirates: a ship overhaul with no price is refused
+ instead of crashing, server-tree patch 0182
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/economy/DistributedShopKeeperAI.py | 25 ++++++++++++++++++++--
+ 1 file changed, 23 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/economy/DistributedShopKeeperAI.py b/pirates/economy/DistributedShopKeeperAI.py
+index 5b2e9c4..150bbe3 100644
+--- a/pirates/economy/DistributedShopKeeperAI.py
++++ b/pirates/economy/DistributedShopKeeperAI.py
+@@ -889,7 +889,16 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+             maxSp, = fields['setMaxSp']
+             sp, = fields['setSp']
+             shipClass, = fields['setShipClass']
+-            cost = int(costFn(maxHp, hp, maxSp, sp, shipClass))
++            cost = costFn(maxHp, hp, maxSp, sp, shipClass)
++            if cost is None:
++                # patch 0182: a ship class with no shop price (an overhaul of a
++                # tutorial or quest ship) made int(None * 0.4) raise in this
++                # database callback; now the sale is refused
++                self.notify.warning('%s: ship %d (class %s) of pirate %d has no price, refused' % (
++                    kind, shipId, shipClass, avatar.doId))
++                self.d_makeSaleResponse(avatar.doId, 0)
++                return
++            cost = int(cost)
+             if freeWhenBroke:
+                 # family server (11-18): a pirate whose gold is below the price is repaired free
+                 from pirates.ship import ShipGlobals
+@@ -925,7 +934,19 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+ 
+     def requestPurchaseOverhaul(self, shipId):
+         from pirates.economy import EconomyGlobals
+-        self._repairShip(shipId, lambda mh, h, ms, s, sc: EconomyGlobals.getItemCost(sc) * EconomyGlobals.OVERHAUL_COST_PERCENTAGE, 'requestPurchaseOverhaul')
++        from pirates.ship import ShipGlobals
++
++        def _cost(mh, h, ms, s, sc):
++            # patch 0182: priced like the client's dialog (the ship's shop price,
++            # by class, or by model class as a sale is), None when it has none
++            price = EconomyGlobals.getItemCost(sc)
++            if price is None:
++                price = EconomyGlobals.getItemCost(ShipGlobals.getModelClass(sc))
++            if price is None:
++                return None
++            return price * EconomyGlobals.OVERHAUL_COST_PERCENTAGE
++
++        self._repairShip(shipId, _cost, 'requestPurchaseOverhaul')
+ 
+     def requestSellShip(self, shipId):
+         from pirates.ship import ShipGlobals
+-- 
+2.53.0
+

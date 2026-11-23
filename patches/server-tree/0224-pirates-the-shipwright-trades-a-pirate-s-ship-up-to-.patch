@@ -1,0 +1,207 @@
+From 62a53d2b04d34f3c7970ada05f29b2f609467879 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:47:20 -0800
+Subject: [PATCH 224/371] pirates: the shipwright trades a pirate's ship up to
+ the next one, keeping its name and cargo (0263)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/economy/DistributedShopKeeperAI.py | 161 +++++++++++++++++++++
+ 1 file changed, 161 insertions(+)
+
+diff --git a/pirates/economy/DistributedShopKeeperAI.py b/pirates/economy/DistributedShopKeeperAI.py
+index 0856ae0..957210a 100644
+--- a/pirates/economy/DistributedShopKeeperAI.py
++++ b/pirates/economy/DistributedShopKeeperAI.py
+@@ -2,6 +2,7 @@ import io
+ import json
+ import math
+ import os
++import time
+ 
+ from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from direct.directnotify import DirectNotifyGlobal
+@@ -21,6 +22,22 @@ FEMALE_UID_START = 80000
+ # sold by these pirates (the family's own pirate and ship, and the test ship)
+ SOLD_SHIP_KEEP_SHIPS = (100000173, 100000043)
+ SOLD_SHIP_KEEP_AVATARS = (100000170,)
++# patch 0263: pirates whose ship is being traded up, with when it started (an entry older than this is stale)
++SHIPS_TRADING_UP = {}
++SHIP_TRADE_UP_TIMEOUT = 120
++
++
++def _tradingUp(avId):
++    started = SHIPS_TRADING_UP.get(avId)
++    return started is not None and time.time() - started < SHIP_TRADE_UP_TIMEOUT
++
++
++def _shipClassName(shipClass):
++    try:
++        from pirates.piratesbase import PLocalizer
++        return PLocalizer.ShipClassNames.get(shipClass) or 'ship'
++    except Exception:
++        return 'ship'
+ TATTOO_FIELDS = ['Chest', 'Zone2', 'Zone3', 'Zone4', 'Zone5', 'Zone6', 'Zone7', 'Zone8']
+ # jewelry type (JewelryGlobals) -> dna zone number (setJewelryZoneN), exactly as JewelryStoreGUI.closePanel maps them
+ JEWELRY_ZONE = {
+@@ -277,6 +294,14 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+             self.d_makeSaleResponse(avatar.doId, RejectCode.TIMEOUT)
+             return
+ 
++        # patch 0263: trading a ship up rides on the reserved item SHIP_UPGRADE_ITEM, alone in the cart
++        if [item for item in buying if item[0] == EconomyGlobals.SHIP_UPGRADE_ITEM]:
++            if len(buying) != 1 or selling:
++                self.d_makeSaleResponse(avatar.doId, RejectCode.TIMEOUT)
++                return
++            self._upgradeShip(avatar, inventory, int(buying[0][1]))
++            return
++
+         # family server: check the whole cart first, so a cart the pirate cannot afford buys nothing at all
+         total = 0
+         for itemId, itemQuantity in buying:
+@@ -984,6 +1009,142 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+ 
+         self._withOwnedShip(shipId, _got)
+ 
++    def _upgradeShip(self, avatar, inventory, shipId):
++        """
++        patch 0263: trade a ship in at the shipwright for the next one of its kind (EconomyGlobals.getShipUpgrade:
++        Light Sloop -> Sloop -> War Sloop, the same for galleons and frigates). The ship must be the pirate's
++        own, in port (put away, nobody aboard) and not one of the kept ships; the pirate needs the new ship's
++        Sailing level (the shop's level for it) and the price. The new ship gets the old one's name and cargo,
++        and the old ship is deleted from the database as a sold one is (patch 0201). If the new ship cannot be
++        made, the gold and the old ship are given back.
++        """
++        from pirates.ship import ShipGlobals
++        from pirates.reputation import ReputationGlobals
++        avId = avatar.doId
++        busy = 'The shipwright is still working on your last ship. Try again in a moment.'
++
++        def refuse(text):
++            self.notify.info('pirate %d may not trade up ship %d: %s' % (avId, shipId, text))
++            if hasattr(avatar, 'd_setSystemMessage'):
++                avatar.d_setSystemMessage(0, text)
++            self.d_makeSaleResponse(avId, 0)
++
++        if shipId in SOLD_SHIP_KEEP_SHIPS:
++            refuse('This ship cannot be traded in.')
++            return
++        if shipId not in inventory.getShipDoIdList():
++            refuse('That ship is not yours.')
++            return
++        if _tradingUp(avId) or avId in self.air.shipLoader.avatar2fsm:
++            refuse(busy)
++            return
++
++        SHIPS_TRADING_UP[avId] = time.time()
++
++        def stop(text):
++            SHIPS_TRADING_UP.pop(avId, None)
++            refuse(text)
++
++        def _got(dclass, fields):
++            if not fields:
++                stop('The shipwright could not find your ship. Try again.')
++                return
++
++            ship = self.air.doId2do.get(shipId)
++            if ship is not None:
++                crew = list(getattr(ship, 'crew', None) or [])
++                state = getattr(ship, 'gameState', None) or ['Off']
++                state = state[0] if isinstance(state, (list, tuple)) else state
++                if crew or state not in ('Off', 'PutAway', 'Sunk'):
++                    stop('Bring your ship into port and put it away before you trade it in.')
++                    return
++
++            oldClass = fields['setShipClass'][0]
++            oldName = _shipClassName(oldClass)
++            upgrade = EconomyGlobals.getShipUpgrade(oldClass)
++            if not upgrade:
++                stop('Your %s is already the biggest ship of its kind.' % oldName)
++                return
++
++            newClass, price = upgrade
++            newName = _shipClassName(newClass)
++            need = EconomyGlobals.getItemMinLevel(newClass) or 0
++            level = ReputationGlobals.getLevelFromTotalReputation(
++                InventoryType.SailingRep, inventory.getReputation(InventoryType.SailingRep))[0]
++            if level < need:
++                stop('You need Sailing level %d to sail a %s.' % (need, newName))
++                return
++
++            gold = inventory.getGoldInPocket()
++            if gold < price:
++                stop('You need %d gold to trade up to a %s.' % (price, newName))
++                return
++
++            # the database answer came later; look again
++            if shipId not in inventory.getShipDoIdList():
++                stop('That ship is not yours.')
++                return
++            if avId in self.air.shipLoader.avatar2fsm:
++                stop(busy)
++                return
++
++            shipName = (fields.get('setName') or ('',))[0]
++            cargo = list((fields.get('setCargo') or ([],))[0])
++            inventory.setShipDoIdList([s for s in inventory.getShipDoIdList() if s != shipId])
++            inventory.setGoldInPocket(gold - price)
++            job = {'done': False}
++
++            def giveBack():
++                ships = list(inventory.getShipDoIdList())
++                if shipId not in ships:
++                    inventory.setShipDoIdList(ships + [shipId])
++                inventory.setGoldInPocket(inventory.getGoldInPocket() + price)
++
++            def done(newId):
++                if job['done']:
++                    return
++                job['done'] = True
++                SHIPS_TRADING_UP.pop(avId, None)
++                if not newId:
++                    giveBack()
++                    refuse('The shipwright could not build your %s. Your gold and your %s are back.' % (newName, oldName))
++                    return
++
++                if cargo:
++                    moved = cargo
++                    try:
++                        maxCargo = ShipGlobals.getHullConfig(ShipGlobals.getModelClass(newClass))['setMaxCargo'][0]
++                        moved = cargo[:maxCargo]
++                    except Exception:
++                        pass
++                    self._setShipFields(newId, dclass, {'setCargo': [moved]})
++
++                for getter, setter in (('getActiveShipId', 'b_setActiveShipId'), ('getCrewShipId', 'b_setCrewShipId')):
++                    if hasattr(avatar, getter) and hasattr(avatar, setter) and getattr(avatar, getter)() == shipId:
++                        getattr(avatar, setter)(0)
++
++                bandManager = getattr(self.air, 'bandManager', None)
++                if bandManager is not None and hasattr(bandManager, 'updateShipInfo'):
++                    bandManager.updateShipInfo(avId)
++
++                if hasattr(avatar, 'd_setSystemMessage'):
++                    avatar.d_setSystemMessage(0, 'Your %s is now a %s! It kept its name and its cargo.' % (oldName, newName))
++                self.logShopkeepTransaction(type='requestUpgradeShip', shipId=shipId, newShipId=newId,
++                    price=price, purchaser=avId)
++                self.notify.info('pirate %d traded ship %d (class %d) up to ship %d (class %d) for %d gold' % (
++                    avId, shipId, oldClass, newId, newClass, price))
++                self.d_makeSaleResponse(avId, 2)
++                self._deleteSoldShip(avId, shipId, fields)
++
++            started = self.air.shipLoader.createShip(avatar, newClass, shipName, doneCallback=done)
++            if not started and not job['done']:
++                job['done'] = True
++                SHIPS_TRADING_UP.pop(avId, None)
++                giveBack()
++                refuse(busy)
++
++        self.air.dbInterface.queryObject(self.air.dbId, shipId, _got)
++
+     def _deleteSoldShip(self, avId, shipId, shipFields):
+         """
+         patch 0201: a sold ship's database objects (the ship, its own inventory,
+-- 
+2.53.0
+

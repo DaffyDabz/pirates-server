@@ -1,0 +1,83 @@
+From 5dcfbe40308876f124d5e1cf035c64cf0ac19b9e Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:47:19 -0800
+Subject: [PATCH 212/371] pirates: while Sea Battle runs, the Ship PvP quests
+ are offered again by their givers (0284, patch 20)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/DistributedQuestGiver.py   | 14 ++++++++++++--
+ pirates/quest/DistributedQuestGiverAI.py | 11 ++++++++++-
+ 2 files changed, 22 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/quest/DistributedQuestGiver.py b/pirates/quest/DistributedQuestGiver.py
+index b81a125..ab49a8a 100644
+--- a/pirates/quest/DistributedQuestGiver.py
++++ b/pirates/quest/DistributedQuestGiver.py
+@@ -49,6 +49,16 @@ def _getShipPvpQuestIds():
+     return _shipPvpQuestIds
+ 
+ 
++def _hiddenShipPvpQuestIds():
++    # family server (patch 0284): the AI offers Ship PvP quests while it runs Sea Battle. Its
++    # SiegeManager then sits on the district (SiegeManager.generate), so the client draws
++    # their quest marks again; with no Sea Battle they stay hidden as before.
++    district = getattr(base.cr, 'distributedDistrict', None)
++    if getattr(district, 'siegeManager', None) is not None:
++        return ()
++    return _getShipPvpQuestIds()
++
++
+ class DistributedQuestGiver(Avatar.Avatar):
+     notify = directNotify.newCategory('DistributedQuestGiver')
+     NoOffer = 0
+@@ -145,7 +155,7 @@ class DistributedQuestGiver(Avatar.Avatar):
+             if len(prereqExcludes):
+                 if questId in prereqExcludes:
+                     continue
+-            if questId in _getShipPvpQuestIds():
++            if questId in _hiddenShipPvpQuestIds():
+                 continue
+             
+             prereqs = questDNA.getPrereqs()
+@@ -517,7 +527,7 @@ class DistributedQuestGiver(Avatar.Avatar):
+             if len(prereqExcludes):
+                 if questId in prereqExcludes:
+                     continue
+-            if questId in _getShipPvpQuestIds():
++            if questId in _hiddenShipPvpQuestIds():
+                 continue
+             boolWeapLvlCheck = (questDNA.weapLvlType != None) & (questDNA.minWeapLevel > 0)
+             for prereq in questDNA.prereqs:
+diff --git a/pirates/quest/DistributedQuestGiverAI.py b/pirates/quest/DistributedQuestGiverAI.py
+index 2d667a6..803da4c 100644
+--- a/pirates/quest/DistributedQuestGiverAI.py
++++ b/pirates/quest/DistributedQuestGiverAI.py
+@@ -49,6 +49,15 @@ def _getShipPvpQuestIds():
+     return _shipPvpQuestIds
+ 
+ 
++def _hiddenShipPvpQuestIds(air):
++    # family server (patch 0284): the Ship PvP quests count Sea Battle hits and sinks (0250,
++    # SeaBattleManagerAI.shipHit / shipSunk), so they are hidden only when this AI runs no Sea Battle
++    # (want-sea-battle off: air.seaBattleMgr is never made).
++    if getattr(air, 'seaBattleMgr', None) is not None:
++        return ()
++    return _getShipPvpQuestIds()
++
++
+ class DistributedQuestGiverAI(DistributedObjectAI):
+     notify = DirectNotifyGlobal.directNotify.newCategory('DistributedQuestGiverAI')
+ 
+@@ -67,7 +76,7 @@ class DistributedQuestGiverAI(DistributedObjectAI):
+         ladderHistory = avatar.getQuestLadderHistory()
+         heldIds = [q.getQuestId() for q in inventory.getQuestList()]
+         offers = []
+-        shipPvp = _getShipPvpQuestIds()
++        shipPvp = _hiddenShipPvpQuestIds(self.air)
+         for questId, questDNA in list(QuestDB.QuestDict.items()):
+             if questId in heldIds or avatar.questStatus.hasLadderQuestId(questId):
+                 continue
+-- 
+2.53.0
+

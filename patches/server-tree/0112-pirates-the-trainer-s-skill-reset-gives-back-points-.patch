@@ -1,0 +1,77 @@
+From f8be2502fc09020f2f92f63cee85c0e557f22454 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:53:21 -0800
+Subject: [PATCH 112/371] pirates: the trainer's skill reset gives back points
+ that can be spent and stay reset, as server-tree patch 0126 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/DistributedPlayerPirateAI.py | 51 +++++++++++++++++++++
+ 1 file changed, 51 insertions(+)
+
+diff --git a/pirates/pirate/DistributedPlayerPirateAI.py b/pirates/pirate/DistributedPlayerPirateAI.py
+index 3dddaec..f3a6845 100644
+--- a/pirates/pirate/DistributedPlayerPirateAI.py
++++ b/pirates/pirate/DistributedPlayerPirateAI.py
+@@ -404,7 +404,58 @@ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI,
+ 
+             return
+ 
++    # family server: the trainer's skill reset (client SkillPage.respec) sends the weapon's rep id here and resets the
++    # skill dots on the client only; this used to change nothing, so the refunded points could not be spent and the
++    # old ranks came back at the next login. Reset the stacks the way the client does (each learned skill back to its
++    # first rank, the two starting skills to rank 1, SailPowerRecharge and CannonGrappleHook kept), give the points
++    # back as unspent points and charge the trainer's price (EconomyGlobals.getRespecCost, 250 / 2500 / 10000 gold).
++    RespecSkillRanges = {
++        InventoryType.CutlassRep: ('WeaponSkillCutlass', InventoryType.UnspentCutlass),
++        InventoryType.PistolRep: ('WeaponSkillPistol', InventoryType.UnspentPistol),
++        InventoryType.DaggerRep: ('WeaponSkillDagger', InventoryType.UnspentDagger),
++        InventoryType.GrenadeRep: ('WeaponSkillGrenade', InventoryType.UnspentGrenade),
++        InventoryType.DollRep: ('WeaponSkillDoll', InventoryType.UnspentDoll),
++        InventoryType.WandRep: ('WeaponSkillWand', InventoryType.UnspentWand),
++        InventoryType.SailingRep: ('SkillSailing', InventoryType.UnspentSailing),
++        InventoryType.CannonRep: ('WeaponSkillCannon', InventoryType.UnspentCannon)}
++
+     def resetSkillPoints(self, skillId):
++        weaponRep = skillId
++        inventory = self.air.inventoryManager.getInventory(self.doId)
++        skillRange = self.RespecSkillRanges.get(weaponRep)
++        if not inventory or not skillRange:
++            self.d_spentSkillPoint(skillId)
++            return
++
++        from pirates.economy import EconomyGlobals
++        from pirates.uberdog.UberDogGlobals import getNumRespecType
++        rangeName, unspentId = skillRange
++        numRespecId = getNumRespecType(weaponRep)
++        numRespecs = inventory.getStackQuantity(numRespecId)
++        cost = EconomyGlobals.getRespecCost(numRespecs)
++        gold = inventory.getGoldInPocket()
++        if gold < cost:
++            self.notify.warning('resetSkillPoints: avatar %d has %d gold, the reset costs %d' % (self.doId, gold, cost))
++            self.d_spentSkillPoint(skillId)
++            return
++
++        extra = 0
++        begin = getattr(InventoryType, 'begin_' + rangeName)
++        end = getattr(InventoryType, 'end_' + rangeName)
++        for skill in range(begin, end):
++            if skill in InventoryType.DontResetSkills:
++                continue
++            resetAmt = 2 if skill in InventoryType.StartingSkills else 1
++            curAmt = inventory.getStackQuantity(skill)
++            if curAmt > resetAmt:
++                extra += curAmt - resetAmt
++                inventory.b_setStackQuantity(skill, resetAmt)
++
++        inventory.b_setStackQuantity(unspentId, inventory.getStackQuantity(unspentId) + extra)
++        inventory.setGoldInPocket(gold - cost)
++        inventory.b_setStackQuantity(numRespecId, numRespecs + 1)
++        self.notify.info('resetSkillPoints: avatar %d reset rep %d, %d points back, paid %d gold' % (
++            self.doId, weaponRep, extra, cost))
+         self.d_spentSkillPoint(skillId)
+ 
+     def d_spentSkillPoint(self, category):
+-- 
+2.53.0
+

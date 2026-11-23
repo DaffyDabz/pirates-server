@@ -1,0 +1,58 @@
+From 794708a2aa4da55ec29ff8f2ba11f6c587729051 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 14:15:30 -0800
+Subject: [PATCH 069/371] npc: no big white ball of light over quest givers,
+ shopkeepers and helpers; the quest icon stays
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/economy/DistributedShopKeeper.py | 3 +++
+ pirates/npc/DistributedNPCTownfolk.py    | 3 +++
+ pirates/quest/DistributedQuestGiver.py   | 3 +++
+ 3 files changed, 9 insertions(+)
+
+diff --git a/pirates/economy/DistributedShopKeeper.py b/pirates/economy/DistributedShopKeeper.py
+index 0842b50..4627d03 100644
+--- a/pirates/economy/DistributedShopKeeper.py
++++ b/pirates/economy/DistributedShopKeeper.py
+@@ -169,6 +169,9 @@ class DistributedShopKeeper:
+                     self.shopCoinGlow.setDepthWrite(0)
+                     self.shopCoinGlow.node().setAttrib(ColorBlendAttrib.make(ColorBlendAttrib.MAdd, ColorBlendAttrib.OIncomingAlpha, ColorBlendAttrib.OOne))
+                     self.shopCoinGlow.setColor(0.85, 0.85, 0.85, 0.85)
++                    # the big white ball of light over the NPC's head (40 ft wide next to a 12 ft icon): off unless asked for
++                    if not base.config.GetBool('want-nametag-icon-glow', 0):
++                        self.shopCoinGlow.hide()
+         else:
+             if self.nametagIcon:
+                 self.shopCoin.setScale(2.0)
+diff --git a/pirates/npc/DistributedNPCTownfolk.py b/pirates/npc/DistributedNPCTownfolk.py
+index 38357b2..50ca321 100644
+--- a/pirates/npc/DistributedNPCTownfolk.py
++++ b/pirates/npc/DistributedNPCTownfolk.py
+@@ -110,6 +110,9 @@ class DistributedNPCTownfolk(DistributedBattleNPC.DistributedBattleNPC, Distribu
+             self.nametagIconGlow.setDepthWrite(0)
+             self.nametagIconGlow.node().setAttrib(ColorBlendAttrib.make(ColorBlendAttrib.MAdd, ColorBlendAttrib.OIncomingAlpha, ColorBlendAttrib.OOne))
+             self.nametagIconGlow.setColor(0.85, 0.85, 0.85, 0.85)
++            # the big white ball of light over the NPC's head (40 ft wide next to a 12 ft icon): off unless asked for
++            if not base.config.GetBool('want-nametag-icon-glow', 0):
++                self.nametagIconGlow.hide()
+ 
+     def autoTriggerCheck(self, Task = None):
+         localAvatar.checkForAutoTrigger(self.doId)
+diff --git a/pirates/quest/DistributedQuestGiver.py b/pirates/quest/DistributedQuestGiver.py
+index 1b92aee..4a1ba52 100644
+--- a/pirates/quest/DistributedQuestGiver.py
++++ b/pirates/quest/DistributedQuestGiver.py
+@@ -590,6 +590,9 @@ class DistributedQuestGiver(Avatar.Avatar):
+                 self.nametagIconGlow.setDepthWrite(0)
+                 self.nametagIconGlow.node().setAttrib(ColorBlendAttrib.make(ColorBlendAttrib.MAdd, ColorBlendAttrib.OIncomingAlpha, ColorBlendAttrib.OOne))
+                 self.nametagIconGlow.setColor(0.85, 0.85, 0.85, 0.85)
++                # the big white ball of light over the NPC's head (40 ft wide next to a 12 ft icon): off unless asked for
++                if not base.config.GetBool('want-nametag-icon-glow', 0):
++                    self.nametagIconGlow.hide()
+         else:
+             if self.nametagIcon:
+                 self.nametagIcon.detachNode()
+-- 
+2.53.0
+

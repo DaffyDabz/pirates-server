@@ -1,0 +1,42 @@
+From 7bbb788d9b635621797934b064be69ae0e2d817b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 07:31:25 -0800
+Subject: [PATCH 253/371] pirates: a captain or gunner who leaves lets go of
+ the wheel and cannons, and the ship goes adrift (0340)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShipAI.py | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index acbe1f5..a028588 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -536,6 +536,23 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+             if spot.userId == avatar.doId:
+                 spot.b_setUserId(0)
+ 
++        # family server (11-19, 0340): a pirate who logs off, crashes or leaves the ship while at the wheel or a
++        # cannon lets go of it, as if he had stepped away. The wheel kept him as its user, so nobody else could
++        # take it ("someone is at the wheel") or repair the ship, and the ship stayed under his steering.
++        wheel = self.steeringWheel
++        if wheel is not None and wheel.userId == avatar.doId:
++            wheel.b_setUserId(0)
++
++        if self.getClientController() == avatar.doId:
++            self.b_setClientController(0)
++            if self.crew and self.gameState and self.gameState[0] == 'ClientSteering':
++                self.b_setGameState('Adrift', 0)
++
++        for cannon in self.cannons:
++            if cannon.userId == avatar.doId:
++                cannon.stopWeapon(avatar.doId)
++                cannon.b_setUserId(0)
++
+         avatar.b_setShipId(0)
+         avatar.b_setActiveShipId(0)
+         avatar.b_setCrewShipId(0)
+-- 
+2.53.0
+

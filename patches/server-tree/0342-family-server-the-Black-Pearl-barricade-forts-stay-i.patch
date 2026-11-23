@@ -1,0 +1,44 @@
+From 5bccd3a5d351464dc0ab50e8f1b5c2a858eaccc7 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 04:14:32 -0800
+Subject: [PATCH 342/371] family server: the Black Pearl barricade forts stay
+ in the island's ship-deployer zone instead of being moved onto the grid
+
+0424 generates each fort in island zone 101 (PiratesGlobals.IslandShipDeployerZone), which every client near the
+island watches. But DistributedFortAI is a DistributedMovingObjectAI (through DistributedBattleAvatarAI), and
+DistributedIslandAI.handleChildArrive puts every moving-object child on the island grid, which moved the fort out of
+101 by its position (centre cell 710 at generate, then 115 once the update task saw its real spot). No client had
+interest there, so the forts stayed invisible and stage three of the Black Pearl still could not be played (boats'
+BPFORT4).
+
+handleChildArrive now leaves a child that arrives in IslandShipDeployerZone off the grid. Only the island's own
+ShipDeployer (not a moving object) and the Black Pearl forts are generated in that zone; everything arriving in a
+grid cell is unchanged. boats' sim_fortarrive.py (the real handleChildArrive, the real grid code, a real
+DistributedFortAI subclass): HEAD FAIL (fort moves 710, 115, ends in 115), patched PASS (stays in 101, off the grid;
+a moving object arriving in cell 710 is still put on the grid). AI only. The fort cannons (_createFortCannon) are
+still made in grid cells; not changed here.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedIslandAI.py | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/world/DistributedIslandAI.py b/pirates/world/DistributedIslandAI.py
+index d4944d4..2590173 100644
+--- a/pirates/world/DistributedIslandAI.py
++++ b/pirates/world/DistributedIslandAI.py
+@@ -48,7 +48,10 @@ class DistributedIslandAI(DistributedCartesianGridAI, DistributedGameAreaAI, Tea
+         self.removeObjectFromGrid(av)
+ 
+     def handleChildArrive(self, childObj, zoneId):
+-        if isinstance(childObj, DistributedMovingObjectAI):
++        # A child generated in the ship-deployer zone stays there: the Black Pearl barricade
++        # forts are moving objects, and the grid moved them from zone 101 into the grid cell
++        # at their own spot, where no client 1000 ft out in the bay ever saw them (boats' BPFORT4).
++        if isinstance(childObj, DistributedMovingObjectAI) and zoneId != PiratesGlobals.IslandShipDeployerZone:
+             self.addObjectToIslandGrid(childObj)
+ 
+         # through DistributedGameAreaAI (it ends in DistributedNodeAI, the same call as
+-- 
+2.53.0
+

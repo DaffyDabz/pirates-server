@@ -1,0 +1,49 @@
+From 435228a5845f406ac63f77387ccf65aa46334258 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:58:05 -0800
+Subject: [PATCH 249/371] pirates: the Lookout's invite mode ends cleanly
+ (0276, patch 22)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedMatchMakerAI.py | 2 ++
+ pirates/piratesgui/LookoutRequestLVL1.py    | 9 +++++++--
+ 2 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/instance/DistributedMatchMakerAI.py b/pirates/instance/DistributedMatchMakerAI.py
+index 2d6eb48..14dc8fb 100644
+--- a/pirates/instance/DistributedMatchMakerAI.py
++++ b/pirates/instance/DistributedMatchMakerAI.py
+@@ -380,6 +380,8 @@ class DistributedMatchMakerAI(DistributedObjectGlobalAI):
+             for otherId in invite.accepted:
+                 self.fail(otherId, False, 'The invitation from %s is over.' % self.nameOf(leaderId))
+             self.removeInvite(invite)
++            # family server (0276): and his own panel stops waiting (the client's matchFailed now acts in invite mode)
++            self.fail(leaderId, False, 'Your invitation is over, so the search ended.')
+             return
+ 
+         self.checkInvite(invite)
+diff --git a/pirates/piratesgui/LookoutRequestLVL1.py b/pirates/piratesgui/LookoutRequestLVL1.py
+index 9981ea0..a39e0d0 100644
+--- a/pirates/piratesgui/LookoutRequestLVL1.py
++++ b/pirates/piratesgui/LookoutRequestLVL1.py
+@@ -992,9 +992,14 @@ class LookoutRequestLVL1(InventoryPage):
+                 self.requestJoin()
+ 
+     def matchFailed(self, restartRequest):
+-        if self.currMode == PiratesGuiGlobals.REQUEST_FOUND_MODE or self.currMode == PiratesGuiGlobals.REQUEST_JOIN_MODE or self.currMode == PiratesGuiGlobals.SEARCH_MODE or self.currMode == PiratesGuiGlobals.REQUEST_TYPE_DIRECT_MODE:
++        # family server (patch 0276): a pirate in a crew is always put in invite mode (INVITE, CHALLENGE or
++        # INVITE_ACCEPTED). The stock panel ignored "match failed" there and kept "searching" for ever; now it ends
++        # the search (or keeps searching, in the same invite mode, when the server says to search again).
++        inviting = self.currMode == PiratesGuiGlobals.INVITE_MODE or self.currMode == PiratesGuiGlobals.CHALLENGE_MODE or self.currMode == PiratesGuiGlobals.INVITE_ACCEPTED_MODE
++        if inviting or self.currMode == PiratesGuiGlobals.REQUEST_FOUND_MODE or self.currMode == PiratesGuiGlobals.REQUEST_JOIN_MODE or self.currMode == PiratesGuiGlobals.SEARCH_MODE or self.currMode == PiratesGuiGlobals.REQUEST_TYPE_DIRECT_MODE:
+             if restartRequest and self.searchParams:
+-                self.updateMode(PiratesGuiGlobals.SEARCH_MODE)
++                if not inviting:
++                    self.updateMode(PiratesGuiGlobals.SEARCH_MODE)
+                 description = PLocalizer.LookoutFailedMsg
+             else:
+                 self.setSearchActive(False)
+-- 
+2.53.0
+

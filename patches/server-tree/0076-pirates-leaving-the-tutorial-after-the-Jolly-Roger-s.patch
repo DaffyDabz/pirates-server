@@ -1,0 +1,32 @@
+From 013634ca8696300eca2719c25b06f78997f4d362 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 15:00:09 -0800
+Subject: [PATCH 076/371] pirates: leaving the tutorial after the Jolly Roger
+ scene takes the pirate to Port Royal, as server-tree patch 0090 (AI only)
+
+The client asks for the main world by the name mainWorld; ours has another file name, so no world was found.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedTeleportMgrAI.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/pirates/instance/DistributedTeleportMgrAI.py b/pirates/instance/DistributedTeleportMgrAI.py
+index 7c34e62..0f42e21 100644
+--- a/pirates/instance/DistributedTeleportMgrAI.py
++++ b/pirates/instance/DistributedTeleportMgrAI.py
+@@ -193,6 +193,11 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+             world = standingWorld or self.getMainWorld()
+         else:
+             world = self.getWorld(instanceType, instanceName)
++            # family server (11-17): the client asks for the main world as 'mainWorld' (leaving the tutorial, the
++            # ~port magic word), but our main world's file has another name, so none was found and the pirate sat on
++            # the Jolly Roger's wreck for good. Any main world will do
++            if not world and instanceType == PiratesGlobals.INSTANCE_MAIN:
++                world = self.getMainWorld()
+ 
+         if not world or not isinstance(world, DistributedInstanceBaseAI):
+             # If this is a tutorial world that doesn't exist yet, trigger tutorial creation
+-- 
+2.53.0
+

@@ -1,0 +1,51 @@
+From 5c191c2c3d0aae091c134e32ae8e551ab2b196e9 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:56:11 -0800
+Subject: [PATCH 167/371] pirates: the Lookout panel answers instead of
+ searching forever, server-tree patch 0191
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/DistributedPlayerPirateAI.py | 12 ++++++++++++
+ pirates/piratesgui/LookoutRequestLVL1.py    |  2 +-
+ 2 files changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/pirate/DistributedPlayerPirateAI.py b/pirates/pirate/DistributedPlayerPirateAI.py
+index 6a5dcf4..e09cb99 100644
+--- a/pirates/pirate/DistributedPlayerPirateAI.py
++++ b/pirates/pirate/DistributedPlayerPirateAI.py
+@@ -274,6 +274,18 @@ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI,
+     def requestCurrentIsland(self, locationDoId):
+         pass
+ 
++    def requestActivity(self, gameType, gameCategory, options, shipIds):
++        # 0191: this server runs no match maker, so tell the Lookout panel at once that no match can be made
++        if self.air.getAvatarIdFromSender() != self.doId:
++            return
++        self.sendUpdateToAvatarId(self.doId, 'lookoutMatchFailed', [False])
++
++    def requestInvites(self, inviteModes, gameCategory, gameType, options, additionalAvs):
++        # 0191: no match maker, so no invites go out; the Lookout panel cancels its search with a message
++        if self.air.getAvatarIdFromSender() != self.doId:
++            return
++        self.sendUpdateToAvatarId(self.doId, 'requestInvitesResp', [[], 0])
++
+     def setCurrentIsland(self, currentIsland):
+         self.currentIsland = currentIsland
+ 
+diff --git a/pirates/piratesgui/LookoutRequestLVL1.py b/pirates/piratesgui/LookoutRequestLVL1.py
+index 2b94184..9981ea0 100644
+--- a/pirates/piratesgui/LookoutRequestLVL1.py
++++ b/pirates/piratesgui/LookoutRequestLVL1.py
+@@ -997,7 +997,7 @@ class LookoutRequestLVL1(InventoryPage):
+                 self.updateMode(PiratesGuiGlobals.SEARCH_MODE)
+                 description = PLocalizer.LookoutFailedMsg
+             else:
+-                self.updateMode(PiratesGuiGlobals.REQUEST_CAT_MODE)
++                self.setSearchActive(False)
+                 description = PLocalizer.LookoutAbortedMsg
+             self.guiMgr.messageStack.addTextMessage(description, icon = ('lookout', None))
+             localAvatar.b_clearTeleportFlag(PiratesGlobals.TFLookoutJoined)
+-- 
+2.53.0
+

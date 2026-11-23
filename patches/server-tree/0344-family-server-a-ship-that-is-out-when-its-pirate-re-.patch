@@ -1,0 +1,83 @@
+From b197279a052c4c3d85bb0241eb3e9322a52305ca Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 09:25:57 -0800
+Subject: [PATCH 344/371] family server: a ship that is out when its pirate
+ re-logs from the pirate chooser keeps its steering wheel
+
+A pirate who went back to the pirate chooser with his ship out and picked the same pirate had the ship loader
+activate the ship (and its hull and masts) a second time. The database state server ignores an activate for an
+object that is already active, but AstronInternalRepository.sendActivate chases an activate-with-fields with a
+SET_LOCATION(0, 0); the state server's move to parent 0 set the ship's AI channel to 0 without a CHANGING_AI, so
+the AI only logged 'setLocation 0 0' and kept a dead PlayerShipAI. The next launch reused it (ENTER_AI ignored,
+'already know') and the ship had no wheel (claude2, ship 100000750, 09:00:34 and 04:02:33; the same as games'
+04:07 LIVE-upgrade no-wheel).
+
+ActivateShipFSM now asks getActivated first (activateUnlessUp): a ship or part that is still up is not activated
+again; the owner steps (setOwnerAgain + post-remove) run after in both cases. Offline sim of the state server
+rules with the loader's real steps (places' sim_ship_reactivate.py): HEAD FAIL (AI dropped from the ship and both
+parts, ship moved to 0,0), patched PASS (re-login keeps ship + AI with the owner back; a fresh login activates and
+owns as before). UberDOG only. A ship already left as a dead copy on the AI clears at the next real logout or AI
+restart.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/DistributedShipLoaderUD.py | 25 ++++++++++++++++++----
+ 1 file changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/pirates/uberdog/DistributedShipLoaderUD.py b/pirates/uberdog/DistributedShipLoaderUD.py
+index 83361e2..7106dc9 100644
+--- a/pirates/uberdog/DistributedShipLoaderUD.py
++++ b/pirates/uberdog/DistributedShipLoaderUD.py
+@@ -307,10 +307,12 @@ class ActivateShipFSM(ShipLoaderOperationFSM):
+             self._shipInventoryActivatedCallback)
+ 
+     def _shipInventoryActivatedCallback(self, inventoryId):
+-        self.air.sendActivate(self.shipId, 0, 0,
++        self.activateUnlessUp(self.shipId,
+             self.air.dclassesByName['PlayerShipUD'],
+-            {'setInventoryId': (inventoryId,)})
++            {'setInventoryId': (inventoryId,)},
++            self._shipUp)
+ 
++    def _shipUp(self):
+         channel = self.accountId << 32 | self.avatarId
+         self.setOwnerAgain(self.shipId, channel)
+ 
+@@ -364,10 +366,12 @@ class ActivateShipFSM(ShipLoaderOperationFSM):
+             self.cleanup(False)
+             return
+ 
+-        self.air.sendActivate(shippartDoId, 0, 0,
++        self.activateUnlessUp(shippartDoId,
+             dclass,
+-            {'setOwnerId': (self.avatarId,), 'setShipId': (self.shipId,)})
++            {'setOwnerId': (self.avatarId,), 'setShipId': (self.shipId,)},
++            lambda: self._shippartUp(shippartDoId))
+ 
++    def _shippartUp(self, shippartDoId):
+         channel = self.accountId << 32 | self.avatarId
+         self.setOwnerAgain(shippartDoId, channel)
+ 
+@@ -392,6 +396,19 @@ class ActivateShipFSM(ShipLoaderOperationFSM):
+         if not self.pendingShipparts:
+             self.cleanup(True)
+ 
++    def activateUnlessUp(self, doId, dclass, fields, then):
++        # family server (11-21): a pirate who goes back to the pirate chooser while his ship is out and picks the
++        # same pirate again gets his ship activated a second time. The database state server ignores that, but
++        # sendActivate chases it with a move to (0, 0), and the state server then drops the AI from the ship
++        # without telling it. The AI keeps a dead copy, reuses it at the next launch and the ship has no steering
++        # wheel. A ship or part that is still up is left where it is; only the owner steps run.
++        def _gotActivated(doId, activated):
++            if not activated:
++                self.air.sendActivate(doId, 0, 0, dclass, fields)
++            then()
++
++        self.air.getActivated(doId, _gotActivated)
++
+     def setOwnerAgain(self, doId, channel):
+         # family server (11-20): a pirate who goes back to the pirate chooser and picks the same pirate again comes
+         # back on the same owner channel, and his ships are still up from the last login. The state server ignores
+-- 
+2.53.0
+

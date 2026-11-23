@@ -1,0 +1,120 @@
+From 7575b438f5da3b13f5074e310da40e9980cb6911 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:27:11 -0800
+Subject: [PATCH 168/371] pirates: blackjack split plays both hands (0210)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../minigame/DistributedBlackjackTableAI.py   | 55 +++++++++++--------
+ 1 file changed, 33 insertions(+), 22 deletions(-)
+
+diff --git a/pirates/minigame/DistributedBlackjackTableAI.py b/pirates/minigame/DistributedBlackjackTableAI.py
+index 7977865..44cc5ad 100644
+--- a/pirates/minigame/DistributedBlackjackTableAI.py
++++ b/pirates/minigame/DistributedBlackjackTableAI.py
+@@ -315,8 +315,7 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+         if handValue >= 21:
+             # Auto-stay
+             self.sendUpdate('setEvent', [seatIndex, [PlayingCardGlobals.AutoStay, handValue]])
+-            self._actionQueue.pop(0)
+-            self._nextPlayerAction()
++            self._finishHand(seatIndex)
+             return
+ 
+         if self.seats[seatIndex] == 1:
+@@ -378,6 +377,11 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+             ok = len(hand) == 2
+             if actionCode == PlayingCardGlobals.DoubleDown and len(self._allHands[seatIndex]) != 1:
+                 ok = False
++            if actionCode == PlayingCardGlobals.Split and ok:
++                # Only a pair splits; any two ten-value cards count as a pair (as the
++                # client's splitableHand decides when it shows the Split button)
++                r1, r2 = hand[0] % 13, hand[1] % 13
++                ok = r1 == r2 or (8 <= r1 <= 11 and 8 <= r2 <= 11)
+             if ok and inv and inv.getGoldInPocket() < extra:
+                 ok = False
+             if not ok:
+@@ -397,41 +401,47 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+             value = self._handValue(hand)
+             self._broadcastTableState()
+             if value >= 21:
+-                self._actionQueue.pop(0)
+-                self._nextPlayerAction()
++                self._finishHand(seatIndex)
+             else:
+                 # Ask again
+                 taskMgr.doMethodLater(0.5, self._nextPlayerAction, self.uniqueName('bj-action'))
+ 
+         elif actionCode == PlayingCardGlobals.Stay:
+-            self._actionQueue.pop(0)
+-            self._nextPlayerAction()
++            self._finishHand(seatIndex)
+ 
+         elif actionCode == PlayingCardGlobals.DoubleDown:
+             bid = self._bids.get(seatIndex, 0)
+             self._bids[seatIndex] = bid * 2
+             hand.append(self._dealCard())
+             self._broadcastTableState()
+-            self._actionQueue.pop(0)
+-            self._nextPlayerAction()
++            self._finishHand(seatIndex)
+ 
+         elif actionCode == PlayingCardGlobals.Split:
+-            if len(hand) == 2:
+-                # Split into two hands
+-                card2 = hand.pop()
+-                newHand = [card2, self._dealCard()]
+-                hand.append(self._dealCard())
+-                self._allHands[seatIndex].append(newHand)
+-                self._broadcastTableState()
+-                # Put seat back in queue for second hand
+-                self._actionQueue.insert(1, seatIndex)
+-            self._actionQueue.pop(0)
++            # Split into two hands: this one draws its second card now and is played
++            # first; the new hand keeps the other card and is dealt its second card
++            # when this one is done (the client plays the last hand with two cards)
++            card2 = hand.pop()
++            hand.append(self._dealCard())
++            self._allHands[seatIndex].append([card2])
++            self._broadcastTableState()
+             self._nextPlayerAction()
+ 
+         else:
+             # Default: stay
++            self._finishHand(seatIndex)
++
++    def _finishHand(self, seatIndex):
++        # This hand is done. A split hand still waiting with one card is dealt its
++        # second card and played next; the seat leaves the queue when all are played.
++        for hand in self._allHands[seatIndex]:
++            if len(hand) == 1:
++                hand.append(self._dealCard())
++                self._broadcastTableState()
++                self._nextPlayerAction()
++                return
++        if self._actionQueue and self._actionQueue[0] == seatIndex:
+             self._actionQueue.pop(0)
+-            self._nextPlayerAction()
++        self._nextPlayerAction()
+ 
+     def _humanInv(self, seatIndex):
+         seat = self.seats[seatIndex]
+@@ -441,11 +451,12 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+ 
+     def _getCurrentHand(self, seatIndex):
+         hands = self._allHands[seatIndex]
+-        # Current hand: last hand with fewer than 2 final cards, or first hand
++        # Current hand: the last hand with two or more cards (after a split the next
++        # hand waits with one card until this one is played), else the first hand
+         for hand in reversed(hands):
+-            if len(hand) < 2:
++            if len(hand) >= 2:
+                 return hand
+-        return hands[-1] if hands else []
++        return hands[0] if hands else []
+ 
+     # ------------------------------------------------------------------
+     # Dealer plays
+-- 
+2.53.0
+

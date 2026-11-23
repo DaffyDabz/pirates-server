@@ -1,0 +1,98 @@
+From 4b527a00ca9919431ddd98ac077954ca11a5ec1d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 15:42:40 -0800
+Subject: [PATCH 283/371] pirates: no hp loss in jail, and a second knockout in
+ the cell stands him up again (0369)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/BattleManagerAI.py          | 15 +++++++++++++++
+ pirates/pirate/PlayerPirateGameFSMAI.py    | 12 ++++++++++++
+ pirates/world/DistributedJailInteriorAI.py | 19 ++++++++++++++++++-
+ 3 files changed, 45 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/battle/BattleManagerAI.py b/pirates/battle/BattleManagerAI.py
+index af21c95..a783f55 100644
+--- a/pirates/battle/BattleManagerAI.py
++++ b/pirates/battle/BattleManagerAI.py
+@@ -326,12 +326,27 @@ class BattleManagerAI(BattleManagerBase):
+         if target.getAvatarType() == AvatarTypes.Monkey:
+             return
+ 
++        # family server (11-19, 0369): a knocked-out pirate, or one in a jail cell, loses no more hp. A burn or
++        # poison still running, or an enemy still swinging, knocked him out a second time in his cell, and the
++        # server left him lying there behind the loading screen for good. Healing still works.
++        if targetEffects[0] < 0 and isinstance(target, DistributedPlayerPirateAI) and self._isDownOrJailed(target):
++            targetEffects = [0] + list(targetEffects[1:])
++
+         target.b_setHp(max(0, min(target.getHp()[0] + targetEffects[0], target.getMaxHp())))
+         target.b_setPower(max(0, min(target.getPower() + targetEffects[1], target.getMaxPower())))
+         target.b_setLuck(max(0, min(target.getLuck() + targetEffects[2], target.getMaxLuck())))
+         target.b_setMojo(max(0, min(target.getMojo() + targetEffects[3], target.getMaxMojo())))
+         target.b_setSwiftness(max(0, min(target.getSwiftness() + targetEffects[4], target.getMaxSwiftness())))
+ 
++    def _isDownOrJailed(self, pirate):
++        gameFSM = getattr(pirate, 'gameFSM', None)
++        if gameFSM is not None and gameFSM.getCurrentOrNextState() in ('Death', 'ThrownInJail'):
++            return True
++
++        # only a jail interior has cell doors
++        parentObj = pirate.getParentObj()
++        return parentObj is not None and hasattr(parentObj, 'getCellDoor')
++
+     def appendSkillEffect(self, pendingSkillEffect):
+         if pendingSkillEffect in self._pendingSkillEffects:
+             return
+diff --git a/pirates/pirate/PlayerPirateGameFSMAI.py b/pirates/pirate/PlayerPirateGameFSMAI.py
+index cb0c8dd..703428b 100644
+--- a/pirates/pirate/PlayerPirateGameFSMAI.py
++++ b/pirates/pirate/PlayerPirateGameFSMAI.py
+@@ -43,6 +43,18 @@ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+             return
+ 
+         if self.avatar.testTeleportFlag(PiratesGlobals.TFInJail):
++            # family server (11-19, 0369): knocked out again inside his cell. This returned here, so he lay at 0 hp
++            # behind the loading screen for good. Send him to the jail he is in, in the same cell: his game sees
++            # he is already there and asks avatarAlreadyInJail, which stands him up in his cell again.
++            if parentObj is not None and hasattr(parentObj, 'getCellDoor') and self.avatar.getJailCellIndex() < 100:
++                jailWorld = self.findParentWorld(parentObj)
++                if jailWorld is not None:
++                    self.notify.warning('knocked out in his cell: %d is sent to his cell again' % self.avatar.doId)
++                    self.avatar.b_setHp(1)
++                    jailWorld.d_sendLocalAvatarToJail(self.avatar.doId, parentObj.doId,
++                        parentObj.parentId, parentObj.zoneId)
++                    return
++
+             self.notify.debug('Cannot teleport avatar %d to jail, '
+                 'avatar already in jail!' % self.avatar.doId)
+ 
+diff --git a/pirates/world/DistributedJailInteriorAI.py b/pirates/world/DistributedJailInteriorAI.py
+index 654bf7b..50814e4 100644
+--- a/pirates/world/DistributedJailInteriorAI.py
++++ b/pirates/world/DistributedJailInteriorAI.py
+@@ -68,4 +68,21 @@ class DistributedJailInteriorAI(DistributedGAInteriorAI):
+         return random.choice(list(self.cellDoors.values()))
+ 
+     def avatarAlreadyInJail(self):
+-        pass
++        # family server (11-19, 0369): his game was sent to this jail while already in it (knocked out again in his
++        # cell). It does not arrive again, so nothing put him in ThrownInJail: this was empty and he lay knocked out
++        # behind the loading screen. ThrownInJail sends his spawn point; his game drops him in the cell and he
++        # stands up.
++        avId = self.air.getAvatarIdFromSender()
++        av = self.air.doId2do.get(avId)
++        if not isinstance(av, DistributedPlayerPirateAI) or av.getParentObj() is not self:
++            self.notify.warning('avatarAlreadyInJail from %s, who is not in jail %d' % (avId, self.doId))
++            return
++
++        if av.getJailCellIndex() >= 100:
++            return
++
++        gameFSM = getattr(av, 'gameFSM', None)
++        if gameFSM is None or gameFSM.getCurrentOrNextState() != 'Death':
++            return
++
++        av.b_setGameState('ThrownInJail')
+-- 
+2.53.0
+

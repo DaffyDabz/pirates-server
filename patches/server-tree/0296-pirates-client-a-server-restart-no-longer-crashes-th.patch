@@ -1,0 +1,80 @@
+From 0af9f406ef1f3a405c5068024cdbbb43954dd70d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 16:14:37 -0800
+Subject: [PATCH 296/371] pirates client: a server restart no longer crashes
+ the game (siege manager unhooks from its own ocean), and the cannon ports on
+ the newer ships open, fire and close again (they use the plain port's
+ animations) (0380)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pvp/SiegeManager.py |  7 ++++++-
+ pirates/ship/ShipGlobals.py | 14 ++++++++++++--
+ 2 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/pvp/SiegeManager.py b/pirates/pvp/SiegeManager.py
+index 5fca794..94ac8a0 100644
+--- a/pirates/pvp/SiegeManager.py
++++ b/pirates/pvp/SiegeManager.py
+@@ -19,13 +19,18 @@ class SiegeManager(DistributedObject, SiegeManagerBase):
+         DistributedObject.generate(self)
+         self._pvpTeamJoinable = {}
+         base.cr.distributedDistrict.siegeManager = self
++        self._district = base.cr.distributedDistrict
+ 
+     def delete(self):
+         self._siegeTeamUpdater.destroy()
+         del self._siegeTeamUpdater
+         self._removeAnnouncerInterest()
+         del self._pvpTeamJoinable
+-        del base.cr.distributedDistrict.siegeManager
++        # family server (2026-11-20): a server restart deletes the ocean before its siege manager, so
++        # unhook from the ocean this manager joined, if it is still hooked there
++        if getattr(self._district, 'siegeManager', None) is self:
++            del self._district.siegeManager
++        self._district = None
+         DistributedObject.delete(self)
+ 
+     def setPvpEnabled(self, enabled):
+diff --git a/pirates/ship/ShipGlobals.py b/pirates/ship/ShipGlobals.py
+index 34458f8..a7f580e 100644
+--- a/pirates/ship/ShipGlobals.py
++++ b/pirates/ship/ShipGlobals.py
+@@ -7199,6 +7199,16 @@ def preprocessGoliath(task = 0):
+     return Task.done
+ 
+ 
++# family server (2026-11-20): these cannons ship without their own animation files. They have the same
++# joints, rest pose and size as the plain cannon and port, so they use those animations (their ports
++# open, fire and close again).
++CannonAnimSource = {
++    'models/shipparts/GP_cannon': 'models/shipparts/cannon',
++    'models/shipparts/cannon_bp': 'models/shipparts/cannon',
++    'models/shipparts/GP_cannonPort': 'models/shipparts/cannon_port',
++    'models/shipparts/cannon_bp_port': 'models/shipparts/cannon_port' }
++
++
+ def preprocessCannon(name):
+     cannon = Actor.Actor()
+     cannon.setLODNode()
+@@ -7209,7 +7219,7 @@ def preprocessCannon(name):
+     cannon.loadModel('%s%s' % (name, '_med'), lodName = 'med')
+     cannon.loadModel('%s%s' % (name, '_low'), lodName = 'low')
+     cannon.loadAnims({
+-        'zero': '%s%s' % (name, '_zero') }, lodName = 'all')
++        'zero': '%s%s' % (CannonAnimSource.get(name, name), '_zero') }, lodName = 'all')
+     cannon.findAllMatches('**/+ModelNode').detach()
+     shipGeoms[name] = cannon
+ 
+@@ -7219,7 +7229,7 @@ BroadsideAnimDict = (('zero', '_zero'), ('Fire', '_fire'), ('Open', '_open'), ('
+ def preprocessBroadside(name):
+     anims = {}
+     for anim in BroadsideAnimDict:
+-        anims[anim[0]] = name + anim[1]
++        anims[anim[0]] = CannonAnimSource.get(name, name) + anim[1]
+ 
+     cannon = Actor.Actor()
+     cannon.setLODNode()
+-- 
+2.53.0
+

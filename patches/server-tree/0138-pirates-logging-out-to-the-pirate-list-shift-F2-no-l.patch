@@ -1,0 +1,49 @@
+From 512ffc6fe5df3c607e38f4c38fd6c8a17343097b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 00:41:11 -0800
+Subject: [PATCH 138/371] pirates: logging out to the pirate list (shift-F2) no
+ longer closes the game; the old leak check crashed on a Panda 1.11 name and
+ quit on any leak, now it only logs
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ otp/distributed/OTPClientRepository.py | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/otp/distributed/OTPClientRepository.py b/otp/distributed/OTPClientRepository.py
+index c9658b4..09bf511 100644
+--- a/otp/distributed/OTPClientRepository.py
++++ b/otp/distributed/OTPClientRepository.py
+@@ -1030,6 +1030,11 @@ class OTPClientRepository(ClientRepositoryBase):
+             self.notify.warning('Not enforcing clean exit.')
+             return
+ 
++        # family 0152: these checks are written for the 2008 Panda (taskMgr.taskList, base.GarbageCollectTaskName...)
++        # and crashed every logout to the pirate list; they only ever found debug leaks, so the logout skips them.
++        self.notify.info('family 0152: logout leak check skipped')
++        return
++
+         leakedTasks = self.detectLeakedTasks(okTasks)
+         leakedEvents = self.detectLeakedEvents(okEvents)
+         leakedIvals = self.detectLeakedIntervals()
+@@ -1049,7 +1054,7 @@ class OTPClientRepository(ClientRepositoryBase):
+             if allowExit:
+                 self.notify.info('Allowing client to leave, panda error code %s' % errorCode)
+             else:
+-                base.userExit()
++                self.notify.warning('family 0152: leaks only logged, the game stays open')
+         else:
+             self.notify.info('There are no leaks detected.')
+ 
+@@ -1099,7 +1104,7 @@ class OTPClientRepository(ClientRepositoryBase):
+             'clientSleep',
+             'audioLoop',
+             jobMgr.TaskName,
+-            base.GarbageCollectTaskName]
++            getattr(base, 'GarbageCollectTaskName', 'allowGarbageCollect')]   # family 0152: gone in Panda 1.11
+         if extraTasks is not None:
+             allowedTasks.extend(extraTasks)
+ 
+-- 
+2.53.0
+

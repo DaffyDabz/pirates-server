@@ -1,0 +1,63 @@
+From 08e1b657ad9f5ccadd267a3d60e1bca3c379f509 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 12:54:56 -0800
+Subject: [PATCH 277/371] pirates client: no crash when friends update near
+ crabs, when two pirates repair together, or when the cutlass trainer leaves
+ mid-lesson (0326)
+
+---
+ otp/avatar/Avatar.py                  | 4 ++++
+ pirates/npc/DistributedNPCTownfolk.py | 4 ++++
+ pirates/pirate/BattleAvatarGameFSM.py | 6 ++++++
+ 3 files changed, 14 insertions(+)
+
+diff --git a/otp/avatar/Avatar.py b/otp/avatar/Avatar.py
+index 3d286fa..d7aa778 100644
+--- a/otp/avatar/Avatar.py
++++ b/otp/avatar/Avatar.py
+@@ -150,6 +150,10 @@ class Avatar(Actor, ShadowCaster):
+         elif base.localAvatar.commonChatFlags & OTPGlobals.SuperChat:
+             self.understandable = 1
+             self.setPlayerType(NametagGroup.CCFreeChat)
++        elif getattr(self, 'doId', None) is None:
++            # A client-only avatar (a crab or other local creature) has no doId,
++            # so it can never be a friend. A friends-list update used to crash here.
++            self.understandable = 0
+         elif base.cr.getFriendFlags(self.doId) & OTPGlobals.FriendChat:
+             self.understandable = 1
+             self.setPlayerType(NametagGroup.CCFreeChat)
+diff --git a/pirates/npc/DistributedNPCTownfolk.py b/pirates/npc/DistributedNPCTownfolk.py
+index be6a214..e55e275 100644
+--- a/pirates/npc/DistributedNPCTownfolk.py
++++ b/pirates/npc/DistributedNPCTownfolk.py
+@@ -846,6 +846,10 @@ class DistributedNPCTownfolk(DistributedBattleNPC.DistributedBattleNPC, Distribu
+             self.interactAnim = None
+     
+     def levelUpCutlass(self):
++        # Called from an interval that can finish after this NPC has left
++        # (self.cr is None then); sending would crash the game.
++        if getattr(self, 'cr', None) is None:
++            return
+         self.sendUpdate('levelUpCutlass', [localAvatar.getDoId()])
+ 
+     def initializeNametag3d(self):
+diff --git a/pirates/pirate/BattleAvatarGameFSM.py b/pirates/pirate/BattleAvatarGameFSM.py
+index f9c73e0..ed5610d 100644
+--- a/pirates/pirate/BattleAvatarGameFSM.py
++++ b/pirates/pirate/BattleAvatarGameFSM.py
+@@ -714,6 +714,12 @@ class BattleAvatarGameFSM(FSM.FSM):
+         if globalClock.getRealTime() - self._repairingStartT > self._repairingIntoDur + 0.5:
+             lastFrame = self._repairingFrame
+             curFrame = self.av.getCurrentFrame('repairfloor_loop')
++            if curFrame is None:
++                # The repair loop is not playing this frame (two pirates repairing
++                # together); wait for it instead of crashing on None >= 15.
++                return task.cont
++            if lastFrame is None:
++                lastFrame = 0
+             hitFrame = 15
+             if lastFrame < hitFrame and curFrame >= hitFrame:
+                 base.playSfx(self.hammerSfx, node = self.av)
+-- 
+2.53.0
+

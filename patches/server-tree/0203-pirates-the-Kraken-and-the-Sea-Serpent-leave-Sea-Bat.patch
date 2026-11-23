@@ -1,0 +1,47 @@
+From a1a1c5c356bdf1febae7ac386d9581881f68e5d2 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 01:28:02 -0800
+Subject: [PATCH 203/371] pirates: the Kraken and the Sea Serpent leave Sea
+ Battle ships alone (0282)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/creature/DistributedSeaSerpentAI.py | 5 +++++
+ pirates/kraken/KrakenAI.py                  | 5 +++++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/pirates/creature/DistributedSeaSerpentAI.py b/pirates/creature/DistributedSeaSerpentAI.py
+index af84d0f..b221c6a 100644
+--- a/pirates/creature/DistributedSeaSerpentAI.py
++++ b/pirates/creature/DistributedSeaSerpentAI.py
+@@ -143,6 +143,11 @@ def whyNotTarget(air, ship, ignoreStarterWaters=False):
+         return 'ship state %s' % state
+     if not ship.getPiratesAboard():
+         return 'nobody aboard'
++    # patch 0282: a ship sailing for a Sea Battle team is in a match with other pirates,
++    # so no sea monster joins in (not even by the magic word)
++    getSiegeTeam = getattr(ship, 'getSiegeTeam', None)
++    if getSiegeTeam is not None and getSiegeTeam():
++        return 'sailing in a Sea Battle'
+     if not ignoreStarterWaters:
+         from pirates.ship import StarterWaters
+         if StarterWaters.inStarterWaters(air, ship.getX(), ship.getY()):
+diff --git a/pirates/kraken/KrakenAI.py b/pirates/kraken/KrakenAI.py
+index 079ab19..551eb2f 100644
+--- a/pirates/kraken/KrakenAI.py
++++ b/pirates/kraken/KrakenAI.py
+@@ -125,6 +125,11 @@ def whyNotTarget(air, ship, ignoreStarterWaters=False):
+         return 'ship state %s' % state
+     if not ship.getPiratesAboard():
+         return 'nobody aboard'
++    # patch 0282: a ship sailing for a Sea Battle team is in a match with other pirates,
++    # so no sea monster joins in (not even by the magic word)
++    getSiegeTeam = getattr(ship, 'getSiegeTeam', None)
++    if getSiegeTeam is not None and getSiegeTeam():
++        return 'sailing in a Sea Battle'
+     if not ignoreStarterWaters:
+         from pirates.ship import StarterWaters
+         if StarterWaters.inStarterWaters(air, ship.getX(), ship.getY()):
+-- 
+2.53.0
+

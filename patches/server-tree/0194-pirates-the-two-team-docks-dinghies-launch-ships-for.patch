@@ -1,0 +1,52 @@
+From 8639c1aaf5e716e4e3a418fcadf0e15f77d3df83 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 00:25:12 -0800
+Subject: [PATCH 194/371] pirates: the two team docks' dinghies launch ships
+ for their team (0251)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedDinghyAI.py |  5 +++++
+ pirates/world/IslandAreaBuilderAI.py | 10 ++++++++++
+ 2 files changed, 15 insertions(+)
+
+diff --git a/pirates/world/DistributedDinghyAI.py b/pirates/world/DistributedDinghyAI.py
+index 73a3b71..55bc60f 100644
+--- a/pirates/world/DistributedDinghyAI.py
++++ b/pirates/world/DistributedDinghyAI.py
+@@ -313,6 +313,11 @@ class DistributedDinghyAI(DistributedInteractiveAI):
+                 return
+ 
+             self.air.bandManager.updateShipInfo(avatar.doId, ship)
++            # Sea Battle: a ship launched from a team's dock sails for that team
++            seaBattle = getattr(self.air, 'seaBattleMgr', None)
++            if seaBattle is not None:
++                seaBattle.shipLaunched(avatar, ship, self.getSiegeTeam(), teamSpec)
++
+             self.sendAvatarToShip(avatar, ship)
+ 
+         self.air.questMgr.deployedShip(avatar)
+diff --git a/pirates/world/IslandAreaBuilderAI.py b/pirates/world/IslandAreaBuilderAI.py
+index d0d0205..0f44593 100644
+--- a/pirates/world/IslandAreaBuilderAI.py
++++ b/pirates/world/IslandAreaBuilderAI.py
+@@ -77,6 +77,16 @@ class IslandAreaBuilderAI(GameAreaBuilderAI):
+         dinghy.setHpr(objectData.get('Hpr', (0, 0, 0)))
+         dinghy.setInteractRadius(float(objectData.get('Aggro Radius', 25)))
+ 
++        # Sea Battle: the dinghy on a team's dock (the Ship PvP islands) launches
++        # that team's ships
++        team = self.air.worldCreator.getPvpIslandTeam(self.parent.getUniqueId())
++        if team:
++            from pirates.pvp.SeaBattleManagerAI import getSeaBattleManager
++            seaBattle = getSeaBattleManager(self.air)
++            if seaBattle is not None:
++                seaBattle.addHq(team, self.parent.getUniqueId())
++                dinghy.setSiegeTeam(team)
++
+         zoneId = self.parent.getZoneFromXYZ(dinghy.getPos())
+         parent.generateChildWithRequired(dinghy, zoneId)
+         self.parentObjectToCell(dinghy, zoneId)
+-- 
+2.53.0
+

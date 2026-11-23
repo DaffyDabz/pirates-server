@@ -1,0 +1,29 @@
+From 58657858e7f44d8985fc3d592fa037f3d4f31e36 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:04:41 -0800
+Subject: [PATCH 241/371] pirates: sinking a ship in a Sea Battle no longer
+ crashes the game of the pirate who gets the infamy (0311, patch 22)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/DistributedPlayerPirate.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/pirate/DistributedPlayerPirate.py b/pirates/pirate/DistributedPlayerPirate.py
+index d49e8a1..cb19f0f 100644
+--- a/pirates/pirate/DistributedPlayerPirate.py
++++ b/pirates/pirate/DistributedPlayerPirate.py
+@@ -873,7 +873,9 @@ class DistributedPlayerPirate(DistributedPirateBase, DistributedPlayer, Distribu
+                 colorSetting = 8
+ 
+             if hasattr(target, 'printExpText'):
+-                target.printExpText(renown, colorSetting, 0)
++                # family server (0311): every printExpText (ship, fort, battle avatar) takes six values; passing
++                # three raised a TypeError that closed the game of the pirate who sank a ship in a Sea Battle
++                target.printExpText(renown, colorSetting, 0, 0, 0, 0)
+ 
+         if self.getShip() and self.getShip().renownDisplay:
+             prevRank = self.getShip().renownDisplay.rank
+-- 
+2.53.0
+

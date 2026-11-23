@@ -1,0 +1,34 @@
+From b3135e51bb7e82d4214ada8960080ff2daa60b5b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 15:52:54 -0800
+Subject: [PATCH 294/371] pirates client: opening the ocean (district) list no
+ longer closes the game; listActiveShards named its result 'list' and then
+ called list() (0378)
+
+---
+ otp/distributed/OTPClientRepository.py | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/otp/distributed/OTPClientRepository.py b/otp/distributed/OTPClientRepository.py
+index 09bf511..46a6988 100644
+--- a/otp/distributed/OTPClientRepository.py
++++ b/otp/distributed/OTPClientRepository.py
+@@ -1614,12 +1614,12 @@ class OTPClientRepository(ClientRepositoryBase):
+             return 0
+ 
+     def listActiveShards(self):
+-        list = []
++        shards = []
+         for s in list(self.activeDistrictMap.values()):
+             if s.available:
+-                list.append((s.doId, s.name, s.avatarCount, s.newAvatarCount))
++                shards.append((s.doId, s.name, s.avatarCount, s.newAvatarCount))
+ 
+-        return list
++        return shards
+ 
+     def getPlayerAvatars(self):
+         return [ i for i in list(self.doId2do.values()) if isinstance(i, DistributedPlayer) ]
+-- 
+2.53.0
+

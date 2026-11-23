@@ -1,0 +1,162 @@
+From 756408e7057a9f92b9b7ca77e63405a6dc188eeb Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 14:39:04 -0800
+Subject: [PATCH 074/371] pirates: a pirate's sunk ship waits at the shipwright
+ to be repaired and can be launched again, instead of vanishing until he logs
+ in again, as server-tree patch 0088 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/economy/DistributedShopKeeperAI.py |  8 ++++++
+ pirates/ship/DistributedShipAI.py          | 22 +++++++++++++++
+ pirates/ship/GameFSMShipAI.py              | 10 ++++++-
+ pirates/world/DistributedShipDeployerAI.py | 32 +++++++++++++++++++++-
+ 4 files changed, 70 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/economy/DistributedShopKeeperAI.py b/pirates/economy/DistributedShopKeeperAI.py
+index 432e7cd..6bbe951 100644
+--- a/pirates/economy/DistributedShopKeeperAI.py
++++ b/pirates/economy/DistributedShopKeeperAI.py
+@@ -328,6 +328,14 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+                 return
+             inventory.setGoldInPocket(inventory.getGoldInPocket() - cost)
+             self._setShipFields(shipId, dclass, {'setHp': [maxHp], 'setSp': [maxSp]})
++            # the update above goes to the state server and the database; a ship
++            # the AI holds (a sunk one that was put away, a docked one) never hears
++            # it, so its own copy stayed at 0 hull points. Mend that copy too, with
++            # its hull, masts and sails, and take it out of the Sunk state.
++            ship = self.air.doId2do.get(shipId)
++            if ship is not None and hasattr(ship, 'shipwrightRepaired'):
++                ship.shipwrightRepaired()
++
+             self.logShopkeepTransaction(type=kind, shipId=shipId, price=cost, purchaser=avatar.doId)
+             self.d_makeSaleResponse(avatar.doId, 2)
+ 
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index 4716a29..b16218d 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -996,6 +996,28 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         self.notify.warning('sunk ship %s: no return island in this world for %s' % (self.doId, avatar.doId))
+         return False
+ 
++    def putAwaySunk(self):
++        # A sunk player ship stays in the state server, off the sea (zone 0, where a
++        # docked ship waits too) and in the Sunk state, with its hull points at 0.
++        # Its owner keeps his view of it, so the shipwright lists it and the dinghy
++        # shows it as sunk. shipwrightRepaired() makes it launchable again.
++        self.air.shipManager.removePlayerShip(self)
++        self.setDeploy(False)
++        taskMgr.remove(self.uniqueName('broadcast-pos'))
++        if self.getClientController():
++            self.b_setClientController(0)
++
++        self.b_setGameState('Sunk', 0)
++        self.b_setLocation(self.parentId, 0)
++        self.notify.warning('sunk ship %s: put away sunk, a shipwright can repair it' % self.doId)
++
++    def shipwrightRepaired(self):
++        # the shipwright's repair on a ship the AI holds: hull, sails and every part
++        # back to full, here and (through the state server) in the database
++        self._restoreAll()
++        if self.gameState[0] == 'Sunk':
++            self.b_setGameState('PutAway', 0)
++
+     def setClientController(self, clientControllerDoId):
+         self.clientControllerDoId = clientControllerDoId
+ 
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index ac7bac3..d3aee85 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -2773,7 +2773,15 @@ class GameFSMShipAI(FSM.FSM):
+ 
+             aboard = self.ship.getPiratesAboard()
+             if not aboard:
+-                self.ship.requestDelete()
++                if getattr(self.ship, 'npcShip', True):
++                    self.ship.requestDelete()
++                else:
++                    # a pirate's own ship is put away sunk, not deleted: deleting it
++                    # took it out of the state server, so its owner lost his view of
++                    # it and the shipwright could not repair it and the dinghy could
++                    # not launch it again until he logged in again (2026-11-17)
++                    self.ship.putAwaySunk()
++
+                 return Task.done
+ 
+             self._sunkTries += 1
+diff --git a/pirates/world/DistributedShipDeployerAI.py b/pirates/world/DistributedShipDeployerAI.py
+index f008358..5ffce9a 100644
+--- a/pirates/world/DistributedShipDeployerAI.py
++++ b/pirates/world/DistributedShipDeployerAI.py
+@@ -12,6 +12,7 @@ from pirates.battle import WeaponGlobals
+ from pirates.piratesbase import PiratesGlobals
+ 
+ SPAWN_PROTECTION_DURATION = 8.0
++DEPLOY_TIMEOUT = 20.0
+ 
+ 
+ class ShipDeployerOperationFSM(FSM):
+@@ -38,7 +39,8 @@ class ShipDeployerOperationFSM(FSM):
+         pass
+ 
+     def cleanup(self, *args, **kwargs):
+-        del self.shipDeployer.avatar2fsm[self.avatar.doId]
++        taskMgr.remove('ship-deploy-timeout-%d' % self.avatar.doId)
++        self.shipDeployer.avatar2fsm.pop(self.avatar.doId, None)
+         self.ignoreAll()
+         self.demand('Off')
+ 
+@@ -73,13 +75,31 @@ class DeployShipFSM(ShipDeployerOperationFSM):
+ 
+         ship = self.air.doId2do.get(self.shipId)
+         if ship is None:
++            # a ship the state server does not hold never arrives. Without this
++            # timeout the launch stayed "running" for good and every later launch
++            # by this pirate at this island was dropped without a word (2026-11-17)
++            taskMgr.doMethodLater(DEPLOY_TIMEOUT, self._deployTimedOut,
++                'ship-deploy-timeout-%d' % self.avatar.doId)
+             self.acceptOnce('generate-%d' % self.shipId, self.shipArrivedCallback)
+             self.air.sendSetObjectLocation(self.shipId, self.oceanGrid.doId, self.zoneId)
++        elif ship.getHp() <= 0 or ship.getGameState()[0] == 'Sinking':
++            self.notify.warning('Cannot deploy ship %d for avatar %d, '
++                'it is sunk and needs a shipwright!' % (self.shipId, self.avatar.doId))
++
++            self.cleanup(False)
+         else:
+             ship.b_setLocation(self.oceanGrid.doId, self.zoneId)
+             self.shipArrivedCallback(ship)
+ 
++    def _deployTimedOut(self, task):
++        self.notify.warning('Cannot deploy ship %d for avatar %d, '
++            'it never arrived on the AI!' % (self.shipId, self.avatar.doId))
++
++        self.cleanup(False)
++        return task.done
++
+     def shipArrivedCallback(self, ship):
++        taskMgr.remove('ship-deploy-timeout-%d' % self.avatar.doId)
+         self.ship = ship
+         if not self.ship:
+             self.notify.warning('Cannot deploy ship %d for avatar %d, '
+@@ -88,6 +108,16 @@ class DeployShipFSM(ShipDeployerOperationFSM):
+             self.cleanup(False)
+             return
+ 
++        if self.ship.getHp() <= 0:
++            # a ship that sank before its owner logged out comes back from the
++            # database with no hull points: it goes back off the sea, still sunk
++            self.notify.warning('Cannot deploy ship %d for avatar %d, '
++                'it is sunk and needs a shipwright!' % (self.shipId, self.avatar.doId))
++
++            self.ship.putAwaySunk()
++            self.cleanup(False)
++            return
++
+         # set the ship's captain
+         self.ship.b_setCaptainId(self.avatar.doId)
+ 
+-- 
+2.53.0
+

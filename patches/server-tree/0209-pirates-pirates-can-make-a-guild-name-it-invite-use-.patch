@@ -1,0 +1,806 @@
+From 11a85cbadd3ded09a576115dbceecbe4e046ce0c Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 01:28:02 -0800
+Subject: [PATCH 209/371] pirates: pirates can make a guild, name it, invite,
+ use invite codes, change ranks, leave and use guild chat (0255)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../distributed/PiratesInternalRepository.py  |   2 +
+ pirates/friends/PCGuildManagerUD.py           | 718 +++++++++++++++++-
+ pirates/uberdog/ClientServicesManagerUD.py    |  14 +
+ pirates/uberdog/PiratesUberRepository.py      |   2 +
+ 4 files changed, 735 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/distributed/PiratesInternalRepository.py b/pirates/distributed/PiratesInternalRepository.py
+index 4b596a1..3f7a1c5 100644
+--- a/pirates/distributed/PiratesInternalRepository.py
++++ b/pirates/distributed/PiratesInternalRepository.py
+@@ -74,6 +74,8 @@ class PiratesInternalRepository(OTPInternalRepository):
+         # pirate's game closes; PCAvatarFriendsManagerUD marks it offline.
+         # Added last so the numbers of the messages above do not move.
+         self._registerInternalNetMessage('avatarFriendsOffline')
++        # family server (2026-11-19): the guild manager's offline post-remove
++        self._registerInternalNetMessage('guildAvatarOffline')
+ 
+     def logPotentialHacker(self, message, kickChannel=False, **kwargs):
+         self.notify.warning(message)
+diff --git a/pirates/friends/PCGuildManagerUD.py b/pirates/friends/PCGuildManagerUD.py
+index d5b5e13..8c35a69 100644
+--- a/pirates/friends/PCGuildManagerUD.py
++++ b/pirates/friends/PCGuildManagerUD.py
+@@ -1,8 +1,724 @@
+ from direct.distributed.DistributedObjectGlobalUD import DistributedObjectGlobalUD
++from direct.distributed.PyDatagram import PyDatagram
+ from direct.directnotify import DirectNotifyGlobal
++from otp.distributed.MsgTypes import CLIENTAGENT_ADD_POST_REMOVE
++from otp.uberdog.RejectCode import RejectCode
++import json
++import random
++import re
++
++try:
++    import semidbm
++except ImportError:
++    semidbm = None
++
++# family server (2026-11-19): the guild manager on the UberDOG. It keeps the
++# guilds in its own file (astron/databases/guilds by default): create, the
++# member list, ranks, leave and kick, the guild name, invites, invite codes
++# and guild chat. A pirate's guild id is not saved on the pirate (setGuildId
++# is a ram field), so it is sent again each time the pirate comes online.
++
++MEMBER = 1
++OFFICER = 2
++GM = 3
++NO_GUILD_NAME = 'Null'
++TOKEN_INVALID = '***ERROR - GUILD CODE INVALID***'
++TOKEN_FULL = '***ERROR - GUILD FULL***'
++TOKEN_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
++TOKEN_LENGTH = 8
++MAX_CHAT = 200
++MAX_NAME = 30
++NAME_OK = re.compile(r"^[A-Za-z0-9 '\-.!&]+$")
++
++
++def getConfig(name, default):
++    try:
++        cfg = config
++    except NameError:
++        return default
++    if isinstance(default, int):
++        return cfg.GetInt(name, default)
++    return cfg.GetString(name, default)
++
++
++class GuildStore:
++    """The guilds, in memory and in a semidbm file. Values are JSON."""
++    notify = DirectNotifyGlobal.directNotify.newCategory('GuildStore')
++
++    def __init__(self, filename):
++        self.dbm = None
++        self.guilds = {}       # guildId -> record
++        self.nextId = 1
++        if semidbm is None:
++            self.notify.warning('semidbm is missing; guilds are kept in memory only and are lost on restart')
++            return
++        try:
++            self.dbm = semidbm.open(filename, 'c')
++        except Exception as e:
++            self.notify.warning('could not open the guild file %s (%r); guilds are kept in memory only' % (filename, e))
++            self.dbm = None
++            return
++        for key in list(self.dbm.keys()):
++            k = key.decode() if isinstance(key, bytes) else key
++            try:
++                value = json.loads(self.dbm[key])
++            except Exception as e:
++                self.notify.warning('bad guild record %s: %r' % (k, e))
++                continue
++            if k == 'next':
++                self.nextId = max(self.nextId, int(value))
++            elif k.startswith('g'):
++                self.guilds[int(value['id'])] = value
++        if self.guilds:
++            self.nextId = max(self.nextId, max(self.guilds) + 1)
++
++    def newId(self):
++        guildId = self.nextId
++        self.nextId += 1
++        self.write('next', self.nextId)
++        return guildId
++
++    def save(self, guild):
++        self.guilds[guild['id']] = guild
++        self.write('g%d' % guild['id'], guild)
++
++    def remove(self, guildId):
++        self.guilds.pop(guildId, None)
++        if self.dbm is not None:
++            try:
++                del self.dbm['g%d' % guildId]
++                self.sync()
++            except KeyError:
++                pass
++            except Exception as e:
++                self.notify.warning('could not delete guild %d: %r' % (guildId, e))
++
++    def write(self, key, value):
++        if self.dbm is None:
++            return
++        try:
++            self.dbm[key] = json.dumps(value)
++            self.sync()
++        except Exception as e:
++            self.notify.warning('could not save %s: %r' % (key, e))
++
++    def sync(self):
++        if getattr(self.dbm, 'sync', None):
++            self.dbm.sync()
++
++    def close(self):
++        if self.dbm is not None:
++            try:
++                self.dbm.close()
++            except Exception:
++                pass
++            self.dbm = None
++
+ 
+ class PCGuildManagerUD(DistributedObjectGlobalUD):
+     notify = DirectNotifyGlobal.directNotify.newCategory('PCGuildManagerUD')
++    OfflineNetMessage = 'guildAvatarOffline'
++    # the client builds its Guild page some time after it enters the game and
++    # crashes on a status before it has a local pirate, so the status goes
++    # out later, twice
++    ResendDelays = (30, 90)
+ 
+     def __init__(self, air):
+-        DistributedObjectGlobalUD.__init__(self, air)
+\ No newline at end of file
++        DistributedObjectGlobalUD.__init__(self, air)
++        self.store = None
++        self.av2guild = {}     # avId -> guildId
++        self.token2guild = {}  # token -> guildId
++        self.name2guild = {}   # lower-case name -> guildId
++        self.online = {}       # avId -> connection channel (or None)
++        self.av2name = {}      # avId -> pirate name
++        self.invites = {}      # inviteeId -> (inviterId, guildId)
++        self.maxMembers = getConfig('guild-max-members', 500)
++        self.maxCodes = getConfig('guild-max-codes', 20)
++
++    def announceGenerate(self):
++        DistributedObjectGlobalUD.announceGenerate(self)
++        self.openStore(getConfig('guild-db-filename', 'astron/databases/guilds'))
++        try:
++            self.air.netMessenger.accept(self.OfflineNetMessage, self, self.handleOfflineMessage)
++        except Exception as e:
++            self.notify.warning('could not listen for %s: %r' % (self.OfflineNetMessage, e))
++
++    def delete(self):
++        for avId in list(self.online):
++            self.removeTask(self.uniqueName('guild-resend-%d' % avId))
++        try:
++            self.air.netMessenger.ignore(self.OfflineNetMessage, self)
++        except Exception:
++            pass
++        if self.store is not None:
++            self.store.close()
++        DistributedObjectGlobalUD.delete(self)
++
++    def openStore(self, filename):
++        self.store = GuildStore(filename)
++        self.av2guild = {}
++        self.token2guild = {}
++        self.name2guild = {}
++        for guildId, guild in list(self.store.guilds.items()):
++            for avId, rank, name in guild['members']:
++                self.av2guild[avId] = guildId
++                if name:
++                    self.av2name.setdefault(avId, name)
++            for token in guild.get('tokens', {}):
++                self.token2guild[token] = guildId
++            if guild.get('perm'):
++                self.token2guild[guild['perm']] = guildId
++            if guild.get('name'):
++                self.name2guild[guild['name'].lower()] = guildId
++        self.notify.info('%d guilds loaded' % len(self.store.guilds))
++
++    # ------------------------------------------------------------ helpers
++
++    def getGuild(self, avId):
++        guildId = self.av2guild.get(avId)
++        if guildId is None:
++            return None
++        return self.store.guilds.get(guildId)
++
++    def getMember(self, guild, avId):
++        for member in guild['members']:
++            if member[0] == avId:
++                return member
++        return None
++
++    def getRank(self, avId):
++        guild = self.getGuild(avId)
++        if guild is None:
++            return 0
++        member = self.getMember(guild, avId)
++        return member[1] if member else 0
++
++    def displayName(self, guild):
++        # '' until the guild master picks a name; the client shows the
++        # default name for it
++        return guild['name'] or 'Pirate Guild %d' % guild['id']
++
++    def memberInfo(self, member):
++        avId, rank, name = member
++        return [avId, self.av2name.get(avId, name or ''), rank, int(avId in self.online), 0, 0]
++
++    def onlineMembers(self, guild, exclude=None):
++        return [m[0] for m in guild['members'] if m[0] in self.online and m[0] != exclude]
++
++    def sendToAv(self, avId, fieldName, args):
++        if avId in self.online:
++            self.sendUpdateToAvatarId(avId, fieldName, args)
++
++    def sendToGuild(self, guild, fieldName, args, exclude=None):
++        for avId in self.onlineMembers(guild, exclude):
++            self.sendUpdateToAvatarId(avId, fieldName, args)
++
++    def sendLiveFields(self, avId, fields):
++        # to the pirate's own channel: a pirate in the game sees it at once,
++        # and the database state server saves the db fields (setGuildName)
++        dclass = self.air.dclassesByName.get('DistributedPlayerPirateUD')
++        if dclass is None:
++            return
++        for fieldName, args in list(fields.items()):
++            try:
++                self.air.send(dclass.aiFormatUpdate(fieldName, avId, avId, self.air.ourChannel, list(args)))
++            except Exception as e:
++                self.notify.warning('could not send %s to %d: %r' % (fieldName, avId, e))
++
++    def pushGuildFields(self, avId, guild):
++        if guild is None:
++            self.sendLiveFields(avId, {'setGuildId': [0], 'setGuildName': [NO_GUILD_NAME]})
++        else:
++            self.sendLiveFields(avId, {'setGuildId': [guild['id']], 'setGuildName': [guild['name']]})
++
++    def sendStatus(self, avId):
++        guild = self.getGuild(avId)
++        if guild is None:
++            self.sendToAv(avId, 'guildStatusUpdate', [0, NO_GUILD_NAME, 0])
++        else:
++            self.sendToAv(avId, 'guildStatusUpdate', [guild['id'], guild['name'], self.getRank(avId)])
++
++    def scheduleStatusResends(self, avId):
++        taskName = self.uniqueName('guild-resend-%d' % avId)
++        self.removeTask(taskName)
++        delays = list(self.ResendDelays)
++        if not delays:
++            return
++
++        def resend(task):
++            if avId not in self.online:
++                return task.done
++            if self.getGuild(avId) is not None:
++                self.sendStatus(avId)
++            if not delays:
++                return task.done
++            task.delayTime = delays.pop(0) - task.delayTime
++            return task.again
++
++        first = delays.pop(0)
++        self.doMethodLater(first, resend, taskName)
++
++    def newToken(self):
++        while True:
++            token = ''.join(random.choice(TOKEN_LETTERS) for i in range(TOKEN_LENGTH))
++            if token not in self.token2guild:
++                return token
++
++    def getSender(self):
++        avId = self.air.getAvatarIdFromSender()
++        if not avId:
++            return 0
++        if avId not in self.online:
++            # the UberDOG restarted while this pirate was playing; the
++            # sender is accountId << 32 | avId
++            accountId = self.air.getAccountIdFromSender()
++            self.avatarOnline(avId, accountId and self.GetAccountConnectionChannel(accountId))
++        return avId
++
++    def event(self, eventName, **kw):
++        try:
++            self.air.writeServerEvent(eventName, **kw)
++        except Exception:
++            pass
++
++    # ------------------------------------------------------- online, offline
++
++    def avatarOnline(self, avId, connectionChannel=None):
++        if not avId:
++            return
++        self.online[avId] = connectionChannel
++        if connectionChannel:
++            self.addOfflinePostRemove(avId, connectionChannel)
++        guild = self.getGuild(avId)
++        self.pushGuildFields(avId, guild)
++        if guild is not None:
++            self.sendToGuild(guild, 'recvAvatarOnline', [avId, self.av2name.get(avId, ''), 0, 0], exclude=avId)
++            self.scheduleStatusResends(avId)
++        self.refreshName(avId)
++
++    def refreshName(self, avId):
++        def gotAvatar(dclass, fields):
++            if dclass is None or dclass != self.air.dclassesByName.get('DistributedPlayerPirateUD'):
++                return
++            name = fields.get('setName')
++            if not name:
++                return
++            self.av2name[avId] = name[0]
++            guild = self.getGuild(avId)
++            if guild is None:
++                return
++            member = self.getMember(guild, avId)
++            if member is not None and member[2] != name[0]:
++                member[2] = name[0]
++                self.store.save(guild)
++        try:
++            self.air.dbInterface.queryObject(self.air.dbId, avId, gotAvatar)
++        except Exception as e:
++            self.notify.warning('could not look up pirate %d: %r' % (avId, e))
++
++    def addOfflinePostRemove(self, avId, connectionChannel):
++        # if the game closes or the connection drops, the client agent sends
++        # this message for the pirate
++        message = self.air.netMessenger.prepare(self.OfflineNetMessage, [avId])
++        if message is None:
++            return
++        datagram = PyDatagram()
++        datagram.addServerHeader(connectionChannel, self.air.ourChannel, CLIENTAGENT_ADD_POST_REMOVE)
++        datagram.addBlob(message.getMessage())
++        self.air.send(datagram)
++
++    def handleOfflineMessage(self, avId):
++        self.avatarOffline(avId)
++
++    def avatarOffline(self, avId):
++        if avId not in self.online:
++            return
++        del self.online[avId]
++        self.removeTask(self.uniqueName('guild-resend-%d' % avId))
++        # invites end with the session
++        invite = self.invites.pop(avId, None)
++        if invite is not None:
++            self.sendToAv(invite[0], 'guildRejectInvite', [avId, RejectCode.INVITEE_NOT_ONLINE])
++        for inviteeId, (inviterId, guildId) in list(self.invites.items()):
++            if inviterId == avId:
++                del self.invites[inviteeId]
++        guild = self.getGuild(avId)
++        if guild is not None:
++            self.sendToGuild(guild, 'recvAvatarOffline', [avId, self.av2name.get(avId, '')])
++
++    # ------------------------------------------------- guild create and join
++
++    def createGuild(self):
++        avId = self.getSender()
++        if not avId:
++            return
++        if self.getGuild(avId) is not None:
++            self.notify.info('%d asked for a guild while in one' % avId)
++            self.sendStatus(avId)
++            return
++        guildId = self.store.newId()
++        guild = {'id': guildId, 'name': '', 'members': [[avId, GM, self.av2name.get(avId, '')]],
++                 'perm': '', 'permBy': 0, 'tokens': {}}
++        self.store.save(guild)
++        self.av2guild[avId] = guildId
++        self.pushGuildFields(avId, guild)
++        self.sendStatus(avId)
++        self.notify.info('%d made guild %d' % (avId, guildId))
++        self.event('guild-create', avId=avId, guildId=guildId)
++
++    def joinGuild(self, avId, guild):
++        guild['members'].append([avId, MEMBER, self.av2name.get(avId, '')])
++        self.store.save(guild)
++        self.av2guild[avId] = guild['id']
++        self.pushGuildFields(avId, guild)
++        self.sendStatus(avId)
++        self.sendToGuild(guild, 'recvMemberAdded', [self.memberInfo(guild['members'][-1])], exclude=avId)
++        self.notify.info('%d joined guild %d' % (avId, guild['id']))
++        self.event('guild-join', avId=avId, guildId=guild['id'])
++
++    def isFull(self, guild):
++        return len(guild['members']) >= self.maxMembers
++
++    def memberList(self):
++        avId = self.getSender()
++        if not avId:
++            return
++        guild = self.getGuild(avId)
++        members = [] if guild is None else [self.memberInfo(m) for m in guild['members']]
++        self.sendUpdateToAvatarId(avId, 'receiveMembers', [members])
++
++    def statusRequest(self):
++        avId = self.getSender()
++        if avId:
++            self.sendStatus(avId)
++
++    # ------------------------------------------------------- ranks, leaving
++
++    def changeRank(self, targetId, rank):
++        avId = self.getSender()
++        if not avId:
++            return
++        guild = self.getGuild(avId)
++        if guild is None or self.getRank(avId) != GM:
++            return
++        target = self.getMember(guild, targetId)
++        if target is None or targetId == avId or target[1] == GM or rank not in (MEMBER, OFFICER):
++            return
++        if target[1] == rank:
++            return
++        target[1] = rank
++        self.store.save(guild)
++        self.sendToGuild(guild, 'recvMemberUpdateRank', [targetId, rank])
++        self.sendStatus(targetId)
++        self.event('guild-rank', avId=avId, targetId=targetId, guildId=guild['id'], rank=rank)
++
++    def removeMember(self, targetId):
++        avId = self.getSender()
++        if not avId:
++            return
++        guild = self.getGuild(avId)
++        if guild is None:
++            return
++        target = self.getMember(guild, targetId)
++        if target is None:
++            return
++        if targetId != avId:
++            myRank = self.getRank(avId)
++            if myRank < OFFICER or myRank <= target[1]:
++                return
++        self.dropMember(guild, targetId, kickedBy=avId if targetId != avId else 0)
++
++    def dropMember(self, guild, avId, kickedBy=0):
++        member = self.getMember(guild, avId)
++        if member is None:
++            return
++        wasGM = member[1] == GM
++        guild['members'].remove(member)
++        self.av2guild.pop(avId, None)
++        if avId in self.online:
++            self.pushGuildFields(avId, None)
++        else:
++            # only the saved field; the guild id is sent again at login
++            self.sendLiveFields(avId, {'setGuildName': [NO_GUILD_NAME]})
++        self.sendToAv(avId, 'recvMemberRemoved', [avId])
++        self.sendToAv(avId, 'guildStatusUpdate', [0, NO_GUILD_NAME, 0])
++        self.event('guild-leave', avId=avId, guildId=guild['id'], kickedBy=kickedBy)
++        if not guild['members']:
++            self.disband(guild)
++            return
++        if wasGM:
++            # the first officer, else the first member, is the new guild master
++            heir = None
++            for m in guild['members']:
++                if m[1] == OFFICER:
++                    heir = m
++                    break
++            if heir is None:
++                heir = guild['members'][0]
++            heir[1] = GM
++            self.sendToGuild(guild, 'recvMemberUpdateRank', [heir[0], GM])
++            self.sendStatus(heir[0])
++            self.event('guild-new-gm', avId=heir[0], guildId=guild['id'])
++        self.store.save(guild)
++        self.sendToGuild(guild, 'recvMemberRemoved', [avId])
++
++    def disband(self, guild):
++        guildId = guild['id']
++        for token in list(guild.get('tokens', {})):
++            self.token2guild.pop(token, None)
++        if guild.get('perm'):
++            self.token2guild.pop(guild['perm'], None)
++        if guild.get('name'):
++            self.name2guild.pop(guild['name'].lower(), None)
++        for inviteeId, (inviterId, gid) in list(self.invites.items()):
++            if gid == guildId:
++                del self.invites[inviteeId]
++        self.store.remove(guildId)
++        self.notify.info('guild %d is empty and was disbanded' % guildId)
++        self.event('guild-disband', guildId=guildId)
++
++    # ------------------------------------------------------------ the name
++
++    def setWantName(self, name):
++        avId = self.getSender()
++        if not avId:
++            return
++        guild = self.getGuild(avId)
++        if guild is None or self.getRank(avId) != GM or guild['name']:
++            return
++        name = ' '.join(str(name).split())
++        if not name or len(name) > MAX_NAME or not NAME_OK.match(name):
++            self.sendToAv(avId, 'guildNameChange', [name[:MAX_NAME], 2])
++            return
++        if name.lower() in self.name2guild:
++            self.sendToAv(avId, 'guildNameReject', [guild['id']])
++            return
++        guild['name'] = name
++        self.name2guild[name.lower()] = guild['id']
++        self.store.save(guild)
++        for m in guild['members']:
++            # saved on every member, online or not
++            self.sendLiveFields(m[0], {'setGuildName': [name]})
++        for memberId in self.onlineMembers(guild):
++            self.sendStatus(memberId)
++        self.sendToAv(avId, 'guildNameChange', [name, 1])
++        self.event('guild-name', avId=avId, guildId=guild['id'], guildName=name)
++
++    # ------------------------------------------------------------- invites
++
++    def requestInvite(self, targetId):
++        avId = self.getSender()
++        if not avId:
++            return
++        guild = self.getGuild(avId)
++        if guild is None or self.getRank(avId) < OFFICER:
++            self.sendToAv(avId, 'guildRejectInvite', [targetId, RejectCode.NO_GUILD])
++            return
++        if targetId not in self.online or targetId == avId:
++            reason = RejectCode.INVITEE_NOT_ONLINE
++        elif targetId in self.av2guild:
++            reason = RejectCode.ALREADY_IN_GUILD
++        elif self.isFull(guild):
++            reason = RejectCode.GUILD_FULL
++        elif targetId in self.invites:
++            reason = RejectCode.BUSY
++        else:
++            reason = 0
++        if reason:
++            self.sendToAv(avId, 'guildRejectInvite', [targetId, reason])
++            return
++        self.invites[targetId] = (avId, guild['id'])
++        self.sendToAv(targetId, 'invitationFrom', [avId, self.av2name.get(avId, ''), guild['id'], self.displayName(guild)])
++        self.event('guild-invite', avId=avId, targetId=targetId, guildId=guild['id'])
++
++    def acceptInvite(self):
++        avId = self.getSender()
++        if not avId:
++            return
++        invite = self.invites.pop(avId, None)
++        if invite is None:
++            return
++        inviterId, guildId = invite
++        guild = self.store.guilds.get(guildId)
++        if guild is None or avId in self.av2guild:
++            self.sendToAv(inviterId, 'guildRejectInvite', [avId, RejectCode.NO_GUILD])
++            return
++        if self.isFull(guild):
++            self.sendToAv(inviterId, 'guildRejectInvite', [avId, RejectCode.GUILD_FULL])
++            return
++        self.joinGuild(avId, guild)
++        self.sendToAv(inviterId, 'guildAcceptInvite', [avId])
++
++    def declineInvite(self):
++        avId = self.getSender()
++        if not avId:
++            return
++        invite = self.invites.pop(avId, None)
++        if invite is not None:
++            self.sendToAv(invite[0], 'guildRejectInvite', [avId, RejectCode.NO_GUILD])
++
++    # --------------------------------------------------------- invite codes
++
++    def getOfficerGuild(self, avId):
++        guild = self.getGuild(avId)
++        if guild is None or self.getRank(avId) < OFFICER:
++            return None
++        return guild
++
++    def sendTokenRequest(self):
++        avId = self.getSender()
++        guild = self.getOfficerGuild(avId)
++        if guild is None:
++            return
++        preExistPerm = 1 if guild.get('perm') else 0
++        if self.isFull(guild):
++            self.sendToAv(avId, 'recvTokenInviteValue', ['GUILD FULL', preExistPerm])
++            return
++        if len(guild['tokens']) >= self.maxCodes:
++            self.sendToAv(avId, 'recvTokenInviteValue', ['TOO_MANY_TOKENS', preExistPerm])
++            return
++        token = self.newToken()
++        guild['tokens'][token] = [1, avId]
++        self.token2guild[token] = guild['id']
++        self.store.save(guild)
++        self.sendToAv(avId, 'recvTokenInviteValue', [token, preExistPerm])
++        self.event('guild-code', avId=avId, guildId=guild['id'])
++
++    def sendTokenRValue(self, token, value):
++        avId = self.getSender()
++        guild = self.getOfficerGuild(avId)
++        if guild is None:
++            return
++        token = str(token).strip().upper()
++        if token not in guild['tokens']:
++            return
++        if value == -1:
++            # a code that never runs out; it replaces the old one
++            del guild['tokens'][token]
++            if guild.get('perm'):
++                self.token2guild.pop(guild['perm'], None)
++            guild['perm'] = token
++            guild['permBy'] = avId
++        elif 1 <= value <= 127:
++            guild['tokens'][token][0] = value
++        else:
++            return
++        self.store.save(guild)
++        self.sendPermTokenTo(avId, guild)
++        self.sendNonPermTokenCountTo(avId, guild)
++
++    def sendPermTokenTo(self, avId, guild):
++        self.sendToAv(avId, 'recvPermToken', [guild.get('perm') or '0'])
++
++    def sendNonPermTokenCountTo(self, avId, guild):
++        self.sendToAv(avId, 'recvNonPermTokenCount', [min(255, len(guild['tokens']))])
++
++    def sendPermToken(self):
++        avId = self.getSender()
++        guild = self.getOfficerGuild(avId)
++        if guild is not None:
++            self.sendPermTokenTo(avId, guild)
++
++    def sendNonPermTokenCount(self):
++        avId = self.getSender()
++        guild = self.getOfficerGuild(avId)
++        if guild is not None:
++            self.sendNonPermTokenCountTo(avId, guild)
++
++    def sendClearTokens(self, type):
++        avId = self.getSender()
++        guild = self.getOfficerGuild(avId)
++        if guild is None:
++            return
++        if type == 1:
++            if guild.get('perm'):
++                self.token2guild.pop(guild['perm'], None)
++            guild['perm'] = ''
++            guild['permBy'] = 0
++        else:
++            for token in list(guild['tokens']):
++                self.token2guild.pop(token, None)
++            guild['tokens'] = {}
++        self.store.save(guild)
++        self.sendPermTokenTo(avId, guild)
++        self.sendNonPermTokenCountTo(avId, guild)
++        self.event('guild-clear-codes', avId=avId, guildId=guild['id'], type=type)
++
++    def sendTokenForJoinRequest(self, token, name):
++        avId = self.getSender()
++        if not avId:
++            return
++        token = str(token).strip().upper()
++        guildId = self.token2guild.get(token)
++        guild = self.store.guilds.get(guildId) if guildId is not None else None
++        if guild is None or avId in self.av2guild:
++            self.sendToAv(avId, 'recvTokenRedeemMessage', [TOKEN_INVALID])
++            return
++        if self.isFull(guild):
++            self.sendToAv(avId, 'recvTokenRedeemMessage', [TOKEN_FULL])
++            return
++        if token == guild.get('perm'):
++            creatorId = guild.get('permBy', 0)
++        else:
++            uses, creatorId = guild['tokens'][token]
++            if uses <= 1:
++                del guild['tokens'][token]
++                self.token2guild.pop(token, None)
++            else:
++                guild['tokens'][token][0] = uses - 1
++        self.joinGuild(avId, guild)
++        self.sendToAv(avId, 'recvTokenRedeemMessage', [self.displayName(guild)])
++        if creatorId and creatorId != avId:
++            self.sendToAv(creatorId, 'recvTokenRedeemedByPlayerMessage', [self.av2name.get(avId, '')])
++        self.event('guild-code-used', avId=avId, guildId=guild['id'], creatorId=creatorId)
++
++    # ---------------------------------------------------------------- chat
++
++    def sendChat(self, msgText, chatFlags, DISLid):
++        self.relayChat('recvChat', msgText, chatFlags)
++
++    def sendWLChat(self, msgText, chatFlags, DISLid):
++        self.relayChat('recvWLChat', msgText, chatFlags)
++
++    def relayChat(self, fieldName, msgText, chatFlags):
++        avId = self.getSender()
++        if not avId:
++            return
++        guild = self.getGuild(avId)
++        if guild is None:
++            return
++        msgText = str(msgText)[:MAX_CHAT]
++        if not msgText.strip():
++            return
++        # the sender sees his own line too, like team chat
++        self.sendToGuild(guild, fieldName, [avId, msgText, chatFlags, 0])
++        self.event('guild-chat', avId=avId, guildId=guild['id'], text=msgText)
++
++    def sendSC(self, msgIndex):
++        avId = self.getSender()
++        if not avId:
++            return
++        guild = self.getGuild(avId)
++        if guild is None:
++            return
++        # the receiver looks the index up; a bad one would crash his game
++        try:
++            from otp.otpbase import OTPLocalizer
++            if msgIndex not in OTPLocalizer.SpeedChatStaticText:
++                return
++        except Exception:
++            return
++        self.sendToGuild(guild, 'recvSC', [avId, msgIndex])
++
++    def sendSCQuest(self, questInt, msgType, taskNum):
++        # the client's recvSCQuest calls a function it never imports
++        pass
++
++    def requestLeaderboardTopTen(self):
++        pass
++
++    def reflectTeleportQuery(self, sendToId, localBandMgrId, localBandId, localGuildId, localShardId):
++        pass
++
++    def reflectTeleportResponse(self, sendToId, available, shardId, instanceDoId, areaDoId):
++        pass
+diff --git a/pirates/uberdog/ClientServicesManagerUD.py b/pirates/uberdog/ClientServicesManagerUD.py
+index 1459ef4..30c4287 100644
+--- a/pirates/uberdog/ClientServicesManagerUD.py
++++ b/pirates/uberdog/ClientServicesManagerUD.py
+@@ -954,6 +954,14 @@ class LoadAvatarFSM(AvatarOperationFSM):
+                     friendsManager.avatarOnline(self.avId, self.csm.GetAccountConnectionChannel(self.target))
+                 except Exception as e:
+                     self.notify.warning('friends online for %d failed: %r' % (self.avId, e))
++            # family server (2026-11-19): the guild manager sends the guild id,
++            # shows this pirate online to his guild and adds its own post-remove
++            guildManager = getattr(self.csm.air, 'guildManager', None)
++            if guildManager is not None and hasattr(guildManager, 'avatarOnline'):
++                try:
++                    guildManager.avatarOnline(self.avId, self.csm.GetAccountConnectionChannel(self.target))
++                except Exception as e:
++                    self.notify.warning('guild online for %d failed: %r' % (self.avId, e))
+             self.demand('Off')
+ 
+         # activate the avatar's inventory on the DBSS
+@@ -1077,6 +1085,12 @@ class UnloadAvatarFSM(OperationFSM):
+                 friendsManager.avatarOffline(self.avId)
+             except Exception as e:
+                 self.notify.warning('friends offline for %d failed: %r' % (self.avId, e))
++        guildManager = getattr(self.csm.air, 'guildManager', None)
++        if guildManager is not None and hasattr(guildManager, 'avatarOffline'):
++            try:
++                guildManager.avatarOffline(self.avId)
++            except Exception as e:
++                self.notify.warning('guild offline for %d failed: %r' % (self.avId, e))
+ 
+         # Done!
+         self.csm.air.writeServerEvent('avatarUnload', avId=self.avId)
+diff --git a/pirates/uberdog/PiratesUberRepository.py b/pirates/uberdog/PiratesUberRepository.py
+index 681cce7..80c8b7a 100644
+--- a/pirates/uberdog/PiratesUberRepository.py
++++ b/pirates/uberdog/PiratesUberRepository.py
+@@ -59,6 +59,8 @@ class PiratesUberRepository(PiratesInternalRepository):
+         self.inventoryManager = self.generateGlobalObject(OTP_DO_ID_PIRATES_INVENTORY_MANAGER, 'DistributedInventoryManager')
+         self.shipLoader = self.generateGlobalObject(OTP_DO_ID_PIRATES_SHIP_MANAGER, 'DistributedShipLoader')
+         self.avatarFriendsManager = self.generateGlobalObject(OTP_DO_ID_AVATAR_FRIENDS_MANAGER, 'PCAvatarFriendsManager')
++        # family server (2026-11-19): guilds
++        self.guildManager = self.generateGlobalObject(OTP_DO_ID_PIRATES_GUILD_MANAGER, 'PCGuildManager')
+ 
+ @rpcservice(serviceName='cluster')
+ class ClusterService(RPCServiceUD):
+-- 
+2.53.0
+

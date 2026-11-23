@@ -1,0 +1,30 @@
+From a93278d90d54a9f4b619dca51cba2c68cd696afd Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 20:56:01 -0800
+Subject: [PATCH 034/371] black pearl: the treasure map starts without a crew
+
+The quest page refused the Black Pearl map unless the pirate was in a crew, so a pirate playing the story alone
+could never start the boss fight. On the family server a crew is optional (config black-pearl-solo, default on).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/piratesgui/QuestPage.py | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/piratesgui/QuestPage.py b/pirates/piratesgui/QuestPage.py
+index 2bc17c2..634be81 100644
+--- a/pirates/piratesgui/QuestPage.py
++++ b/pirates/piratesgui/QuestPage.py
+@@ -337,7 +337,8 @@ class QuestPage(InventoryPage.InventoryPage):
+         
+         if tm.getIsEnabled() or base.config.GetBool('black-pearl-ready', 0):
+             from pirates.band.DistributedBandMember import DistributedBandMember
+-            if not DistributedBandMember.getBandMember(localAvatar.doId):
++            # family server: the story's Black Pearl quest must be playable alone, so a crew is optional by default
++            if not DistributedBandMember.getBandMember(localAvatar.doId) and not base.config.GetBool('black-pearl-solo', 1):
+                 localAvatar.guiMgr.messageStack.addTextMessage(PLocalizer.LookoutInviteNeedCrew, icon = ('lookout', None))
+                 return
+             
+-- 
+2.53.0
+

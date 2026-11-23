@@ -1,0 +1,308 @@
+From c86916e91c042cbaf3e6e22287bfd214e53b165c Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 21:17:56 -0800
+Subject: [PATCH 035/371] black pearl: a finished or abandoned fight is torn
+ down so the next start builds a fresh one
+
+A Black Pearl instance was never freed: its world uids stayed taken and requestStart
+refused every later start, so the fight could be played once per server run. A monitor
+tears an instance down once it is over (Completed) or has been empty for 60 s: its uids
+are freed, the world creator and ship manager point back at the main world, and the
+instance is deleted (Astron deletes everything under it). requestStart joins a fight
+still at its start, refuses one with pirates in it, and otherwise tears down the old one
+and builds a fresh one once the old one has left the tables.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ pirates/ai/PiratesMagicWordManagerAI.py       |   6 +-
+ .../treasuremap/DistributedTreasureMapAI.py   |  48 +++++--
+ .../treasuremap/TreasureMapBlackPearlAI.py    | 129 ++++++++++++++++++
+ 3 files changed, 171 insertions(+), 12 deletions(-)
+
+diff --git a/pirates/ai/PiratesMagicWordManagerAI.py b/pirates/ai/PiratesMagicWordManagerAI.py
+index 471ae51..7f4e745 100644
+--- a/pirates/ai/PiratesMagicWordManagerAI.py
++++ b/pirates/ai/PiratesMagicWordManagerAI.py
+@@ -49,7 +49,7 @@ def blackpearlai():
+     existingInstance = None
+     from pirates.treasuremap.TreasureMapBlackPearlAI import TreasureMapBlackPearlAI
+     for obj in air.doId2do.values():
+-        if isinstance(obj, TreasureMapBlackPearlAI):
++        if isinstance(obj, TreasureMapBlackPearlAI) and not obj.tornDown:
+             existingInstance = obj
+             break
+ 
+@@ -142,7 +142,7 @@ def bpstate(state='StageOne'):
+     from pirates.treasuremap.TreasureMapBlackPearlAI import TreasureMapBlackPearlAI
+     instance = None
+     for obj in air.doId2do.values():
+-        if isinstance(obj, TreasureMapBlackPearlAI):
++        if isinstance(obj, TreasureMapBlackPearlAI) and not obj.tornDown:
+             instance = obj
+             break
+ 
+@@ -172,7 +172,7 @@ def bpdestroy(barricadeId=0):
+     from pirates.treasuremap.TreasureMapBlackPearlAI import TreasureMapBlackPearlAI
+     instance = None
+     for obj in air.doId2do.values():
+-        if isinstance(obj, TreasureMapBlackPearlAI):
++        if isinstance(obj, TreasureMapBlackPearlAI) and not obj.tornDown:
+             instance = obj
+             break
+ 
+diff --git a/pirates/treasuremap/DistributedTreasureMapAI.py b/pirates/treasuremap/DistributedTreasureMapAI.py
+index 18a8780..e72d5b3 100644
+--- a/pirates/treasuremap/DistributedTreasureMapAI.py
++++ b/pirates/treasuremap/DistributedTreasureMapAI.py
+@@ -151,23 +151,53 @@ class DistributedTreasureMapAI(DistributedObjectAI):
+             self.participants.append(avatarId)
+ 
+         # family server: PiratesGlobals has no TM_GAME_STYLES (this raised AttributeError) and the Black Pearl is
+-        # the only treasure map world. Join a fight still at its start, else build one (the blackpearlai helpers).
++        # the only treasure map world. Join a fight still at its start; a fight with pirates in it takes nobody
++        # else; one that is over or empty is torn down and a fresh one built (the blackpearlai helpers).
+         from pirates.ai import PiratesMagicWordManagerAI as bpHelpers
+         from pirates.treasuremap.TreasureMapBlackPearlAI import TreasureMapBlackPearlAI
+         for obj in list(self.air.doId2do.values()):
+-            if not isinstance(obj, TreasureMapBlackPearlAI):
++            if not isinstance(obj, TreasureMapBlackPearlAI) or obj.tornDown:
+                 continue
+ 
+-            if obj.state not in ('Off', 'WaitClientsReady', 'StageOne'):
+-                # a finished instance is never deleted and its world uids stay taken: one fight per server run
+-                self.notify.warning('Black Pearl %d is in %s, avatar %d cannot join' % (obj.doId, obj.state, avatarId))
++            if obj.isJoinable():
++                if obj.isReady:
++                    bpHelpers._teleportToBlackPearl(self.air, avatar, obj)
++                else:
++                    obj.pendingTeleportCallbacks.append(lambda obj=obj: bpHelpers._teleportToBlackPearl(self.air, avatar, obj))
++
++                return
++
++            if obj.hasPlayersInside():
++                self.notify.warning('Black Pearl %d is in %s with pirates in it, avatar %d cannot join' % (
++                    obj.doId, obj.state, avatarId))
++                return
++
++            # nobody is in it: it is over (won, lost, everyone left) or abandoned
++            obj.teardown()
++
++        self._startBlackPearlWhenClear(avatarId, 0)
++
++    def _startBlackPearlWhenClear(self, avatarId, tries):
++        """Build a fresh Black Pearl once no torn-down one is left in the tables (Astron tells this AI about each
++        deleted object a moment after the delete is requested)"""
++        from pirates.ai import PiratesMagicWordManagerAI as bpHelpers
++        from pirates.treasuremap.TreasureMapBlackPearlAI import TreasureMapBlackPearlAI
++        avatar = self.air.doId2do.get(avatarId)
++        if not avatar:
++            return
++
++        old = [obj for obj in list(self.air.doId2do.values())
++               if isinstance(obj, TreasureMapBlackPearlAI) and obj.tornDown]
++        if old:
++            if tries >= 100:
++                self.notify.warning('Black Pearl %d is still deleting after 30 s, not starting a new one' % old[0].doId)
+                 return
+ 
+-            if obj.isReady:
+-                bpHelpers._teleportToBlackPearl(self.air, avatar, obj)
+-            else:
+-                obj.pendingTeleportCallbacks.append(lambda: bpHelpers._teleportToBlackPearl(self.air, avatar, obj))
++            def retry(task):
++                self._startBlackPearlWhenClear(avatarId, tries + 1)
++                return task.done
+ 
++            taskMgr.doMethodLater(0.3, retry, self.uniqueName('startBlackPearl-%d' % avatarId))
+             return
+ 
+         bpHelpers._createBlackPearlInstance(self.air, avatar)
+diff --git a/pirates/treasuremap/TreasureMapBlackPearlAI.py b/pirates/treasuremap/TreasureMapBlackPearlAI.py
+index 67bcb8d..7249284 100644
+--- a/pirates/treasuremap/TreasureMapBlackPearlAI.py
++++ b/pirates/treasuremap/TreasureMapBlackPearlAI.py
+@@ -1,3 +1,5 @@
++import time
++
+ from direct.directnotify import DirectNotifyGlobal
+ from direct.distributed.ClockDelta import globalClockDelta
+ from direct.task import Task
+@@ -7,6 +9,7 @@ from pirates.treasuremap import TreasureMapBlackPearlGlobals
+ from pirates.treasuremap.TreasureMapBlackPearlWorldBuilderAI import TreasureMapBlackPearlWorldBuilderAI
+ from pirates.ship import ShipGlobals
+ from pirates.piratesbase import PiratesGlobals
++from pirates.instance.DistributedInstanceBaseAI import DistributedInstanceBaseAI
+ from pirates.pirate import AvatarTypes
+ from pirates.battle import EnemyGlobals
+ 
+@@ -62,6 +65,8 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+     # Stage timing constants
+     CUTSCENE_WAIT_TIME = 60.0  # Max time to wait for cutscene sync
+     STAGE_TWO_DELAY = 5.0  # Delay before moving to stage two
++    MONITOR_INTERVAL = 5.0  # How often to look for an empty instance
++    EMPTY_GRACE_TIME = 60.0  # An instance nobody is inside is torn down after this long
+ 
+     def __init__(self, air):
+         DistributedTreasureMapInstanceAI.__init__(self, air)
+@@ -108,6 +113,10 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+         self.blackPearlInterests = {}
+         self.nextInterestId = 5000  # Start with a high number to avoid conflicts
+ 
++        # a finished or abandoned fight is torn down so the next requestStart builds a fresh one
++        self.tornDown = False
++        self.lastActivity = time.time()
++
+     def announceGenerate(self):
+         DistributedTreasureMapInstanceAI.announceGenerate(self)
+         self.notify.info('TreasureMapBlackPearlAI generated with doId %d' % self.doId)
+@@ -155,6 +164,8 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+ 
+         # Mark instance as ready and process pending teleport callbacks
+         self.isReady = True
++        self.lastActivity = time.time()
++        taskMgr.doMethodLater(self.MONITOR_INTERVAL, self._monitorPlayers, self.uniqueName('monitorPlayers'))
+         self.notify.info('Black Pearl instance is now ready')
+         for callback in self.pendingTeleportCallbacks:
+             callback()
+@@ -170,6 +181,10 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+         taskMgr.remove(self.uniqueName('stageFourCutscene'))
+         taskMgr.remove(self.uniqueName('checkVictory'))
+         taskMgr.remove(self.uniqueName('checkAttackShips'))
++        taskMgr.remove(self.uniqueName('waitClientsTimeout'))
++        taskMgr.remove(self.uniqueName('moveToCompleted'))
++        taskMgr.remove(self.uniqueName('monitorPlayers'))
++        self.pendingTeleportCallbacks = []
+ 
+         # Clean up Navy guards
+         for guard in self.navyGuards:
+@@ -198,6 +213,119 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+ 
+         DistributedTreasureMapInstanceAI.delete(self)
+ 
++    # =========================================================================
++    # Teardown - a finished or abandoned fight gives its world back
++    # =========================================================================
++
++    def _isInside(self, avatar):
++        """True when the avatar is somewhere under this instance (its island, areas, ocean, a ship)"""
++        parentId = getattr(avatar, 'parentId', None)
++        for _ in range(10):
++            if not parentId:
++                return False
++
++            if parentId == self.doId:
++                return True
++
++            parent = self.air.doId2do.get(parentId)
++            parentId = getattr(parent, 'parentId', None)
++
++        return False
++
++    def hasPlayersInside(self):
++        """True when a pirate is inside (any pirate, not only the participants); also drops the participants who
++        left, logged out or never arrived"""
++        from pirates.pirate.DistributedPlayerPirateAI import DistributedPlayerPirateAI
++        inside = False
++        for obj in list(self.air.doId2do.values()):
++            if isinstance(obj, DistributedPlayerPirateAI) and self._isInside(obj):
++                inside = True
++                break
++
++        if inside:
++            self.lastActivity = time.time()
++        elif time.time() - self.lastActivity > self.MONITOR_INTERVAL * 2:
++            # not in yet (a teleport takes a few seconds) is fine; not in and not coming is not
++            for avatarId in list(self.participants):
++                self.removeParticipant(avatarId)
++
++        return inside
++
++    def isJoinable(self):
++        """A fight still at its start takes more pirates while someone is in it or it has just been started"""
++        if self.tornDown or self.state not in ('Off', 'WaitClientsReady', 'StageOne'):
++            return False
++
++        return self.hasPlayersInside() or time.time() - self.lastActivity < self.EMPTY_GRACE_TIME
++
++    def _monitorPlayers(self, task):
++        if self.tornDown:
++            return Task.done
++
++        if not self.hasPlayersInside():
++            if self.state == 'Completed':
++                self.notify.info('Black Pearl %d is over and empty, tearing it down' % self.doId)
++                self.teardown()
++                return Task.done
++
++            if time.time() - self.lastActivity > self.EMPTY_GRACE_TIME:
++                self.notify.info('Black Pearl %d (%s) has been empty for %d s, tearing it down' % (
++                    self.doId, self.state, self.EMPTY_GRACE_TIME))
++                self.teardown()
++                return Task.done
++
++        return Task.again
++
++    def teardown(self):
++        """Delete this instance and everything under it, and free its world uids so the next requestStart builds
++        a fresh one. Astron deletes the children when the instance goes and tells this AI about each one; callers
++        tear down only an instance nobody is inside."""
++        if self.tornDown:
++            return
++
++        self.tornDown = True
++        self.notify.info('Tearing down Black Pearl instance %d (state %s)' % (self.doId, self.state))
++        taskMgr.remove(self.uniqueName('monitorPlayers'))
++
++        # everything under the instance, found before the delete empties the tables
++        found = set([self.doId])
++        objects = list(self.air.doId2do.values())
++        grew = True
++        while grew:
++            grew = False
++            for obj in objects:
++                if obj.doId not in found and getattr(obj, 'parentId', None) in found:
++                    found.add(obj.doId)
++                    grew = True
++
++        # its world uids stay taken until freed: the next start would be handed this instance's old objects
++        uidMgr = self.air.uidMgr
++        for uid, doId in list(uidMgr.uid2doId.items()):
++            if doId in found:
++                taskMgr.remove('uidCallback-' + uid)
++                uidMgr.removeUid(uid)
++
++        for uid, obj in list(uidMgr.uid2obj.items()):
++            if getattr(obj, 'doId', None) in found:
++                uidMgr.removeUidObj(uid)
++
++        # the world creator and the ship manager follow the newest world: point them back at the main world
++        mainWorld = None
++        for obj in objects:
++            if isinstance(obj, DistributedInstanceBaseAI) and obj.doId not in found \
++                    and obj.getType() == PiratesGlobals.INSTANCE_MAIN:
++                mainWorld = obj
++                break
++
++        if mainWorld is not None:
++            if self.air.worldCreator.world is self:
++                self.air.worldCreator.world = mainWorld
++
++            if self.air.shipManager.world is self:
++                self.air.shipManager.world = mainWorld
++
++        self.requestDelete()
++
+     # =========================================================================
+     # Interest Management - Ensure clients see the Black Pearl
+     # =========================================================================
+@@ -205,6 +333,7 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+     def addParticipant(self, avatarId):
+         """Override to add Black Pearl interest when avatar joins"""
+         DistributedTreasureMapInstanceAI.addParticipant(self, avatarId)
++        self.lastActivity = time.time()
+ 
+         # Add interest to the Black Pearl ship zone for this avatar
+         #if self.blackPearl and self.oceanGrid:
+-- 
+2.53.0
+

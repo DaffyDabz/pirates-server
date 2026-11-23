@@ -1,0 +1,55 @@
+From a2e7629de38cd0396e15b2e73a960c52e2c52732 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 20:54:27 -0800
+Subject: [PATCH 330/371] pirates: logging out while standing on a ship no
+ longer closes the game (crew-0001, client only)
+
+The relog check at 20:43 crashed the client. LocalPirate.delete removes localAvatar, then the server's setCrew for
+the ship he stood on arrives (_playerDeparted -> removeCrewMember -> d_setCrew). DistributedShip.setCrew calls
+clearedFlagship, which read localAvatar: NameError, and the game closed. updatePickable, the next line, reads
+base.localAvatar and would fail the same way. Older than 0412: clearedFlagship has been in setCrew since the 2020
+import, and 0412 sends nothing new at logout.
+
+- clearedFlagship and updatePickable use getattr(base, 'localAvatar', None) and do nothing when the local pirate is
+  gone, like the other teardown guards.
+
+Client file only; the AI does not load it. Test: test_crew_logout.py live FAIL 2/3 (NameError 'localAvatar'),
+patched PASS 3/3; crew updates in game still clear the flagship flag and set clicking.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShip.py | 14 +++++++++++---
+ 1 file changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/ship/DistributedShip.py b/pirates/ship/DistributedShip.py
+index facaadb..8d7c0ab 100644
+--- a/pirates/ship/DistributedShip.py
++++ b/pirates/ship/DistributedShip.py
+@@ -2711,7 +2711,11 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+             self.nametag.getNametag3d().setContents(0)
+ 
+     def updatePickable(self):
+-        if self.isInCrew(base.localAvatar.doId):
++        # family client (11-20, crew-0001): see clearedFlagship
++        av = getattr(base, 'localAvatar', None)
++        if av is None:
++            return
++        if self.isInCrew(av.doId):
+             self.setPickable(0)
+         else:
+             self.setPickable(1)
+@@ -4504,5 +4508,9 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+             localAvatar.b_setTeleportFlag(PiratesGlobals.TFFlagshipBattle)
+ 
+     def clearedFlagship(self):
+-        if self.isInCrew(localAvatar.doId):
+-            localAvatar.b_clearTeleportFlag(PiratesGlobals.TFFlagshipBattle)
++        # family client (11-20, crew-0001): logging out while standing on a ship deletes localAvatar
++        # (LocalPirate.delete) before the server's setCrew for that ship arrives; reading it then was a
++        # NameError that closed the game. With no local pirate there is nothing to clear.
++        av = getattr(base, 'localAvatar', None)
++        if av is not None and self.isInCrew(av.doId):
++            av.b_clearTeleportFlag(PiratesGlobals.TFFlagshipBattle)
+-- 
+2.53.0
+

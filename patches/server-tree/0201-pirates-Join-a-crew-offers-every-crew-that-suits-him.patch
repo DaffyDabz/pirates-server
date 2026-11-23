@@ -1,0 +1,178 @@
+From 3a00822d3bd235cfcbce82161e0ae13bc7d17bf4 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 01:28:02 -0800
+Subject: [PATCH 201/371] pirates: Join a crew offers every crew that suits
+ him, a full crew offers the next one, and a pirate who joined a crew is off
+ the lookout (0280)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/band/DistributedCrewMatchAI.py        | 78 +++++++++++++++----
+ .../band/DistributedPirateBandManagerAI.py    |  8 ++
+ 2 files changed, 69 insertions(+), 17 deletions(-)
+
+diff --git a/pirates/band/DistributedCrewMatchAI.py b/pirates/band/DistributedCrewMatchAI.py
+index b11684e..132701b 100644
+--- a/pirates/band/DistributedCrewMatchAI.py
++++ b/pirates/band/DistributedCrewMatchAI.py
+@@ -35,6 +35,9 @@ class DistributedCrewMatchAI(DistributedObjectAI):
+ 
+     MAX_RANGE = 40
+     MAX_SKILL_LEVEL = 30
++    # patch 0280: a pirate who starts looking is offered every crew that suits him, up to
++    # this many; his client queues them and shows the next one when he says No
++    MAX_OFFERS = 5
+ 
+     def __init__(self, air):
+         DistributedObjectAI.__init__(self, air)
+@@ -160,23 +163,27 @@ class DistributedCrewMatchAI(DistributedObjectAI):
+ 
+         return True
+ 
+-    def findCrewFor(self, avId, crewType, skip=()):
+-        """The best crew for avId: the nearest level, then the one listed first."""
++    def findCrewsFor(self, avId, crewType, skip=()):
++        """Every crew that suits avId, best first: the nearest level, then the one listed first."""
+         avatar = self.getPlayer(avId)
+         if not avatar:
+-            return None
++            return []
+ 
+         level = self.getLevel(avatar)
+-        best = None
++        found = []
+         for order, sponsorId in enumerate(self.crews):
+             if sponsorId in skip or not self.matches(sponsorId, avId, crewType):
+                 continue
+ 
+-            key = (abs(self.getLevel(self.getPlayer(sponsorId)) - level), order)
+-            if best is None or key < best[0]:
+-                best = (key, sponsorId)
++            found.append(((abs(self.getLevel(self.getPlayer(sponsorId)) - level), order), sponsorId))
+ 
+-        return best and best[1]
++        found.sort()
++        return [sponsorId for key, sponsorId in found]
++
++    def findCrewFor(self, avId, crewType, skip=()):
++        """The best crew for avId, or None."""
++        crews = self.findCrewsFor(avId, crewType, skip)
++        return crews[0] if crews else None
+ 
+     def offerCrew(self, avId, sponsorId):
+         sponsor = self.getPlayer(sponsorId)
+@@ -184,9 +191,29 @@ class DistributedCrewMatchAI(DistributedObjectAI):
+         self.sendUpdateToAvatarId(avId, 'responseCrewFound', [self.getName(sponsor), sponsorId, self.getLocation(sponsor)])
+         self.notify.info('crew match: offered the crew of %s (%d) to %d' % (sponsor.getName(), sponsorId, avId))
+ 
++    def offerCrews(self, avId, sponsorIds):
++        """Offer several crews at once (patch 0280). His client shows the first one sent and
++        queues the rest, taking the LAST queued one next, so the best is sent first and the
++        others worst to best: he sees them best first."""
++        if not sponsorIds:
++            return
++
++        for sponsorId in [sponsorIds[0]] + list(reversed(sponsorIds[1:])):
++            self.offerCrew(avId, sponsorId)
++
++    def putOnLookout(self, avId, avatar, crewType):
++        """avId is looking for a crew: list him and offer him every crew that suits him and
++        was not offered to him already (patch 0280)."""
++        if avId not in self.lookout:
++            self.notify.info('crew match: %s (%d) is on the lookout for a crew (type %d)' % (avatar.getName(), avId, crewType))
++
++        self.lookout[avId] = crewType
++        self.offerCrews(avId, self.findCrewsFor(avId, crewType, skip=self.offered.get(avId, ()))[:self.MAX_OFFERS])
++
+     def offerToLookout(self, sponsorId):
+         """A crew was listed: offer it to every waiting pirate it suits, oldest first, as
+         many as it has room for."""
++        self.pruneLookout()
+         bandManager = self.getBandManager()
+         bandId, band = bandManager.getBandOf(sponsorId) if bandManager is not None else (None, None)
+         room = BandConstance.MAX_BAND_MEMBERS - (len(band['members']) if band else 1)
+@@ -201,6 +228,12 @@ class DistributedCrewMatchAI(DistributedObjectAI):
+                 self.offerCrew(avId, sponsorId)
+                 room -= 1
+ 
++    def pruneLookout(self):
++        # patch 0280: a pirate who went offline or got a crew some other way is not looking
++        for avId in list(self.lookout):
++            if not self.getPlayer(avId) or self.inBand(avId):
++                self.forgetAvatar(avId)
++
+     def forgetAvatar(self, avId):
+         self.lookout.pop(avId, None)
+         self.offered.pop(avId, None)
+@@ -317,6 +350,13 @@ class DistributedCrewMatchAI(DistributedObjectAI):
+ 
+         joined = sponsorId is not None and self.join(avId, sponsorId)
+         self.sendUpdateToAvatarId(avId, 'responseInitialAvatarAddResponse', [int(joined)])
++        if not joined and not self.inBand(avId):
++            # patch 0280: that crew went (full, gone, captain left). His Crew page still says he
++            # is looking, so he is: on the lookout list, offered the other crews that suit him
++            if sponsorId is not None:
++                self.offered.setdefault(avId, set()).add(sponsorId)
++
++            self.putOnLookout(avId, avatar, CREW_TYPE_PVP if crewType == CREW_TYPE_PVP else CREW_TYPE_NORMAL)
+ 
+     def requestPutAvatarOnLookoutList(self, crewType):
+         avId, avatar = self.getSender()
+@@ -329,15 +369,7 @@ class DistributedCrewMatchAI(DistributedObjectAI):
+             # he said no to the first crew offered: do not offer it again
+             self.offered.setdefault(avId, set()).add(declined)
+ 
+-        if avId not in self.lookout:
+-            self.lookout[avId] = crewType
+-            self.notify.info('crew match: %s (%d) is on the lookout for a crew (type %d)' % (avatar.getName(), avId, crewType))
+-        else:
+-            self.lookout[avId] = crewType
+-
+-        sponsorId = self.findCrewFor(avId, crewType, skip=self.offered.get(avId, ()))
+-        if sponsorId:
+-            self.offerCrew(avId, sponsorId)
++        self.putOnLookout(avId, avatar, crewType)
+ 
+     def requestdeleteAvatarFromLookoutList(self):
+         avId, avatar = self.getSender()
+@@ -354,6 +386,18 @@ class DistributedCrewMatchAI(DistributedObjectAI):
+ 
+     # --- AI side ---------------------------------------------------------
+ 
++    def avatarJoinedCrew(self, avId):
++        """Called by the crew manager whenever a pirate joins a crew, by an invite or here
++        (patch 0280). He has a crew now, so he stops looking for one: no crew offers he did
++        not ask for after he leaves it. A captain keeps his "Recruit crewmates" listing; a
++        pirate who had pressed "Start a crew" and joined someone else's crew loses his."""
++        self.forgetAvatar(avId)
++        self.crewsOfOne.discard(avId)
++        bandManager = self.getBandManager()
++        bandId, band = bandManager.getBandOf(avId) if bandManager is not None else (None, None)
++        if not band or band['manager'] != avId:
++            self.forgetCrew(avId)
++
+     def avatarOffline(self, avId):
+         # called by the crew manager when a pirate leaves this district
+         self.forgetAvatar(avId)
+diff --git a/pirates/band/DistributedPirateBandManagerAI.py b/pirates/band/DistributedPirateBandManagerAI.py
+index 36cfcdd..6214aba 100644
+--- a/pirates/band/DistributedPirateBandManagerAI.py
++++ b/pirates/band/DistributedPirateBandManagerAI.py
+@@ -206,6 +206,14 @@ class DistributedPirateBandManagerAI(DistributedObjectAI):
+         self.notify.info('crew %d: %s (%d) joined%s' % (bandId, avatar.getName(), avatar.doId,
+             isManager and ' as captain' or ''))
+ 
++        # family server (0280): a pirate with a crew stops looking for one on the crew matcher
++        crewMatch = getattr(self.air, 'crewMatch', None)
++        if crewMatch is not None:
++            try:
++                crewMatch.avatarJoinedCrew(avatar.doId)
++            except Exception as e:
++                self.notify.warning('crew match: avatarJoinedCrew(%d) failed: %r' % (avatar.doId, e))
++
+     def removeMember(self, avatarId):
+         bandId, band = self.getBandOf(avatarId)
+         if not band:
+-- 
+2.53.0
+

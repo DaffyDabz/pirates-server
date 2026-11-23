@@ -1,0 +1,79 @@
+From 0762b21957bc05e0c2aa8371c8314742ac3a0154 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 18:25:14 -0800
+Subject: [PATCH 320/371] family server (11-20): enemy ships above your level
+ hit hard enough to sink you, like 2007; small ships stay fair (0404)
+
+Server: enemy broadsides and deck cannons on a pirate's ship use the 2007 getModifiedHullDamage (ammo, enemy
+level, level gap, Take Cover) times the distance falloff, instead of a flat ~76 a ball for every ship. Enemy on
+enemy fire is unchanged. Lane: shipdmg (shipdmg-0001). Test: test_ship_damage_2007.py (8/15 -> 15/15).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedShipBroadsideAI.py |  8 +++++++
+ pirates/ship/GameFSMShipAI.py                | 23 ++++++++++++++++++++
+ 2 files changed, 31 insertions(+)
+
+diff --git a/pirates/battle/DistributedShipBroadsideAI.py b/pirates/battle/DistributedShipBroadsideAI.py
+index 7afd705..f991324 100644
+--- a/pirates/battle/DistributedShipBroadsideAI.py
++++ b/pirates/battle/DistributedShipBroadsideAI.py
+@@ -305,6 +305,14 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+                     # family server (sea-0004): Take Cover! cuts enemy cannon fire too
+                     if WeaponGlobals.C_TAKECOVER in targetShip.getSkillEffects():
+                         totalDamage = int(totalDamage * WeaponGlobals.TAKE_COVER_BONUS)
++                    # family patch (shipdmg-0001): an enemy ship's broadside hits by the 2007 formula (ammo, the
++                    # enemy's level, the level gap, Take Cover!), not a flat 50 a ball; the left and right broadsides
++                    # have the same hull values
++                    fsm = getattr(ship, 'gameFSM', None)
++                    if getattr(ship, 'isNpc', False) and fsm and hasattr(fsm, '_hullDamagePerBall'):
++                        from pirates.battle.EnemySkills import EnemySkills
++                        totalDamage = hits * fsm._hullDamagePerBall(
++                            targetShip, EnemySkills.LEFT_BROADSIDE, self.ammoType, distance, totalDamage // hits)
+ 
+                     newHp = max(0, targetShip.getHp() - totalDamage)
+                     targetShip.b_setHp(newHp)
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index b713f56..8f9f97e 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -699,6 +699,26 @@ class GameFSMShipAI(FSM.FSM):
+         
+         return max(0.1, min(1.0, falloff))  # Clamp between 10% and 100%
+ 
++    def _hullDamagePerBall(self, target, skillId, ammoSkillId, dist, fallback):
++        """Family patch (shipdmg-0001): what one enemy cannonball does to a pirate's ship.
++
++        The 2007 shared formula (BattleManagerBase.getModifiedHullDamage: the ammo's hull damage, the enemy ship's
++        level, the NPC damage scale and the level gap) times the 2007 distance falloff. skillId None means a deck
++        cannon, which fires the ship's own cannon ammo. Falls back to the old number if anything is missing.
++        """
++        try:
++            from pirates.uberdog.UberDogGlobals import InventoryType
++            if skillId is None:
++                skillId = InventoryType.CannonShoot
++                ammoSkillId = ShipGlobals.getShipConfigAll(self.ship.shipClass).get('setCannonAmmo')
++            if not ammoSkillId:
++                ammoSkillId = InventoryType.CannonRoundShot
++            damage = -self.ship.air.battleMgr.getModifiedHullDamage(self.ship, target, skillId, ammoSkillId)
++            return max(1, int(damage * self._calculateDamageFalloff(dist)))
++        except Exception as e:
++            self.notify.warning('2007 hull damage failed, using the old number: %s' % str(e))
++            return fallback
++
+     def _getNPCDamageModifiers(self):
+         """
+         Get NPC damage input and output modifiers from ShipBalance.
+@@ -2840,6 +2860,9 @@ class GameFSMShipAI(FSM.FSM):
+                 # family server (sea-0004): Take Cover! cuts enemy cannon fire too
+                 if WeaponGlobals.C_TAKECOVER in target.getSkillEffects():
+                     totalDamage = int(totalDamage * WeaponGlobals.TAKE_COVER_BONUS)
++                # family patch (shipdmg-0001): the 2007 formula, which counts Take Cover! itself, replaces it
++                if getattr(self.ship, 'isNpc', False):
++                    totalDamage = self._hullDamagePerBall(target, None, None, dist, totalDamage)
+ 
+                 newHp = max(0, target.getHp() - totalDamage)
+                 target.b_setHp(newHp)
+-- 
+2.53.0
+

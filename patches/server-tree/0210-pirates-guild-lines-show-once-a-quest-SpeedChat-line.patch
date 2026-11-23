@@ -1,0 +1,117 @@
+From 63adc202a6caeaa8716adc6f8de6a8fa4cb6e5d7 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 01:59:54 -0800
+Subject: [PATCH 210/371] pirates: guild lines show once, a quest SpeedChat
+ line reaches the guild, and guildmates can ask to teleport to each other
+ (0256, patch 20)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ otp/friends/GuildManager.py         |  6 ++++++
+ pirates/chat/PChatAssistant.py      | 10 +++++++++-
+ pirates/friends/PCGuildManager.py   |  3 +++
+ pirates/friends/PCGuildManagerUD.py | 24 +++++++++++++++++++++---
+ 4 files changed, 39 insertions(+), 4 deletions(-)
+
+diff --git a/otp/friends/GuildManager.py b/otp/friends/GuildManager.py
+index 325e65d..97e9892 100644
+--- a/otp/friends/GuildManager.py
++++ b/otp/friends/GuildManager.py
+@@ -182,6 +182,10 @@ class GuildManager(DistributedObjectGlobal):
+         for (id, msg) in self.pendingMsgs:
+             if not self.cr.avatarFriendsManager.checkIgnored(id):
+                 base.chatAssistant.receiveGuildMessage('%s %s %s' % (self.id2Name.get(id, 'Unknown'), OTPLocalizer.GuildPrefix, msg))
++
++        # family server (2026-11-19): shown once. This list was never cleared, so every member list (each new
++        # guildmate's first line asks for one) showed every held line again
++        self.pendingMsgs = []
+         
+         if localAvatar.getGuildId():
+             self.accept(self.cr.StopVisibilityEvent, self.handleLogout)
+@@ -267,6 +271,8 @@ class GuildManager(DistributedObjectGlobal):
+ 
+     def recvSCQuest(self, senderId, questInt, msgType, taskNum):
+         senderName = self.id2Name.get(senderId, None)
++        # family server (2026-11-19): this was never imported (a NameError)
++        from pirates.speedchat.PSCDecoders import decodeSCQuestMsgInt
+         message = decodeSCQuestMsgInt(questInt, msgType, taskNum)
+         if senderName:
+             if not self.cr.avatarFriendsManager.checkIgnored(senderId):
+diff --git a/pirates/chat/PChatAssistant.py b/pirates/chat/PChatAssistant.py
+index 4a0801a..71dccbf 100644
+--- a/pirates/chat/PChatAssistant.py
++++ b/pirates/chat/PChatAssistant.py
+@@ -134,7 +134,15 @@ class PChatAssistant(ChatAssistant):
+     def sendAvatarGuildSCQuestChat(self, msgType, questInt, taskNum):
+         error = None
+         if self.checkGuildSpeedChat():
+-            pass
++            # family server (2026-11-19): this sent nothing. The client's guild manager has no quest SpeedChat
++            # field (only PCGuildManager in the dc does), so the quest line goes to the guild as its text
++            from pirates.speedchat.PSCDecoders import decodeSCQuestMsgInt
++            try:
++                message = decodeSCQuestMsgInt(questInt, msgType, taskNum)
++            except (KeyError, IndexError):
++                message = None
++            if message:
++                base.cr.guildManager.sendWLChat(message)
+         else:
+             print('Guild chat error')
+             error = ERROR_NO_GUILD_CHAT
+diff --git a/pirates/friends/PCGuildManager.py b/pirates/friends/PCGuildManager.py
+index c8980ff..2fc3ef6 100644
+--- a/pirates/friends/PCGuildManager.py
++++ b/pirates/friends/PCGuildManager.py
+@@ -11,6 +11,9 @@ class PCGuildManager(GuildManager):
+     def recvSCQuest(self, senderId, questInt, msgType, taskNum):
+         self.notify.debugCall()
+         senderName = self.id2Name.get(senderId, None)
++        # family server (2026-11-19): neither of these was imported (a NameError)
++        from otp.otpbase import OTPLocalizer
++        from pirates.speedchat.PSCDecoders import decodeSCQuestMsgInt
+         message = decodeSCQuestMsgInt(questInt, msgType, taskNum)
+         if senderName:
+             displayMess = '%s %s %s' % (senderName, OTPLocalizer.GuildPrefix, message)
+diff --git a/pirates/friends/PCGuildManagerUD.py b/pirates/friends/PCGuildManagerUD.py
+index 8c35a69..53b2406 100644
+--- a/pirates/friends/PCGuildManagerUD.py
++++ b/pirates/friends/PCGuildManagerUD.py
+@@ -711,14 +711,32 @@ class PCGuildManagerUD(DistributedObjectGlobalUD):
+         self.sendToGuild(guild, 'recvSC', [avId, msgIndex])
+ 
+     def sendSCQuest(self, questInt, msgType, taskNum):
+-        # the client's recvSCQuest calls a function it never imports
++        # the client's guild manager has no quest SpeedChat field, so nothing calls this; since 0256 the client
++        # sends a quest line to the guild as its text (sendWLChat)
+         pass
+ 
+     def requestLeaderboardTopTen(self):
+         pass
+ 
++    def sameGuildOnline(self, avId, otherId):
++        # a pirate reaches only his own guildmates, and only while they play
++        guild = self.getGuild(avId)
++        return (guild is not None and otherId != avId and self.av2guild.get(otherId) == guild['id']
++                and otherId in self.online)
++
+     def reflectTeleportQuery(self, sendToId, localBandMgrId, localBandId, localGuildId, localShardId):
+-        pass
++        # a client that knows a guildmate only from the guild list asks him "can I come to you?" through here; his
++        # client answers with reflectTeleportResponse. (Go To on a guildmate it cannot see goes to the AI instead:
++        # DistributedTeleportMgr.queryAvatarForTeleport -> TeleportMgrAI.teleportToFriend)
++        avId = self.getSender()
++        if not avId or not self.sameGuildOnline(avId, sendToId):
++            return
++        self.sendToAv(sendToId, 'teleportQuery', [avId, localBandMgrId, localBandId, self.av2guild[avId], localShardId])
++        self.event('guild-teleport-query', avId=avId, toId=sendToId)
+ 
+     def reflectTeleportResponse(self, sendToId, available, shardId, instanceDoId, areaDoId):
+-        pass
++        avId = self.getSender()
++        if not avId or not self.sameGuildOnline(avId, sendToId):
++            return
++        self.sendToAv(sendToId, 'teleportResponse', [avId, available, shardId, instanceDoId, areaDoId])
++        self.event('guild-teleport-response', avId=avId, toId=sendToId, available=available)
+-- 
+2.53.0
+

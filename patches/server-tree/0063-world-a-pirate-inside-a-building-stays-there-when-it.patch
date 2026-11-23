@@ -1,0 +1,39 @@
+From 62870d1fb7b2360c40330433fe50da1348ba21ad Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 03:06:59 -0800
+Subject: [PATCH 063/371] world: a pirate inside a building stays there when
+ its island's grid arrives
+
+The ocean grid put localAvatar on every island grid it was handed unless he
+was on a ship. A new pirate teleported into the tutorial's jail lands there
+before the island's grid is added; adding it moved him onto the island at the
+same spot, inside the jail model, 81 ft from the interior's door, and the
+tutorial stalled. updateLocalAvatarParent now leaves him alone while his
+parent is an interior. Walking out through a door is not affected: that path
+puts him on the island itself.
+---
+ pirates/world/DistributedOceanGrid.py | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/pirates/world/DistributedOceanGrid.py b/pirates/world/DistributedOceanGrid.py
+index 247f774..c32375e 100644
+--- a/pirates/world/DistributedOceanGrid.py
++++ b/pirates/world/DistributedOceanGrid.py
+@@ -103,6 +103,14 @@ class DistributedOceanGrid(DistributedCartesianGrid, OceanGridBase):
+         if base.localAvatar.ship:
+             return
+ 
++        # family server (11-17): he is inside a building, so no island takes him. An island's grid can arrive after
++        # he has landed in one of its interiors (a new pirate teleported into the tutorial's jail): adding it here put
++        # him on the island at the same spot, inside the jail model, where he could not walk out. Leaving through
++        # the door puts him on the island itself (DistributedInteriorDoor.loadExteriorFinished)
++        from pirates.world.DistributedGAInterior import DistributedGAInterior
++        if isinstance(base.localAvatar.getParentObj(), DistributedGAInterior):
++            return
++
+         self.reparentLocalAvatarToWorld(parent)
+ 
+     def turnOff(self):
+-- 
+2.53.0
+

@@ -1,0 +1,62 @@
+From 072b6f732e9ec3ef01aa92c186d315254d738b30 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 23:40:49 -0800
+Subject: [PATCH 135/371] pirates: renaming a pirate from the chooser works for
+ typed and picked names, as server-tree patch 0150 (pir-boat np-03, 2 client
+ files)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/login/AvatarChooser.py | 19 +++++++++----------
+ pirates/makeapirate/NameGUI.py |  5 +++--
+ 2 files changed, 12 insertions(+), 12 deletions(-)
+
+diff --git a/pirates/login/AvatarChooser.py b/pirates/login/AvatarChooser.py
+index c95d3d3..75677e9 100644
+--- a/pirates/login/AvatarChooser.py
++++ b/pirates/login/AvatarChooser.py
+@@ -911,16 +911,15 @@ class AvatarChooser(StateData, DirectObject):
+     def exitNameMode(self, value):
+         (subId, slot) = self.choice
+         if value == 1:
+-            if self.nameGui.customName:
+-                base.cr.avList[subId][slot].wishState = 'REQUESTED'
+-            else:
+-                potAv = base.cr.avList[subId][slot]
+-                potAv.name = self.nameGui._getName()
+-                potAv.wishState = 'CLOSED'
+-                avButton = self.subAvButtons[subId][slot]
+-                avButton['text'] = potAv.name
+-                potAv.dna.setName(potAv.name)
+-                avButton.setText()
++            # Family server: typed and picked names are approved at once,
++            # so both show on the pirate's button straight away.
++            potAv = base.cr.avList[subId][slot]
++            potAv.name = self.nameGui._getName()
++            potAv.wishState = 'CLOSED'
++            avButton = self.subAvButtons[subId][slot]
++            avButton['text'] = potAv.name
++            potAv.dna.setName(potAv.name)
++            avButton.setText()
+             if self.notifications.get(slot, 0):
+                 self.notifications[slot].remove()
+                 del self.notifications[slot]
+diff --git a/pirates/makeapirate/NameGUI.py b/pirates/makeapirate/NameGUI.py
+index da414dd..533329d 100644
+--- a/pirates/makeapirate/NameGUI.py
++++ b/pirates/makeapirate/NameGUI.py
+@@ -274,8 +274,9 @@ class NameGUI(DirectFrame, StateData.StateData):
+             if self.customName:
+                 self._sendSetWishname()
+             else:
+-                name = self.getNumericName()
+-                self.cr.avatarManager.sendRequestPatternName(self.main.id, name[0], name[1], name[2], name[3])
++                # Family server: the avatar manager has no pattern-name handler,
++                # so the picked name goes the same way as a typed one.
++                self.cr.sendWishName(self.main.id, self._getName())
+         else:
+             self.avatar.dna.setName(self._getName())
+ 
+-- 
+2.53.0
+

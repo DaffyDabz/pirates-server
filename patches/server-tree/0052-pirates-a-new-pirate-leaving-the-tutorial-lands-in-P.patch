@@ -1,0 +1,36 @@
+From 125b72db3e5a50d6ec6e6fa47cd17ff2c2d956b8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 23:06:53 -0800
+Subject: [PATCH 052/371] pirates: a new pirate leaving the tutorial lands in
+ Port Royal, not on whichever island the main world lists first
+
+The Jolly Roger scene teleports to the main world with no place named. The pirate stands on Rambleshack in the
+tutorial world, so the return location was skipped and the first island in the world's list was used. Now a teleport
+out of the tutorial world with no place goes to his return location (Port Royal for a new pirate).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedTeleportMgrAI.py | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/pirates/instance/DistributedTeleportMgrAI.py b/pirates/instance/DistributedTeleportMgrAI.py
+index 844126e..7c34e62 100644
+--- a/pirates/instance/DistributedTeleportMgrAI.py
++++ b/pirates/instance/DistributedTeleportMgrAI.py
+@@ -173,6 +173,13 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+                 not (standingWorld and locationUid):
+             locationUid = returnLocation
+ 
++        # family server (11-16): leaving the tutorial. The Jolly Roger scene sends the pirate to the main world with no
++        # place named; he stands on Rambleshack in the tutorial world, so the return location above was skipped and he
++        # landed on whichever island the main world listed first. Send him to his return location (Port Royal)
++        if not locationUid and standingWorld and instanceType != PiratesGlobals.INSTANCE_TUTORIAL and \
++                getattr(standingWorld, 'getType', lambda: None)() == PiratesGlobals.INSTANCE_TUTORIAL:
++            locationUid = returnLocation or LocationIds.PORT_ROYAL_ISLAND
++
+         gameArea = avatar.getParentObj()
+         if isinstance(gameArea, DistributedGameAreaAI) and gameArea.getUniqueId() == locationUid:
+             self.notify.warning('Cannot initiate teleport for %d, '
+-- 
+2.53.0
+

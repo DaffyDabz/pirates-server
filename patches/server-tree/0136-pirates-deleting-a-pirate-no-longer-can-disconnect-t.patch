@@ -1,0 +1,35 @@
+From a49fb95927a611c1402428bb7af71c06c653dccf Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 23:40:50 -0800
+Subject: [PATCH 136/371] pirates: deleting a pirate no longer can disconnect
+ the player, as server-tree patch 0151 (pir-boat np-04, UD only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/ClientServicesManagerUD.py | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/uberdog/ClientServicesManagerUD.py b/pirates/uberdog/ClientServicesManagerUD.py
+index 86dd789..48bafbe 100644
+--- a/pirates/uberdog/ClientServicesManagerUD.py
++++ b/pirates/uberdog/ClientServicesManagerUD.py
+@@ -712,9 +712,13 @@ class DeleteAvatarFSM(GetAvatarsFSM):
+             self.demand('Kill', 'Database failed to mark the avatar as deleted!')
+             return
+ 
+-        status = True
+-        self.csm.sendUpdateToAccountId(self.target, 'acknowledgeDeleteAvatarResp', [self.avId, status])
+-        self.demand('QueryAvatars')
++        # Family server: finish first (this frees the account), then answer.
++        # The chooser answers the ack by asking for the pirate list, and a
++        # second account operation while this one still ran (it used to
++        # fetch the list itself, which takes a database round trip) hit
++        # 'An operation is already underway' and disconnected the player.
++        self.demand('Off')
++        self.csm.sendUpdateToAccountId(self.target, 'acknowledgeDeleteAvatarResp', [self.avId, True])
+ 
+ class SetNameTypedFSM(AvatarOperationFSM):
+     notify = directNotify.newCategory('SetNameTypedFSM')
+-- 
+2.53.0
+

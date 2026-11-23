@@ -1,0 +1,58 @@
+From ccb93315123c8063404a10338af358ab87e8314e Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:55:57 -0800
+Subject: [PATCH 231/371] pirates: sinking a flagship pays a quarter more gold,
+ the Goliath half again (0268)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/NPCShipAI.py | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/pirates/ship/NPCShipAI.py b/pirates/ship/NPCShipAI.py
+index 61be1b8..01a6a10 100644
+--- a/pirates/ship/NPCShipAI.py
++++ b/pirates/ship/NPCShipAI.py
+@@ -18,6 +18,12 @@ from pirates.economy.EconomyGlobals import ItemId
+ 
+ # the odds of each plunder container a sunk ship drops into its sinkers' hold
+ # (EconomyGlobals' crate table: crate 50, chest 45, royal chest 5)
++# patch 0268 (2026-11-19): a flagship pays each pirate who helped sink it its
++# ship gold times flagship-gold-bonus, a legendary flagship (the Goliath) times
++# legendary-flagship-gold-bonus. 1 = no bonus.
++FLAGSHIP_GOLD_BONUS = config.GetFloat('flagship-gold-bonus', 1.25)
++LEGENDARY_GOLD_BONUS = config.GetFloat('legendary-flagship-gold-bonus', 1.5)
++
+ PLUNDER_WEIGHTS = getattr(EconomyGlobals, '__crateCargoList', None) or {
+     ItemId.CARGO_CRATE: 50,
+     ItemId.CARGO_CHEST: 45,
+@@ -742,6 +748,9 @@ class NPCShipAI(DistributedShipAI):
+ 
+         inventory.setOverallRep(inventory.getOverallRep() + exp)
+         gold = shipGoldDrop(avatarType, goldLevel)
++        bonus = self._sinkGoldBonus()
++        if bonus != 1.0:
++            gold = max(0, int(round(gold * bonus)))
+         if gold > 0:
+             inventory.addGoldInPocket(gold)
+ 
+@@ -751,6 +760,16 @@ class NPCShipAI(DistributedShipAI):
+         self.notify.info('pirate %d sank ship %d (class %s, level %d): reputation %s +%d, gold +%d' % (
+             avatar.doId, self.doId, self.getShipClass(), goldLevel, categories, exp, gold))
+ 
++    def _sinkGoldBonus(self):
++        """patch 0268: the gold multiplier for sinking this ship (1 for a regular ship)."""
++        if not self.isFlagship:
++            return 1.0
++        try:
++            legendary = FlagshipGlobals.isLegendary(self.getShipClass())
++        except Exception:
++            legendary = False
++        return max(0.0, LEGENDARY_GOLD_BONUS if legendary else FLAGSHIP_GOLD_BONUS)
++
+     def handleCannonHit(self, attackerDoId, damage, hitPos):
+         """
+         Called when this ship is hit by a cannon.
+-- 
+2.53.0
+

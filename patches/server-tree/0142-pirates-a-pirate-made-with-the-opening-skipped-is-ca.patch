@@ -1,0 +1,254 @@
+From d8086a84efa53c18ba0fd6429c8e91992d4441a8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 02:47:43 -0800
+Subject: [PATCH 142/371] pirates: a pirate made with the opening skipped is
+ caught up to Chapter 2 (Will Turner) at login
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/DistributedPlayerPirateAI.py |  11 ++
+ pirates/quest/SkipperCatchUpAI.py           | 184 ++++++++++++++++++++
+ pirates/uberdog/PirateInventoryAI.py        |  14 ++
+ 3 files changed, 209 insertions(+)
+ create mode 100755 pirates/quest/SkipperCatchUpAI.py
+
+diff --git a/pirates/pirate/DistributedPlayerPirateAI.py b/pirates/pirate/DistributedPlayerPirateAI.py
+index f3a6845..6a5dcf4 100644
+--- a/pirates/pirate/DistributedPlayerPirateAI.py
++++ b/pirates/pirate/DistributedPlayerPirateAI.py
+@@ -224,6 +224,17 @@ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI,
+ 
+             return
+ 
++        # family server (11-18, patch 0154): no second default quest (the client asks at every login while its
++        # story flag is 0), none while the saved quests load, and a pirate who skipped the opening and holds no
++        # story quest gets the opener with Chapter 1 filled in instead (SkipperCatchUpAI)
++        from pirates.quest import SkipperCatchUpAI
++        allowed, why = SkipperCatchUpAI.defaultQuestAllowed(self.air, self)
++        if not allowed:
++            self.notify.info('giveDefaultQuest for avatar %d refused: %s' % (self.doId, why))
++            return
++        if SkipperCatchUpAI.catchUp(self.air, self, SkipperCatchUpAI.heldQuests(self.air, self), fresh=True):
++            return
++
+         questHistory = self.getQuestHistory()
+         questDNA = QuestDB.QuestDict['c2.4recoverOrders']
+         if questDNA.getQuestInt() in questHistory:
+diff --git a/pirates/quest/SkipperCatchUpAI.py b/pirates/quest/SkipperCatchUpAI.py
+new file mode 100755
+index 0000000..74879bd
+--- /dev/null
++++ b/pirates/quest/SkipperCatchUpAI.py
+@@ -0,0 +1,184 @@
++# family server (11-18, brain job, server-tree patch 0154): the Chapter 2 catch-up for pirates that skipped the opening.
++#
++# A client with skip-tutorial (#t) never plays the Jack Sparrow opening. Its pirate keeps story flag 0 (TUT_STARTED) and
++# gets only the default quest c2.4recoverOrders (giveDefaultQuest). A pirate that plays the opening ends with flag 3
++# (TUT_MET_JOLLY_ROGER), quest history 1000-1002, ladder history [1101] and c2_visit_will_turner. So a skipper missed
++# Will Turner's sword scene, the first skeleton and Tia Dalma's compass, and with flag 0 the Port Royal blockers never
++# let him through (c2.4 has no story checkpoint to raise the flag).
++#
++# The catch-up puts a skipper where a tutorial player stands: Chapter 1 (the instanced opening, which cannot be replayed
++# outside the tutorial world) goes into his quest history, the flag goes to 3, and his untouched c2.4 is swapped for
++# c2_visit_will_turner, so the story runs Will Turner -> skeleton -> Tia Dalma -> c2.4 as it does for everyone else.
++# Only quests, quest history and the story flag change: items, gold, ships, weapons and reputation are not touched.
++from direct.directnotify import DirectNotifyGlobal
++from pirates.piratesbase import PiratesGlobals
++from pirates.quest import QuestDB
++from pirates.quest import QuestLadderDB
++from pirates.uberdog.UberDogGlobals import InventoryCategory
++
++notify = DirectNotifyGlobal.directNotify.newCategory('SkipperCatchUpAI')
++
++# the host's own pirate is never touched, whatever his state
++EXCLUDED_AVATAR_IDS = frozenset([100000170])
++
++DEFAULT_QUEST_ID = 'c2.4recoverOrders'
++OPENER_QUEST_ID = 'c2_visit_will_turner'
++CHAPTER1_QUEST_IDS = ('Chapter1.rung1', 'Chapter1.rung2', 'Chapter1.rung3')
++MAIN_STORY_LADDER = 'MainStory'
++CHAPTER1_LADDER = 'Chapter 1'
++
++_story = None
++
++
++def _collect(container, questIds, questInts):
++    questInts.add(container.getQuestInt())
++    if container.isContainer():
++        for sub in container.getContainers():
++            _collect(sub, questIds, questInts)
++    else:
++        questIds.add(container.getQuestId())
++
++
++def getStory():
++    # (every MainStory quest id, every MainStory int after Chapter 1, Chapter 1's quest ints, Chapter 1's ladder int)
++    global _story
++    if _story is None:
++        ladder = QuestLadderDB.FameQuestLadderDict[MAIN_STORY_LADDER]
++        storyIds, storyInts = set(), set()
++        _collect(ladder, storyIds, storyInts)
++        chapter1 = [c for c in ladder.getContainers() if c.getName() == CHAPTER1_LADDER][0]
++        ch1Ids, ch1Ints = set(), set()
++        _collect(chapter1, ch1Ids, ch1Ints)
++        laterInts = storyInts - ch1Ints - set([ladder.getQuestInt()])
++        ch1QuestInts = [QuestDB.QuestDict[questId].getQuestInt() for questId in CHAPTER1_QUEST_IDS]
++        _story = (storyIds, laterInts, ch1QuestInts, chapter1.getQuestInt())
++    return _story
++
++
++def _taskValue(taskState, name, index):
++    # a QuestTaskState (ParamObj: getAttempts / getProgress), or the raw struct as a tuple
++    if isinstance(taskState, (tuple, list)):
++        return taskState[index] if len(taskState) > index else 0
++    getter = getattr(taskState, 'get' + name[0].upper() + name[1:], None)
++    if getter:
++        return getter() or 0
++    return getattr(taskState, name, 0) or 0
++
++
++def isTouched(quest):
++    # any attempt or progress on any task (QuestTaskState: taskType, attempts, enemyType, faction, progress, goal)
++    for taskState in quest.getTaskStates() or []:
++        if _taskValue(taskState, 'attempts', 1) or _taskValue(taskState, 'progress', 4):
++            return True
++    return False
++
++
++def checkSkipper(avatar, heldQuests, fresh=False):
++    # -> (needs the catch-up, why), heldQuests = the pirate's active quest objects. At login (fresh False) a skipper
++    # holds only his untouched default quest; from giveDefaultQuest (fresh True) a skipper holds no story quest yet
++    if avatar.doId in EXCLUDED_AVATAR_IDS:
++        return False, 'excluded by id'
++    if avatar.getTutorial() != PiratesGlobals.TUT_STARTED:
++        return False, 'story flag %s' % avatar.getTutorial()
++
++    storyIds, laterInts, ch1QuestInts, ch1LadderInt = getStory()
++    history = avatar.getQuestHistory() or []
++    if [questInt for questInt in ch1QuestInts if questInt in history]:
++        return False, 'played the opening'
++    later = [questInt for questInt in history if questInt in laterInts]
++    if later:
++        return False, 'past the early steps (quest history %s)' % later
++
++    storyQuests = [quest for quest in heldQuests if quest.getQuestId() in storyIds]
++    storyQuestIds = [quest.getQuestId() for quest in storyQuests]
++    if fresh:
++        # only a skip-tutorial client asks for the default quest; a pirate with no story quest gets the opener instead
++        if storyQuestIds:
++            return False, 'story quests %s' % storyQuestIds
++        return True, 'skipped the opening (no quest yet)'
++    if storyQuestIds != [DEFAULT_QUEST_ID]:
++        # a brand-new pirate (no quests yet) is the tutorial's to start, and any other story quest is not a skipper's
++        return False, 'story quests %s' % storyQuestIds
++    if isTouched(storyQuests[0]):
++        return False, '%s already has progress' % DEFAULT_QUEST_ID
++    return True, 'skipped the opening'
++
++
++def heldQuests(air, avatar):
++    # -> the pirate's active quest objects, or None while his saved quests are still loading
++    inventory = avatar.getInventory()
++    if not inventory or avatar.doId in air.questMgr.avatar2fsm:
++        return None
++    active = air.questMgr.quests.get(avatar.doId, {})
++    questDoIds = inventory.getDoIdListCategory(InventoryCategory.QUESTS)
++    if [questDoId for questDoId in questDoIds if questDoId not in active]:
++        return None
++    return [active[questDoId] for questDoId in questDoIds]
++
++
++def defaultQuestAllowed(air, avatar):
++    # giveDefaultQuest: the client sends it at every login while its story flag is 0, so it comes with the catch-up
++    # and, before it, could give a second default quest to a pirate who still held one
++    if avatar.doId in EXCLUDED_AVATAR_IDS:
++        return False, 'excluded by id'
++    if avatar.getTutorial() >= PiratesGlobals.TUT_MET_JOLLY_ROGER:
++        return False, 'story flag %s' % avatar.getTutorial()
++    quests = heldQuests(air, avatar)
++    if quests is None:
++        return False, 'quests still loading'
++    storyIds, laterInts, ch1QuestInts, ch1LadderInt = getStory()
++    storyQuestIds = [quest.getQuestId() for quest in quests if quest.getQuestId() in storyIds]
++    if storyQuestIds:
++        return False, 'already holds %s' % storyQuestIds
++    return True, ''
++
++
++def _removeWithoutHistory(air, avatar, quest):
++    # dropQuest without its quest-history line: the default quest was never played, and a 2003 in the history would
++    # make the ladder (and giveDefaultQuest) think it was done
++    inventory = avatar.getInventory()
++    questList = inventory.getDoIdListCategory(InventoryCategory.QUESTS)
++    if quest.doId in questList:
++        questList.remove(quest.doId)
++        inventory.setQuestList(questList)
++    if avatar.getActiveQuest() == quest.getQuestId():
++        avatar.b_setActiveQuest('')
++    # the MainStory ladder copy was linked through this quest only (checkSkipper allows no other story quest); drop it
++    # so the opener builds a fresh one from Chapter 2's first rung
++    if avatar.questStatus and MAIN_STORY_LADDER in avatar.questStatus.ladders:
++        avatar.questStatus.deleteLadder(MAIN_STORY_LADDER)
++    air.questMgr.deactivateQuest(avatar, quest.doId)
++
++
++def catchUp(air, avatar, quests, fresh=False):
++    eligible, why = checkSkipper(avatar, quests, fresh)
++    if not eligible:
++        return False
++
++    storyIds, laterInts, ch1QuestInts, ch1LadderInt = getStory()
++    if not fresh:
++        defaultQuest = [quest for quest in quests if quest.getQuestId() == DEFAULT_QUEST_ID][0]
++        _removeWithoutHistory(air, avatar, defaultQuest)
++    elif avatar.questStatus and MAIN_STORY_LADDER in avatar.questStatus.ladders:
++        avatar.questStatus.deleteLadder(MAIN_STORY_LADDER)
++
++    history = list(avatar.getQuestHistory() or [])
++    for questInt in ch1QuestInts:
++        if questInt not in history:
++            history.append(questInt)
++    avatar.b_setQuestHistory(history)
++
++    # the default quest's place in the ladder filled in Will Turner, the skeleton and Tia Dalma as done (2000-2002);
++    # they are not done, so only Chapter 1 stays, as for a tutorial player
++    oldLadderHistory = list(avatar.getQuestLadderHistory() or [])
++    ladderHistory = [questInt for questInt in oldLadderHistory if questInt not in laterInts]
++    if ch1LadderInt not in ladderHistory:
++        ladderHistory.append(ch1LadderInt)
++    avatar.b_setQuestLadderHistory(ladderHistory)
++
++    avatar.b_setTutorial(PiratesGlobals.TUT_MET_JOLLY_ROGER)
++    air.questMgr.createQuest(avatar, OPENER_QUEST_ID)
++    notify.info('SKIPPER-CATCHUP avatar %d: %s, %s -> %s, quest history %s, ladder history %s -> %s' % (
++        avatar.doId, why, 'nothing' if fresh else DEFAULT_QUEST_ID, OPENER_QUEST_ID, history, oldLadderHistory,
++        ladderHistory))
++    return True
+diff --git a/pirates/uberdog/PirateInventoryAI.py b/pirates/uberdog/PirateInventoryAI.py
+index c7df802..c2f1b38 100644
+--- a/pirates/uberdog/PirateInventoryAI.py
++++ b/pirates/uberdog/PirateInventoryAI.py
+@@ -184,6 +184,20 @@ class PirateInventoryAI(DistributedInventoryAI):
+                 self.notify.warning('boss quest treasure map for avatar %d failed:\n%s' % (
+                     avatar.doId, traceback.format_exc()))
+ 
++            # family server (11-18, patch 0154): a pirate that skipped the opening (skip-tutorial client) holds only
++            # the default quest c2.4recoverOrders at story flag 0; catch him up to where the opening leaves everyone
++            # (Chapter 1 done, flag 3, c2_visit_will_turner). Pirates past those steps are left alone.
++            try:
++                from pirates.quest import SkipperCatchUpAI
++                quests = list(self.air.questMgr.quests.get(avatar.doId, {}).values())
++                if SkipperCatchUpAI.catchUp(self.air, avatar, quests):
++                    return
++            except Exception:
++                # the catch-up must never break a login
++                import traceback
++                self.notify.warning('skipper catch-up for avatar %d failed:\n%s' % (
++                    avatar.doId, traceback.format_exc()))
++
+             # family server: a pirate still in the tutorial gets its Chapter 1 quests from the tutorial, which
+             # leads into Chapter 2 itself
+             if avatar.getTutorial() < PiratesGlobals.TUT_MET_JOLLY_ROGER:
+-- 
+2.53.0
+

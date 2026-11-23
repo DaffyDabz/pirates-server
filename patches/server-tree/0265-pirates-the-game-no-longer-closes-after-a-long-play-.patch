@@ -1,0 +1,52 @@
+From df55177e4a2a9a21a1b4dccb310b3a2c2d5ba9fe Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 08:51:16 -0800
+Subject: [PATCH 265/371] pirates: the game no longer closes after a long play
+ session, because models load on the main thread (0330)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ config/performance.prc         | 7 +++++++
+ pirates/world/IslandPreload.py | 8 ++++++++
+ 2 files changed, 15 insertions(+)
+
+diff --git a/config/performance.prc b/config/performance.prc
+index 788995a..b6962c2 100644
+--- a/config/performance.prc
++++ b/config/performance.prc
+@@ -55,6 +55,13 @@ uniquify-attribs #f
+ garbage-collect-states #t
+ garbage-collect-states-rate 0.2
+ 
++## Family server (0330): no loader thread. This Panda build runs true threads, and loading on the second
++## thread (animations, island models) while the main thread draws damaged Panda's shared render-state
++## table on long sessions: RenderState assertions (simpleHashMap.I line 300, _states.remove) and the game
++## closed (STORY6 after 53 minutes, shipfight8). Off, every load runs on the main thread, as in Disney's
++## game (its threads took turns). Only the client reads this file. Do not turn it back on.
++support-threads #f
++
+ ## Compress textures on the drivers?
+ driver-compress-textures #t
+ 
+diff --git a/pirates/world/IslandPreload.py b/pirates/world/IslandPreload.py
+index 267cd83..6154cf4 100644
+--- a/pirates/world/IslandPreload.py
++++ b/pirates/world/IslandPreload.py
+@@ -11,6 +11,14 @@ def start():
+     if _started:
+         return
+     _started = True
++    # Family server (0330): config/performance.prc turns the loader thread off (support-threads #f). Without
++    # it this preload would load all ~470 island models on the main thread at once and freeze the pirate
++    # chooser for seconds. Skip it: each island loads its own models behind the loading screen, as before
++    # this preload existed.
++    from panda3d.core import Thread
++    if not Thread.isThreadingSupported():
++        notify.info('no loader thread: island models load with each island')
++        return
+     absoluteModelPath()
+     try:
+         fn = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'IslandPreload.txt')
+-- 
+2.53.0
+

@@ -1,0 +1,387 @@
+From 7ba3dd06c192c5864c921e7d1203eedd510b2013 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:18:52 -0800
+Subject: [PATCH 154/371] pirates: Add Friend gets an answer, and friends lists
+ are kept, server-tree patch 0168
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/friends/PCAvatarFriendsManagerUD.py | 360 +++++++++++++++++++-
+ 1 file changed, 359 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/friends/PCAvatarFriendsManagerUD.py b/pirates/friends/PCAvatarFriendsManagerUD.py
+index 2cfe536..c75db5e 100644
+--- a/pirates/friends/PCAvatarFriendsManagerUD.py
++++ b/pirates/friends/PCAvatarFriendsManagerUD.py
+@@ -1,8 +1,366 @@
+ from direct.distributed.DistributedObjectGlobalUD import DistributedObjectGlobalUD
++from direct.distributed.PyDatagram import PyDatagram
+ from direct.directnotify import DirectNotifyGlobal
++from otp.distributed.MsgTypes import CLIENTAGENT_ADD_POST_REMOVE
++from otp.otpbase import OTPGlobals
++from otp.uberdog.RejectCode import RejectCode
+ 
++
++# family server (2026-11-18): pirate friends. The original UD was an empty
++# stub, so "Add Friend" never answered, nobody ever had a friend, and the
++# ship's "Friends" boarding tick did nothing.
++#
++# - A friendship is mutual and is saved on both pirates' setFriendsList (db).
++#   That field also reaches the AI copy (airecv), which the dinghy reads to
++#   offer a friend's ship.
++# - Invites live here only while both pirates are online.
++# - Online status: the ClientServicesManagerUD calls avatarOnline when a
++#   pirate enters the game and avatarOffline when it unloads one. A client
++#   post-remove sends the 'avatarFriendsOffline' net message when the game
++#   closes or the connection drops.
+ class PCAvatarFriendsManagerUD(DistributedObjectGlobalUD):
+     notify = DirectNotifyGlobal.directNotify.newCategory('PCAvatarFriendsManagerUD')
+ 
++    OfflineNetMessage = 'avatarFriendsOffline'
++    # the client builds its Friends page some time after it enters the game,
++    # and that page only hears updates, so the list is sent again later
++    ResendDelays = (20, 60)
++
+     def __init__(self, air):
+-        DistributedObjectGlobalUD.__init__(self, air)
+\ No newline at end of file
++        DistributedObjectGlobalUD.__init__(self, air)
++        self.av2friends = {}   # avId -> [friendId, ...], the saved list
++        self.av2name = {}      # avId -> pirate name
++        self.badAvatars = set()
++        self.pendingLoads = {} # avId -> [callback, ...]
++        self.online = set()
++        self.invites = {}      # inviterId -> set(inviteeIds)
++
++    def announceGenerate(self):
++        DistributedObjectGlobalUD.announceGenerate(self)
++        try:
++            self.air.netMessenger.accept(self.OfflineNetMessage, self, self.handleOfflineMessage)
++        except Exception as e:
++            self.notify.warning('could not listen for %s: %r' % (self.OfflineNetMessage, e))
++
++    def delete(self):
++        for avId in list(self.online):
++            self.removeTask(self.uniqueName('friends-resend-%d' % avId))
++        try:
++            self.air.netMessenger.ignore(self.OfflineNetMessage, self)
++        except Exception:
++            pass
++        DistributedObjectGlobalUD.delete(self)
++
++    # ---------------------------------------------------------------- loading
++
++    @staticmethod
++    def parseFriendsList(value):
++        friends = []
++        for entry in value or []:
++            if isinstance(entry, (list, tuple)):
++                if not entry:
++                    continue
++                entry = entry[0]
++            try:
++                friendId = int(entry)
++            except (TypeError, ValueError):
++                continue
++            if friendId and friendId not in friends:
++                friends.append(friendId)
++        return friends
++
++    def loadAvatar(self, avId, callback, refreshName=False):
++        # callback(ok); ok is False for an id that is not a pirate
++        if avId in self.badAvatars:
++            callback(False)
++            return
++        if avId in self.av2friends and not refreshName:
++            callback(True)
++            return
++        waiting = self.pendingLoads.get(avId)
++        if waiting is not None:
++            waiting.append(callback)
++            return
++        self.pendingLoads[avId] = [callback]
++
++        def gotAvatar(dclass, fields):
++            callbacks = self.pendingLoads.pop(avId, [])
++            ok = dclass is not None and dclass == self.air.dclassesByName.get('DistributedPlayerPirateUD')
++            if ok:
++                name = fields.get('setName')
++                if name:
++                    self.av2name[avId] = name[0]
++                # the list in memory wins over the database: a save sent a
++                # moment ago may not be written yet
++                if avId not in self.av2friends:
++                    value = fields.get('setFriendsList')
++                    self.av2friends[avId] = self.parseFriendsList(value and value[0])
++            elif avId not in self.av2friends:
++                self.badAvatars.add(avId)
++                ok = False
++            else:
++                ok = True
++            for cb in callbacks:
++                try:
++                    cb(ok)
++                except Exception as e:
++                    self.notify.warning('friends callback for %d raised %r' % (avId, e))
++
++        self.air.dbInterface.queryObject(self.air.dbId, avId, gotAvatar)
++
++    def loadAvatars(self, avIds, callback):
++        # callback({avId: ok}) once every id has loaded
++        avIds = list(avIds)
++        results = {}
++        if not avIds:
++            callback(results)
++            return
++
++        def loaded(avId, ok):
++            results[avId] = ok
++            if len(results) == len(avIds):
++                callback(results)
++
++        for avId in avIds:
++            self.loadAvatar(avId, lambda ok, avId=avId: loaded(avId, ok))
++
++    def saveFriends(self, avId):
++        # same path as ClientServicesManagerUD.sendLiveFields: the database
++        # state server saves it, and a loaded pirate's AI copy and client
++        # get it at once
++        friends = self.av2friends.get(avId, [])
++        dclass = self.air.dclassesByName['DistributedPlayerPirateUD']
++        self.air.send(dclass.aiFormatUpdate('setFriendsList', avId, avId, self.air.ourChannel,
++            [[[friendId, 0] for friendId in friends]]))
++
++    # --------------------------------------------------------------- messages
++
++    def getName(self, avId):
++        return self.av2name.get(avId, '')
++
++    def makeFriendInfo(self, avId):
++        # FriendInfo struct: avatarName, avatarId, playerName, onlineYesNo,
++        # openChatEnabledYesNo, openChatFriendshipYesNo, understandableYesNo,
++        # location, sublocation, timestamp
++        name = self.getName(avId)
++        return [name, avId, name, int(avId in self.online), 0, 0, 1, '', '', 0]
++
++    def d_updateAvatarFriend(self, toAvId, friendId):
++        if toAvId in self.online:
++            self.sendUpdateToAvatarId(toAvId, 'updateAvatarFriend', [friendId, self.makeFriendInfo(friendId)])
++
++    def d_removeAvatarFriend(self, toAvId, friendId):
++        if toAvId in self.online:
++            self.sendUpdateToAvatarId(toAvId, 'removeAvatarFriend', [friendId])
++
++    def d_rejectInvite(self, toAvId, avId, reason):
++        if toAvId in self.online:
++            self.sendUpdateToAvatarId(toAvId, 'rejectInvite', [avId, reason])
++
++    def d_rejectRemove(self, toAvId, avId, reason):
++        if toAvId in self.online:
++            self.sendUpdateToAvatarId(toAvId, 'rejectRemove', [avId, reason])
++
++    def sendFriendsList(self, avId):
++        # a friend whose pirate was deleted stays in the saved list but is
++        # not shown
++        for friendId in self.av2friends.get(avId, []):
++            if friendId not in self.badAvatars:
++                self.d_updateAvatarFriend(avId, friendId)
++
++    # ---------------------------------------------------------- from clients
++
++    def getSender(self):
++        avId = self.air.getAvatarIdFromSender()
++        if not avId:
++            return 0
++        if avId not in self.online:
++            # the UberDOG restarted while this pirate was playing; the
++            # sender is accountId << 32 | avId
++            accountId = self.air.getAccountIdFromSender()
++            self.avatarOnline(avId, accountId and self.GetAccountConnectionChannel(accountId))
++        return avId
++
++    def requestInvite(self, targetId):
++        avId = self.getSender()
++        if not avId:
++            return
++        if targetId == avId:
++            self.d_rejectInvite(avId, targetId, RejectCode.ALREADY_FRIENDS_WITH_SELF)
++            return
++
++        self.loadAvatars([avId, targetId], lambda results: self.__handleInvite(avId, targetId, results))
++
++    def __handleInvite(self, avId, targetId, results):
++        if not results.get(avId):
++            return
++        if not results.get(targetId):
++            self.d_rejectInvite(avId, targetId, RejectCode.INVITEE_NOT_ONLINE)
++            return
++
++        if targetId in self.av2friends[avId]:
++            # already friends: send the friend again so the client agrees
++            self.d_updateAvatarFriend(avId, targetId)
++            return
++
++        if len(self.av2friends[avId]) >= OTPGlobals.MaxFriends:
++            self.d_rejectInvite(avId, targetId, RejectCode.FRIENDS_LIST_FULL)
++            return
++        if len(self.av2friends[targetId]) >= OTPGlobals.MaxFriends:
++            self.d_rejectInvite(avId, targetId, RejectCode.OTHER_FRIENDS_LIST_FULL)
++            return
++
++        if avId in self.invites.get(targetId, ()):
++            # the other pirate asked first, so this is the yes
++            self.makeFriends(targetId, avId)
++            return
++
++        if targetId not in self.online:
++            self.d_rejectInvite(avId, targetId, RejectCode.INVITEE_NOT_ONLINE)
++            return
++
++        self.invites.setdefault(avId, set()).add(targetId)
++        self.sendUpdateToAvatarId(targetId, 'invitationFrom', [avId, self.getName(avId)])
++        self.sendUpdateToAvatarId(avId, 'friendConsidering', [targetId])
++
++    def friendConsidering(self, avId):
++        # the dc lets clients send this; the server tells the inviter itself
++        pass
++
++    def makeFriends(self, inviterId, inviteeId):
++        self.dropInvite(inviterId, inviteeId)
++        self.dropInvite(inviteeId, inviterId)
++        for a, b in ((inviterId, inviteeId), (inviteeId, inviterId)):
++            if b not in self.av2friends[a]:
++                self.av2friends[a].append(b)
++                self.saveFriends(a)
++        self.d_updateAvatarFriend(inviterId, inviteeId)
++        self.d_updateAvatarFriend(inviteeId, inviterId)
++        self.air.writeServerEvent('friendsMade', avId=inviterId, friendId=inviteeId)
++
++    def dropInvite(self, inviterId, inviteeId):
++        invited = self.invites.get(inviterId)
++        if invited and inviteeId in invited:
++            invited.discard(inviteeId)
++            if not invited:
++                del self.invites[inviterId]
++            return True
++        return False
++
++    def requestRemove(self, targetId):
++        avId = self.getSender()
++        if not avId or targetId == avId:
++            return
++
++        # the client sends requestRemove for "No" on an invite and for
++        # cancelling its own invite, as well as for ending a friendship
++        if self.dropInvite(targetId, avId):
++            self.d_rejectInvite(targetId, avId, RejectCode.INVITATION_DECLINED)
++            return
++        if self.dropInvite(avId, targetId):
++            if targetId in self.online:
++                self.sendUpdateToAvatarId(targetId, 'retractInvite', [avId])
++            return
++
++        self.loadAvatars([avId, targetId], lambda results: self.__handleRemove(avId, targetId, results))
++
++    def __handleRemove(self, avId, targetId, results):
++        if not results.get(avId):
++            return
++        friends = self.av2friends[avId]
++        otherFriends = self.av2friends.get(targetId, []) if results.get(targetId) else []
++        if targetId not in friends and avId not in otherFriends:
++            self.d_rejectRemove(avId, targetId, RejectCode.ALREADY_NOT_YOUR_FRIEND)
++            return
++
++        if targetId in friends:
++            friends.remove(targetId)
++            self.saveFriends(avId)
++            self.d_removeAvatarFriend(avId, targetId)
++        if avId in otherFriends:
++            otherFriends.remove(avId)
++            self.saveFriends(targetId)
++            self.d_removeAvatarFriend(targetId, avId)
++        self.air.writeServerEvent('friendsRemoved', avId=avId, friendId=targetId)
++
++    # ---------------------------------------------------- online and offline
++
++    def avatarOnline(self, avId, connectionChannel=None):
++        if not avId:
++            return
++        self.online.add(avId)
++        if connectionChannel:
++            self.addOfflinePostRemove(avId, connectionChannel)
++
++        def gotSelf(ok):
++            if not ok or avId not in self.online:
++                return
++            friends = list(self.av2friends.get(avId, []))
++            self.loadAvatars(friends, lambda results: gotFriends())
++
++        def gotFriends():
++            if avId not in self.online:
++                return
++            self.sendFriendsList(avId)
++            for friendId in self.av2friends.get(avId, []):
++                self.d_updateAvatarFriend(friendId, avId)
++            self.scheduleResend(avId)
++
++        self.loadAvatar(avId, gotSelf, refreshName=True)
++
++    def scheduleResend(self, avId):
++        taskName = self.uniqueName('friends-resend-%d' % avId)
++        self.removeTask(taskName)
++        delays = list(self.ResendDelays)
++
++        def resend(task):
++            if avId not in self.online:
++                return task.done
++            self.sendFriendsList(avId)
++            if delays:
++                task.delayTime = delays.pop(0) - task.delayTime
++                return task.again
++            return task.done
++
++        first = delays.pop(0)
++        self.doMethodLater(first, resend, taskName)
++
++    def addOfflinePostRemove(self, avId, connectionChannel):
++        # if the game closes or the connection drops, the client agent sends
++        # this message for the pirate
++        message = self.air.netMessenger.prepare(self.OfflineNetMessage, [avId])
++        if message is None:
++            return
++        datagram = PyDatagram()
++        datagram.addServerHeader(connectionChannel, self.air.ourChannel, CLIENTAGENT_ADD_POST_REMOVE)
++        datagram.addBlob(message.getMessage())
++        self.air.send(datagram)
++
++    def handleOfflineMessage(self, avId):
++        self.avatarOffline(avId)
++
++    def avatarOffline(self, avId):
++        if avId not in self.online:
++            return
++        self.online.discard(avId)
++        self.removeTask(self.uniqueName('friends-resend-%d' % avId))
++
++        # invites end with the session
++        for inviteeId in list(self.invites.pop(avId, ())):
++            if inviteeId in self.online:
++                self.sendUpdateToAvatarId(inviteeId, 'retractInvite', [avId])
++        for inviterId in list(self.invites.keys()):
++            if self.dropInvite(inviterId, avId):
++                self.d_rejectInvite(inviterId, avId, RejectCode.INVITEE_NOT_ONLINE)
++
++        for friendId in self.av2friends.get(avId, []):
++            self.d_updateAvatarFriend(friendId, avId)
++
++    # ------------------------------------------------------------- the rest
++
++    def requestDinghyFriendsList(self, *args):
++        # the client never sends it; the dinghy reads the AI's friends list
++        pass
++
++    def isFriend(self, avId, otherId):
++        return otherId in self.av2friends.get(avId, ())
+-- 
+2.53.0
+

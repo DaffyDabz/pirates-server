@@ -1,0 +1,129 @@
+From ca5f5fc1155370c98bb252e2cef0d1c26be6a297 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:57:30 -0800
+Subject: [PATCH 190/371] pirates: PvP challenge panels show and work (0248,
+ patch 18)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pvp/PVPInvitee.py |  8 +++++++-
+ pirates/pvp/PVPInviter.py | 36 ++++++++++++++++++++++++++++--------
+ 2 files changed, 35 insertions(+), 9 deletions(-)
+
+diff --git a/pirates/pvp/PVPInvitee.py b/pirates/pvp/PVPInvitee.py
+index fb99046..f9c591c 100644
+--- a/pirates/pvp/PVPInvitee.py
++++ b/pirates/pvp/PVPInvitee.py
+@@ -56,10 +56,16 @@ class PVPInvitee(GuiPanel.GuiPanel):
+         GuiPanel.GuiPanel.destroy(self)
+ 
+     def __handleOk(self):
+-        base.cr.pvpManager.sendAcceptChallenge(self.avId)
++        if getattr(base.cr, 'pvpManager', None):
++            base.cr.pvpManager.sendAcceptChallenge(self.avId)
++
+         self.destroy()
+ 
+     def __handleNo(self):
++        # family server (11-18): tell the challenger no, instead of leaving him waiting
++        if getattr(base.cr, 'pvpManager', None):
++            base.cr.pvpManager.sendAcceptChallenge(0)
++
+         self.destroy()
+ 
+     def __handleCancelFromAbove(self):
+diff --git a/pirates/pvp/PVPInviter.py b/pirates/pvp/PVPInviter.py
+index a856b60..57dde5e 100644
+--- a/pirates/pvp/PVPInviter.py
++++ b/pirates/pvp/PVPInviter.py
+@@ -120,6 +120,9 @@ class PVPInviter(GuiPanel.GuiPanel):
+         self.accept(self.avDisableName, self.__handleDisableAvatar)
+         if self.avId == myId:
+             self.fsm.request('self')
++        elif localAvatar.getPVPTeam():
++            # family server (11-18): already in a Skirmish, so this panel offers to stop it
++            self.fsm.request('endChallenge')
+         else:
+             self.fsm.request('notYet')
+     
+@@ -247,7 +250,7 @@ class PVPInviter(GuiPanel.GuiPanel):
+         return Task.done
+ 
+     def enterEndChallenge(self):
+-        self.message['text'] = PLocalizer.PVPInviterEndChallenge % self.avName
++        self.message['text'] = PLocalizer.PVPInviterEndSkirmish
+         self.context = None
+         self.bYes.show()
+         self.bNo.show()
+@@ -257,7 +260,7 @@ class PVPInviter(GuiPanel.GuiPanel):
+         self.bNo.hide()
+ 
+     def enterChallengeNoMore(self):
+-        self.message['text'] = PLocalizer.PVPInviterChallengeNoMore % self.avName
++        self.message['text'] = PLocalizer.PVPInviterChallengeNoMore
+         self.bOk.show()
+         if self.avId not in base.cr.doId2do:
+             messenger.send(self.avDisableName)
+@@ -347,6 +350,10 @@ class PVPInviter(GuiPanel.GuiPanel):
+         self.destroy()
+ 
+     def __handleCancel(self):
++        # family server (11-18): Cancel while waiting for an answer takes the challenge back
++        if self.fsm.getCurrentState().getName() == 'checkAvailability' and getattr(base.cr, 'pvpManager', None):
++            base.cr.pvpManager.sendRequestChallenge(0)
++
+         self.destroy()
+ 
+     def __handleStop(self):
+@@ -354,11 +361,13 @@ class PVPInviter(GuiPanel.GuiPanel):
+ 
+     def __handleYes(self):
+         if self.fsm.getCurrentState().getName() == 'notYet':
+-            localAvatar.guiMgr.showLookoutPanel()
+-            localAvatar.guiMgr.lookoutPage.displayLookout(gameType = PiratesGlobals.GAME_TYPE_PVP, gameStyle = PiratesGlobals.GAME_STYLE_TEAM_BATTLE, inviteOptions = [
+-                PiratesGlobals.LOOKOUT_INVITE_CREW], additionalAvs = [self.avId])
+-            self.__handleOk()
++            # family server (11-18): ask the other pirate right here (the old game opened the Lookout for a
++            # separate PvP world, which this server does not have)
++            self.fsm.request('checkAvailability')
+         elif self.fsm.getCurrentState().getName() == 'endChallenge':
++            if getattr(base.cr, 'pvpManager', None):
++                base.cr.pvpManager.sendRequestChallenge(0)
++
+             self.fsm.request('challengeNoMore')
+         else:
+             self.destroy()
+@@ -392,17 +401,28 @@ class PVPInviter(GuiPanel.GuiPanel):
+         if reason == RejectCode.INVITEE_NOT_ONLINE:
+             self.fsm.request('notAvailable')
+         elif reason == RejectCode.ALREADY_INVITED:
+-            self.fsm.request('alreadyInvited')
++            # family server (11-18): plain messages with an OK button for the Skirmish answers
++            self.fsm.request('notAvailable')
++            self.message['text'] = PLocalizer.PVPInviterAlreadyInvited % self.avName
+         elif reason == RejectCode.ALREADY_CHALLENGED:
+             self.fsm.request('alreadyChallenging')
+         elif reason == RejectCode.PVP_IN_BATTLE:
+-            self.fsm.request('inBattle')
++            self.fsm.request('notAvailable')
++            self.message['text'] = PLocalizer.PVPInviterYouBusy
+         elif reason == RejectCode.PVP_OTHER_IN_BATTLE:
+             self.fsm.request('otherInBattle')
++        elif reason == RejectCode.PVP_NOT_FRIENDS:
++            self.fsm.request('notAvailable')
++            self.message['text'] = PLocalizer.PVPInviterNotFriends
++        elif reason == RejectCode.PVP_NOT_HERE:
++            self.fsm.request('notAvailable')
++            self.message['text'] = PLocalizer.PVPInviterNotHere % self.avName
+         elif reason == RejectCode.INVITATION_DECLINED:
+             self.fsm.request('no')
+         else:
++            # TIMEOUT, or anything new: never leave the panel stuck on "Checking..."
+             self.notify.warning('challengeRejectInvite: %s unknown reason: %s.' % (avId, reason))
++            self.fsm.request('maybe')
+ 
+     def __challengeResponse(self, yesNoMaybe, context):
+         if self.context != context:
+-- 
+2.53.0
+

@@ -1,0 +1,271 @@
+From cb70b94c15f649ce245719477f9d1f65709bda6b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 13:23:19 -0800
+Subject: [PATCH 012/371] enemy ships: deck cannons fire again, shells match
+ damage, chase first
+
+- GameFSMShipAI: the _fireIndividualCannon def line was lost, so every
+  scheduled deck-cannon shot raised AttributeError (swallowed) and enemy
+  deck cannons never fired. Restored with a distance-based hit roll and
+  the right takeDamage argument order for NPC and player targets.
+- DistributedShipBroadsideAI: hit or miss is decided once per cannon at
+  fire time and used for both the shells clients see and the damage
+  (before, the damage re-rolled 1-3 s later, unrelated to the splashes).
+- Combat opens in CircleAttack only inside attack range; farther out it
+  chases, and a target that pulls away is always chased (was a 10% roll).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedShipBroadsideAI.py |  62 +++++-----
+ pirates/ship/GameFSMShipAI.py                | 114 ++++++++++---------
+ 2 files changed, 97 insertions(+), 79 deletions(-)
+
+diff --git a/pirates/battle/DistributedShipBroadsideAI.py b/pirates/battle/DistributedShipBroadsideAI.py
+index 57c3688..d7ba01a 100644
+--- a/pirates/battle/DistributedShipBroadsideAI.py
++++ b/pirates/battle/DistributedShipBroadsideAI.py
+@@ -173,24 +173,31 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+                 self.notify.warning('No broadside cannons on side %d' % side)
+                 return False
+             
+-            # Generate cannon delays and hit positions with spread
++            # Decide hit or miss per cannon now, so the shells the clients see
++            # are the shells that deal damage: a hit lands on the hull, a miss splashes beside it
++            hitChance = 0.7 * max(0.3, 1.0 - (dist / 2000.0) * 0.4)
+             delays = []
+             hitPosList = []
+-            
++            hitsLanded = 0
++
+             for i in range(numCannons):
+                 delays.append(random.uniform(0, 0.5))
+-                # Add spread for realism
+-                spreadX = random.gauss(0, 25)
+-                spreadY = random.gauss(0, 25)
+-                spreadZ = random.gauss(0, 10)
++                if random.random() < hitChance:
++                    hitsLanded += 1
++                    spreadX = random.gauss(0, 8)
++                    spreadY = random.gauss(0, 8)
++                else:
++                    spreadX = random.choice((-1, 1)) * random.uniform(30, 70)
++                    spreadY = random.choice((-1, 1)) * random.uniform(30, 70)
++                spreadZ = random.gauss(0, 3)
+                 hitPosList.append((relX + spreadX, relY + spreadY, relZ + spreadZ))
+-            
++
+             # Fire the broadside (visual)
+             self.doBroadside(side, delays, hitPosList, zoneId, flightTime)
+-            
++
+             # Apply damage directly on server
+             # AI broadsides apply damage after a delay matching flight time
+-            self._applyBroadsideDamage(targetShip, numCannons, dist, flightTime)
++            self._applyBroadsideDamage(targetShip, numCannons, dist, flightTime, hitsLanded)
+             
+             return True
+             
+@@ -200,7 +207,7 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+             traceback.print_exc()
+             return False
+ 
+-    def _applyBroadsideDamage(self, targetShip, numCannons, distance, flightTime):
++    def _applyBroadsideDamage(self, targetShip, numCannons, distance, flightTime, hitsLanded=None):
+         """
+         Apply broadside damage to target ship after a delay.
+         This handles server-side damage for AI ship attacks.
+@@ -228,25 +235,24 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+                 maxRange = 2000.0
+                 distanceMod = max(0.3, 1.0 - (distance / maxRange) * 0.5)
+                 
+-                # Calculate hit chance per cannon (accuracy decreases with distance)
+-                baseAccuracy = 0.7  # 70% base accuracy
+-                accuracyFalloff = max(0.3, 1.0 - (distance / maxRange) * 0.4)
+-                hitChance = baseAccuracy * accuracyFalloff
+-                
+-                # Calculate total damage from cannons that hit
+-                import random
+-                totalDamage = 0
+-                hitsLanded = 0
+-                for i in range(numCannons):
+-                    if random.random() < hitChance:
+-                        cannonDamage = baseDamagePerCannon * npcDamageOut * distanceMod
+-                        totalDamage += cannonDamage
+-                        hitsLanded += 1
+-                
+-                if hitsLanded == 0:
++                # Cannons that hit were decided when the broadside was fired
++                # (fireAtTarget). Only roll here if the caller did not pass them.
++                hits = hitsLanded
++                if hits is None:
++                    # Hit chance per cannon (accuracy decreases with distance)
++                    baseAccuracy = 0.7  # 70% base accuracy
++                    accuracyFalloff = max(0.3, 1.0 - (distance / maxRange) * 0.4)
++                    hitChance = baseAccuracy * accuracyFalloff
++                    import random
++                    hits = 0
++                    for i in range(numCannons):
++                        if random.random() < hitChance:
++                            hits += 1
++
++                if hits == 0:
+                     return task.done  # All shots missed
+-                
+-                totalDamage = int(totalDamage)
++
++                totalDamage = int(baseDamagePerCannon * npcDamageOut * distanceMod * hits)
+                 
+                 if getattr(targetShip, 'hasSpawnBuff', lambda: False)():
+                     return task.done
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index e8165eb..57abbd9 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -2563,6 +2563,7 @@ class GameFSMShipAI(FSM.FSM):
+             return True
+             
+         except Exception as e:
++            self.notify.warning('Individual cannon salvo failed: %s' % str(e))
+             return False
+ 
+     def _checkCannonHit(self, fromPos, toPos, target):
+@@ -2625,57 +2626,66 @@ class GameFSMShipAI(FSM.FSM):
+             
+         except Exception as e:
+             return False
++
++    def _fireIndividualCannon(self, target, cannonIndex, dist):
+         """
+-        Fire a single cannon at the target and apply damage, with physics-based hit detection.
+-        Uses collision ray to determine if the shot hits the target.
++        Fire a single deck cannon at the target and apply damage.
++        Scheduled by _attemptIndividualCannons through doMethodLater (extraArgs).
++        Hit or miss is a distance-based roll, same curve as the broadside.
+         """
+-        if not target or not self._isValidTarget(target):
+-            return
+         try:
+-            # Get the actual cannon distributed object
+-            if cannonIndex < len(self.ship.cannons):
+-                cannon = self.ship.cannons[cannonIndex]
+-                cannonPos = cannon.getPos(self.ship)
+-                
+-                # Get target position with some spread for realism
+-                targetPos = target.getPos()
+-                spreadX = random.gauss(0, 15)
+-                spreadY = random.gauss(0, 15)
+-                spreadZ = random.gauss(0, 5)
+-                from panda3d.core import Point3
+-                aimPos = Point3(
+-                    targetPos.getX() + spreadX,
+-                    targetPos.getY() + spreadY,
+-                    targetPos.getZ() + spreadZ if hasattr(targetPos, 'getZ') else spreadZ
+-                )
+-                
+-                # Perform collision ray test to check for hit
+-                hitTarget = self._checkCannonHit(cannonPos, aimPos, target)
+-                
+-                # Fire the cannon visually (sends visual effect to clients)
+-                if hasattr(cannon, 'fireAtPosition'):
+-                    cannon.fireAtPosition(aimPos)
+-                
+-                if not hitTarget:
+-                    # Miss - visual fired but no damage
+-                    return
+-                
+-                # Hit confirmed - calculate and apply damage
+-                baseDamage = AI_INDIVIDUAL_CANNON_DAMAGE
+-                levelMod = self._getLevelBasedDamageModifier(target)
+-                distMod = self._calculateDamageFalloff(dist)
+-                _, damageOutMod = self._getNPCDamageModifiers()
+-                totalDamage = int(baseDamage * levelMod * distMod * damageOutMod)
+-                if totalDamage > 0:
+-                    # Apply damage to target
+-                    if hasattr(target, 'takeDamage'):
+-                        target.takeDamage(self.ship.doId, totalDamage, 0)
+-                    elif hasattr(target, 'hull') and target.hull:
+-                        hull = target.hull
+-                        if hasattr(hull, 'takeDamage'):
+-                            hull.takeDamage(self.ship.doId, totalDamage, 0)
+-        except:
+-            pass
++            if not target or not self._isValidTarget(target):
++                return Task.done
++            if not self.ship or self.ship.isEmpty() or cannonIndex >= len(self.ship.cannons):
++                return Task.done
++            cannon = self.ship.cannons[cannonIndex]
++
++            hitChance = 0.7 * max(0.3, 1.0 - (dist / 2000.0) * 0.4)
++            hit = random.random() < hitChance
++
++            # Aim on the hull for a hit, splash beside it for a miss
++            targetPos = target.getPos()
++            if hit:
++                offX = random.gauss(0, 8)
++                offY = random.gauss(0, 8)
++            else:
++                offX = random.choice((-1, 1)) * random.uniform(30, 70)
++                offY = random.choice((-1, 1)) * random.uniform(30, 70)
++            aimPos = Point3(targetPos.getX() + offX,
++                            targetPos.getY() + offY,
++                            targetPos.getZ() + random.gauss(0, 3))
++
++            # Fire the cannon (sends the shot to clients)
++            if hasattr(cannon, 'fireAtPosition'):
++                cannon.fireAtPosition(aimPos)
++
++            if not hit:
++                return Task.done
++            if getattr(target, 'hasSpawnBuff', lambda: False)():
++                return Task.done
++
++            levelMod = self._getLevelBasedDamageModifier(target)
++            distMod = self._calculateDamageFalloff(dist)
++            _, damageOutMod = self._getNPCDamageModifiers()
++            totalDamage = int(AI_INDIVIDUAL_CANNON_DAMAGE * levelMod * distMod * damageOutMod)
++            if totalDamage <= 0:
++                return Task.done
++
++            if hasattr(target, 'takeDamage'):
++                # NPC ship: takeDamage(damage, attackerDoId, applyModifiers)
++                target.takeDamage(totalDamage, self.ship.doId, applyModifiers=False)
++            else:
++                # Player ship: same path as the broadside damage
++                newHp = max(0, target.getHp() - totalDamage)
++                target.b_setHp(newHp)
++                targetFSM = getattr(target, 'gameFSM', None)
++                if targetFSM and hasattr(targetFSM, 'onDamageReceived'):
++                    targetFSM.onDamageReceived(self.ship.doId, totalDamage)
++                if newHp <= 0:
++                    target.b_setGameState('Sinking', 0)
++        except Exception as e:
++            self.notify.warning('Individual cannon shot failed: %s' % str(e))
++        return Task.done
+ 
+     # =========================================================================
+     # State Handlers
+@@ -3191,7 +3201,9 @@ class GameFSMShipAI(FSM.FSM):
+         
+         # Choose initial combat behavior - delay to avoid nested FSM transition
+         def _selectCombatBehavior(task):
+-            if self.targetShip:
++            # Circle only once inside broadside range; farther out, chase first
++            # (_chaseUpdate hands over to CircleAttack at AI_ATTACK_RANGE)
++            if self.targetShip and self._getDistanceToTarget(self.targetShip) < AI_ATTACK_RANGE:
+                 self.request('CircleAttack')
+             else:
+                 self.request('AttackChase')
+@@ -3392,8 +3404,8 @@ class GameFSMShipAI(FSM.FSM):
+         # This happens independently of broadsides for continuous fire
+         self._attemptIndividualCannons(self.targetShip)
+         
+-        # Occasionally switch to chase if target is getting away
+-        if dist > AI_ATTACK_RANGE * 1.5 and random.random() < 0.1:
++        # Target getting away: close the gap (chase re-plans as the target moves)
++        if dist > AI_ATTACK_RANGE * 1.5:
+             self.request('AttackChase')
+             return Task.done
+         
+-- 
+2.53.0
+

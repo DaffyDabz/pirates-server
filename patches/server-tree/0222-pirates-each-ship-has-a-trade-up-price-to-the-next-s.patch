@@ -1,0 +1,52 @@
+From efca4d76d0b45a1f3f1a671cc58a388f0a3553cd Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:47:20 -0800
+Subject: [PATCH 222/371] pirates: each ship has a trade-up price to the next
+ ship of its kind (0261, patch 20)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/economy/EconomyGlobals.py | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/pirates/economy/EconomyGlobals.py b/pirates/economy/EconomyGlobals.py
+index c237ba2..db5745e 100644
+--- a/pirates/economy/EconomyGlobals.py
++++ b/pirates/economy/EconomyGlobals.py
+@@ -689,6 +689,33 @@ SHIP_SHELF = [
+     ItemId.INTERCEPTOR_L3,
+     ItemId.MERCHANT_L3,
+     ItemId.WARSHIP_L3]
++# patch 0261: a ship traded in at the shipwright becomes the next ship of its kind. The client asks for it as a
++# sale of this reserved item, with the ship's id as the amount (an AI without patch 0263 has no price for it, so
++# it answers TIMEOUT and takes nothing). Only the plain shop ships are in the table, so a quest, tutorial or
++# special ship is never traded.
++SHIP_UPGRADE_ITEM = 65200
++SHIP_UPGRADE_NEXT = {
++    ItemId.INTERCEPTOR_L1: ItemId.INTERCEPTOR_L2,
++    ItemId.INTERCEPTOR_L2: ItemId.INTERCEPTOR_L3,
++    ItemId.MERCHANT_L1: ItemId.MERCHANT_L2,
++    ItemId.MERCHANT_L2: ItemId.MERCHANT_L3,
++    ItemId.WARSHIP_L1: ItemId.WARSHIP_L2,
++    ItemId.WARSHIP_L2: ItemId.WARSHIP_L3}
++
++
++def getShipUpgrade(shipClass):
++    # (next ship class, price) for a ship traded in, or None. The price is the new ship's shop price less what
++    # selling the old ship pays (half its price): Light Sloop -> Sloop 950, Sloop -> War Sloop 19500.
++    nextClass = SHIP_UPGRADE_NEXT.get(shipClass)
++    if nextClass is None:
++        return None
++    newCost = getItemCost(nextClass)
++    oldCost = getItemCost(shipClass)
++    if newCost is None or oldCost is None:
++        return None
++    return (nextClass, max(0, int(newCost) - int(oldCost / 2)))
++
++
+ CollectionValues = {
+     0: 10,
+     1: 25,
+-- 
+2.53.0
+

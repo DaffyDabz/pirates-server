@@ -1,0 +1,31 @@
+From e1a415fe8926e0e1ffadbfc75a8d2d29aab063e9 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:53:21 -0800
+Subject: [PATCH 114/371] pirates: the story's end opens the Stay Tuned for
+ More Adventures panel, as server-tree patch 0128 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 7d5b5c8..3cfcbe9 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -540,6 +540,12 @@ class QuestManagerAI(DirectObject):
+ 
+         self._giveRewards(avatar, quest.getRewards())
+ 
++        # family server: Chapter 3's last quest ("visit Jack Sparrow" in the Tortuga tavern) is the end of the story
++        # in this build. The game's "Chapter 3 complete, stay tuned" panel was sent only when a finished quest handed
++        # the pirate his next one, and the end of the story hands out none, so the story just stopped in silence.
++        if questDNA.getFinalQuest() and questDNA.getProgressBlock():
++            avatar.d_popupProgressBlocker('c4.1visitValentina')
++
+         # family server: a quest choice (Joshamee's "sink a Navy ship" and "defeat Navy guards") hands out all its
+         # quests and keeps the finished one until the rest are done. The tracked quest stayed on the finished one,
+         # which has no goal, so there was no arrow or beam. Track an unfinished quest of the same choice.
+-- 
+2.53.0
+

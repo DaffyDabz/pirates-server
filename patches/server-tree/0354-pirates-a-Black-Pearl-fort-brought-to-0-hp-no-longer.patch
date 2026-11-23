@@ -1,0 +1,60 @@
+From 12c2b52a05781652ba38e62450c2f46aece9d062 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 16:33:10 -0800
+Subject: [PATCH 354/371] pirates: a Black Pearl fort brought to 0 hp no longer
+ closes the game; the fort gets a game state machine whose Death suits a fort
+ (client patch 52, code only, no DC change, no restart)
+
+Boats' BPFORT12 (16:21): real ship cannonballs took fort 401046696 from 5000 to 500 hp (7 hits) and the next hit took
+it to 0. DistributedBattleAvatarAI.setHp sent setGameState('Death'), and every client near the fort closed with
+BattleAvatarGameFSM.enterDeath -> motionFSM.off -> MotionFSM.enterOff, AttributeError 'MotionFSM' object has no
+attribute 'animInfo': a fort has no getAnimInfo (its MotionFSM never got walk animations), and the avatar death path
+after it would also need getEnterDeathTrack, which a fort lacks. Now DistributedFort.createGameFSM makes a FortGameFSM
+(BattleAvatarGameFSM with its own enterDeath / exitDeath): Death only fades the local target tray if it shows this
+fort, and does not respawn on exit. The fort's fall is still shown by died() from setHp (debris), and gameFSM.state
+is 'Death' so TargetManager and WeaponBaseBase pass the dead fort by. Sim sim_fort_death.py (the real
+BattleAvatarGameFSM and MotionFSM imported from the client tree; createGameFSM and FortGameFSM compiled out of the
+file under test): live tree 2 of 2 cases close the game at MotionFSM.py line 580 (the BPFORT12 error), this tree 2 of
+2 PASS; sim_fort_hp.py (0436) still 4 of 4 PASS on this tree.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedFort.py | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/world/DistributedFort.py b/pirates/world/DistributedFort.py
+index 3a5c259..ec70c70 100755
+--- a/pirates/world/DistributedFort.py
++++ b/pirates/world/DistributedFort.py
+@@ -19,6 +19,19 @@ from direct.interval.IntervalGlobal import *
+ from pirates.effects import TextEffect
+ from otp.otpbase import OTPRender
+ 
++
++class FortGameFSM(BattleAvatarGameFSM.BattleAvatarGameFSM):
++    # A fort at 0 hp is sent 'Death' (DistributedBattleAvatarAI.setHp). The avatar death path stops walk animations
++    # and plays a death animation, and a fort has neither: it closed the game for everyone near the fort (BPFORT12).
++    # The fort's fall is shown by died() from setHp; here it only becomes 'Death' so targeting passes it by.
++    def enterDeath(self, extraArgs = []):
++        tray = base.localAvatar.guiMgr.targetStatusTray
++        if tray.doId == self.av.getDoId():
++            tray.fadeOut()
++
++    def exitDeath(self):
++        pass
++
+ class DistributedFort(DistributedBattleAvatar.DistributedBattleAvatar):
+     notify = directNotify.newCategory('DistributedFort')
+     endingR = 60
+@@ -75,7 +88,7 @@ class DistributedFort(DistributedBattleAvatar.DistributedBattleAvatar):
+         DistributedBattleAvatar.DistributedBattleAvatar.loadModel(self)
+     
+     def createGameFSM(self):
+-        self.gameFSM = BattleAvatarGameFSM.BattleAvatarGameFSM(self)
++        self.gameFSM = FortGameFSM(self)
+ 
+     def announceGenerate(self):
+         self.notify.debug('announceGenerate')
+-- 
+2.53.0
+

@@ -1,0 +1,29 @@
+From dc048643f0a1c678aa83249a8805f5a6ea6e09c1 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:18:52 -0800
+Subject: [PATCH 158/371] pirates: removing an unknown friend no longer errors,
+ server-tree patch 0187
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ otp/friends/AvatarFriendsManager.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/otp/friends/AvatarFriendsManager.py b/otp/friends/AvatarFriendsManager.py
+index 8f8123f..44a3ada 100644
+--- a/otp/friends/AvatarFriendsManager.py
++++ b/otp/friends/AvatarFriendsManager.py
+@@ -85,7 +85,9 @@ class AvatarFriendsManager(DistributedObjectGlobal):
+             messenger.send(OTPGlobals.AvatarNewFriendAddEvent, [avId])
+ 
+     def removeAvatarFriend(self, avId):
+-        self.avatarFriendsList.remove(avId)
++        # family server (2026-11-18): discard, so a remove for a friend this
++        # client never heard about cannot raise
++        self.avatarFriendsList.discard(avId)
+         self.avatarId2Info.pop(avId, None)
+         messenger.send(OTPGlobals.AvatarFriendRemoveEvent, [avId])
+ 
+-- 
+2.53.0
+

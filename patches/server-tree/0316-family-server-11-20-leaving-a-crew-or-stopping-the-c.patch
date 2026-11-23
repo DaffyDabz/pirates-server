@@ -1,0 +1,47 @@
+From 9e5dabd451565ba7876b60c4c579b9f3eeaab5c8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 18:00:23 -0800
+Subject: [PATCH 316/371] family server (11-20): leaving a crew or stopping the
+ crew search while changing places no longer closes the game (0400)
+
+Game: CrewPage checks for a missing crew-match object at leaveCrew, b_deactivateCrewLookout and the crew-of-one
+call, as it already did at line 339. Lane: social (social-0005). Test: test_whisper_far.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/piratesgui/CrewPage.py | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/piratesgui/CrewPage.py b/pirates/piratesgui/CrewPage.py
+index 349ea51..2913985 100644
+--- a/pirates/piratesgui/CrewPage.py
++++ b/pirates/piratesgui/CrewPage.py
+@@ -234,7 +234,8 @@ class CrewPage(SocialPage.SocialPage):
+                     av.setCrewIconIndicator(0)
+                     av.setCrewIconIndicator(2)
+ 
+-        base.cr.pirateCrewMatch.deleteCrewFromLookoutList()
++        if base.cr.pirateCrewMatch:
++            base.cr.pirateCrewMatch.deleteCrewFromLookoutList()
+         base.cr.PirateBandManager.d_requestRemove(localAvatar.doId)
+         self.joinACrewStatus = 0
+         self.joinACrewStatusPVP = 0
+@@ -585,11 +586,13 @@ class CrewPage(SocialPage.SocialPage):
+                 pass
+ 
+     def b_deactivateCrewLookout(self):
+-        base.cr.pirateCrewMatch.deleteCrewFromLookoutList()
++        if base.cr.pirateCrewMatch:
++            base.cr.pirateCrewMatch.deleteCrewFromLookoutList()
+         self.recruitCrewMatesStatus = 0
+         if self.startACrewState:
+             if not self.crew:
+-                base.cr.pirateCrewMatch.requestDeleteCrewOfOne()
++                if base.cr.pirateCrewMatch:
++                    base.cr.pirateCrewMatch.requestDeleteCrewOfOne()
+                 if self.startACrewButton:
+                     self.startACrewButton['state'] = DGG.NORMAL
+                 
+-- 
+2.53.0
+

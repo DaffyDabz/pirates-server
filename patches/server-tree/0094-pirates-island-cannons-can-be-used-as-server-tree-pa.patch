@@ -1,0 +1,38 @@
+From e7a4fcb9833fb4bec39e60b63ada3af9bb4ed7dd Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:54:30 -0800
+Subject: [PATCH 094/371] pirates: island cannons can be used, as server-tree
+ patch 0108 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedIslandCannonAI.py | 15 ++++++++++++++-
+ 1 file changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/battle/DistributedIslandCannonAI.py b/pirates/battle/DistributedIslandCannonAI.py
+index 1a2f8a6..de4b306 100644
+--- a/pirates/battle/DistributedIslandCannonAI.py
++++ b/pirates/battle/DistributedIslandCannonAI.py
+@@ -2,4 +2,17 @@ from direct.directnotify import DirectNotifyGlobal
+ from pirates.battle.DistributedPCCannonAI import DistributedPCCannonAI
+ 
+ class DistributedIslandCannonAI(DistributedPCCannonAI):
+-    notify = DirectNotifyGlobal.directNotify.newCategory('DistributedIslandCannonAI')
+\ No newline at end of file
++    notify = DirectNotifyGlobal.directNotify.newCategory('DistributedIslandCannonAI')
++
++    # family server: island/fort cannons had no interaction handlers, so the default
++    # DENY rejected every player who tried to man one (ship cannons do this already).
++    def handleRequestInteraction(self, avatar, interactType, instant):
++        if getattr(self, "destructState", 0):
++            return self.DENY  # a destroyed cannon cannot be used
++
++        self.startWeapon(avatar.doId)
++        return self.ACCEPT
++
++    def handleRequestExit(self, avatar):
++        self.stopWeapon(avatar.doId)
++        return self.ACCEPT
+-- 
+2.53.0
+

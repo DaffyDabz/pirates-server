@@ -1,0 +1,62 @@
+From d0dc8f3c9a5b06aa0765e7287e77b8c5c60152f2 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 302/371] family server (11-20): going back to the pirate list,
+ or a server restart, with an enemy, crate or pirate nearby no longer closes
+ the game (0386)
+
+Game: their cleanup used the target manager after it was gone (Player1 09-19). Lane: games. Test: test_targetmgr_guard.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedBattleAvatar.py      | 3 ++-
+ pirates/interact/DistributedInteractiveProp.py | 4 +++-
+ pirates/interact/InteractiveBase.py            | 3 ++-
+ 3 files changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/battle/DistributedBattleAvatar.py b/pirates/battle/DistributedBattleAvatar.py
+index 9019087..e56f280 100644
+--- a/pirates/battle/DistributedBattleAvatar.py
++++ b/pirates/battle/DistributedBattleAvatar.py
+@@ -502,7 +502,8 @@ class DistributedBattleAvatar(DistributedReputationAvatar, WeaponBase, Teamable)
+         self.battleTubeNodePaths = []
+         if self.isBattleable():
+             for np in self.aimTubeNodePaths:
+-                if hasattr(self.cr, 'targetMgr'):
++                # family server: targetMgr is None once deleted (see DistributedInteractiveProp)
++                if getattr(self.cr, 'targetMgr', None):
+                     self.cr.targetMgr.removeTarget(np.get_key())
+                 
+                 np.removeNode()
+diff --git a/pirates/interact/DistributedInteractiveProp.py b/pirates/interact/DistributedInteractiveProp.py
+index 4693d98..7fcd956 100644
+--- a/pirates/interact/DistributedInteractiveProp.py
++++ b/pirates/interact/DistributedInteractiveProp.py
+@@ -174,7 +174,9 @@ class DistributedInteractiveProp(DistributedInteractive.DistributedInteractive,
+         
+         self.battleTubeNodePaths = []
+         for np in self.aimTubeNodePaths:
+-            if hasattr(self.cr, 'targetMgr'):
++            # family server: targetMgr is set to None when it is deleted (going back to the pirate list, a server
++            # restart), so a prop cleaned up after it closed the game (Player1 09-19)
++            if getattr(self.cr, 'targetMgr', None):
+                 self.cr.targetMgr.removeTarget(np.get_key())
+             
+             np.removeNode()
+diff --git a/pirates/interact/InteractiveBase.py b/pirates/interact/InteractiveBase.py
+index bc5b4c2..08120b5 100644
+--- a/pirates/interact/InteractiveBase.py
++++ b/pirates/interact/InteractiveBase.py
+@@ -64,7 +64,8 @@ class InteractiveBase(FSM.FSM):
+         
+         FSM.FSM.cleanup(self)
+         if self.__isTarget:
+-            if hasattr(base.cr, 'targetMgr') and self.proximityCollisionId:
++            # family server: targetMgr is None once deleted (see DistributedInteractiveProp)
++            if getattr(base.cr, 'targetMgr', None) and self.proximityCollisionId:
+                 base.cr.targetMgr.removeTarget(self.proximityCollisionId)
+             
+             self.__isTarget = 0
+-- 
+2.53.0
+

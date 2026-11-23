@@ -1,0 +1,31 @@
+From fffdb297b8f13e8828b58d81e52aa7cbc6dd87af Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 02:47:42 -0800
+Subject: [PATCH 140/371] pirates: a new pirate can use the map to teleport
+ between islands once the opening is over
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/LocalPirate.py | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/pirate/LocalPirate.py b/pirates/pirate/LocalPirate.py
+index 236077e..8a9b645 100644
+--- a/pirates/pirate/LocalPirate.py
++++ b/pirates/pirate/LocalPirate.py
+@@ -1501,7 +1501,11 @@ class LocalPirate(DistributedPlayerPirate, LocalAvatar):
+ 
+     def setTutorial(self, val):
+         DistributedPlayerPirate.setTutorial(self, val)
+-        if val >= PiratesGlobals.TUT_GOT_COMPASS or base.config.GetBool('teleport-all', 0):
++        # family server (11-18): ask the style, as announceGenerate does. With force-tutorial-complete a pirate
++        # past the opening counts as finished everywhere else, but this checked the raw step, which stays below
++        # the compass until Tia Dalma's quest is done, so a new pirate with a ship was told 'you can't teleport
++        # until you have both your Cutlass and Compass' on every map teleport
++        if self.style.getTutorial() >= PiratesGlobals.TUT_GOT_COMPASS or base.config.GetBool('teleport-all', 0):
+             self.b_clearTeleportFlag(PiratesGlobals.TFNoCompass)
+         else:
+             self.b_setTeleportFlag(PiratesGlobals.TFNoCompass)
+-- 
+2.53.0
+

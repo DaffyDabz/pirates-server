@@ -1,0 +1,41 @@
+From c64d3ace000db711ba2d4d7de55a5b012d1b8574 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:57:29 -0800
+Subject: [PATCH 188/371] pirates: logging out or leaving ends a PvP match
+ (0246)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/DistributedPlayerPirateAI.py | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/pirates/pirate/DistributedPlayerPirateAI.py b/pirates/pirate/DistributedPlayerPirateAI.py
+index 23964f2..2b9153c 100644
+--- a/pirates/pirate/DistributedPlayerPirateAI.py
++++ b/pirates/pirate/DistributedPlayerPirateAI.py
+@@ -111,6 +111,11 @@ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI,
+         DistributedPlayerAI.setLocation(self, parentId, zoneId)
+         DistributedBattleAvatarAI.setLocation(self, parentId, zoneId)
+ 
++        # family server (11-18): going to another island, into a building or to jail ends his Skirmish
++        pvpManager = getattr(self.air, 'pvpManager', None)
++        if pvpManager:
++            pvpManager.avatarMoved(self)
++
+         parentObj = self.getParentObj()
+         if parentObj:
+             if isinstance(parentObj, DistributedIslandAI):
+@@ -944,6 +949,10 @@ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI,
+     def delete(self):
+         # family server (2026-09-16): leave the crew on logout
+         self.air.bandManager.avatarOffline(self.doId)
++        # family server (11-18): logging out ends his Skirmish and takes back his challenges
++        pvpManager = getattr(self.air, 'pvpManager', None)
++        if pvpManager:
++            pvpManager.avatarOffline(self.doId)
+         self.air.targetMgr.clearAttacker(self)
+         self.air.worldGridManager.clearAvatarInterests(self)
+         inventory = self.getInventory()
+-- 
+2.53.0
+

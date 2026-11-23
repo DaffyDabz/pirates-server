@@ -1,0 +1,27 @@
+From eea1091b23a022fc2a831a6e28888c7562303859 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 10:46:54 -0800
+Subject: [PATCH 273/371] pirates: level-up rewards write a line in the server
+ log (0357)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/PirateInventoryAI.py | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/pirates/uberdog/PirateInventoryAI.py b/pirates/uberdog/PirateInventoryAI.py
+index 4291b1c..a9711a3 100644
+--- a/pirates/uberdog/PirateInventoryAI.py
++++ b/pirates/uberdog/PirateInventoryAI.py
+@@ -12,6 +12,8 @@ CHAPTER2_LADDER_INT = 2100  # QuestLadderDB MainStory 'Chapter 2'
+ 
+ class PirateInventoryAI(DistributedInventoryAI):
+     notify = DirectNotifyGlobal.directNotify.newCategory('PirateInventoryAI')
++    # family server (11-19, patch 0357): show this class's info lines (LEVEL-CATCHUP, LEVELUP-QUEST, TOTEM-GIVEN) in the AI log
++    notify.setInfo(True)
+ 
+     def setReputation(self, repType, quantity):
+         avatar = self.air.doId2do.get(self.ownerId)
+-- 
+2.53.0
+

@@ -1,0 +1,332 @@
+From 96416cf351c1c8d35feee1d19984e4a16afcc5c7 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 22:45:37 -0800
+Subject: [PATCH 129/371] pirates: enemy ships in the starter waters near Port
+ Royal are no higher than level 12, so a new pirate meets ships near his own
+ level, as server-tree patch 0142 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/GameFSMShipAI.py |  52 +++++++++++---
+ pirates/ship/ShipManagerAI.py |  51 ++++++++++++++
+ pirates/ship/StarterWaters.py | 123 ++++++++++++++++++++++++++++++++++
+ 3 files changed, 217 insertions(+), 9 deletions(-)
+ create mode 100644 pirates/ship/StarterWaters.py
+
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index 95dff62..b046714 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -29,6 +29,7 @@ from direct.task import Task
+ from pirates.ship import ShipGlobals
+ from pirates.ship import FlagshipGlobals
+ from pirates.ship import ShipBalance
++from pirates.ship import StarterWaters
+ from pirates.battle import EnemyGlobals
+ from pirates.battle import CannonGlobals
+ from pirates.battle import WeaponGlobals
+@@ -1994,14 +1995,18 @@ class GameFSMShipAI(FSM.FSM):
+         # Fallback: return a random ocean position
+         return self._getRandomOceanPos()
+ 
+-    def _getRandomOceanPos(self):
++    def _getRandomOceanPos(self, fromPos=None, toPos=None):
+         """
+         Get a valid random ocean position within the Cartesian grid bounds.
+         Attempts to find a position that doesn't collide with islands.
++        Starter waters (2026-11-17): a ship above starter level never picks a
++        point in them or a course through them from fromPos (default: where
++        the ship is) and on to toPos; a starter ship that spawned there keeps
++        its points there.
+         """
+         self._initWorldRefs()
+-        
+-        maxAttempts = 10
++
++        maxAttempts = 10 if self._starterFree() else 30
+         for _ in range(maxAttempts):
+             try:
+                 if self.world:
+@@ -2013,7 +2018,7 @@ class GameFSMShipAI(FSM.FSM):
+                     pos = Point3(dx, dy, 0)
+                     
+                     # Validate position is safe (includes grid bounds check)
+-                    if self._isPositionSafe(pos):
++                    if self._isPositionSafe(pos) and self._starterOk(pos, fromPos, toPos):
+                         return pos
+             except:
+                 pass
+@@ -2024,12 +2029,36 @@ class GameFSMShipAI(FSM.FSM):
+             dx = random.uniform(minX, maxX)
+             dy = random.uniform(minY, maxY)
+             pos = Point3(dx, dy, 0)
+-            if self._isPositionSafe(pos):
++            if self._isPositionSafe(pos) and self._starterOk(pos, fromPos, toPos):
+                 return pos
+-        
+-        # Final fallback: center of grid (always valid)
++
++        # Final fallback: center of grid (always valid). The centre is in Port
++        # Royal's starter waters, so a ship kept out of them stays where it is.
++        if not self._starterOk(Point3(0, 0, 0), fromPos, toPos):
++            return Point3(self.ship.getX(), self.ship.getY(), 0)
+         return Point3(0, 0, 0)
+ 
++    def _starterFree(self):
++        """True when the starter-waters rule never limits this ship."""
++        if not StarterWaters.enabled() or getattr(self.ship, '_starterExempt', False):
++            return True
++        return (StarterWaters.isStarterClass(getattr(self.ship, 'shipClass', 0)) and
++                not getattr(self.ship, '_starterHome', False))
++
++    def _starterOk(self, pos, fromPos=None, toPos=None):
++        """May this ship sail to pos (see StarterWaters.pointOkForShip)?"""
++        if self._starterFree():
++            return True
++        try:
++            if fromPos is None:
++                fromPos = self.ship.getPos()
++            return StarterWaters.pointOkForShip(
++                self.air, self.ship, pos.getX(), pos.getY(),
++                (fromPos.getX(), fromPos.getY()),
++                (toPos.getX(), toPos.getY()) if toPos is not None else None)
++        except Exception:
++            return True
++
+     def _getRandomWanderPoint(self):
+         """Get a random point for wandering using valid ocean positions."""
+         # Use oceanAreaManager for valid ocean positions
+@@ -3242,10 +3271,15 @@ class GameFSMShipAI(FSM.FSM):
+         self._patrolWaypoints = []
+         numWaypoints = random.randint(4, 8)
+         
+-        # Generate waypoints using valid ocean positions
++        # Generate waypoints using valid ocean positions. Each leg starts at the
++        # last waypoint and the last leg returns to the first, so the starter-
++        # waters rule checks the course the ship really sails (2026-11-17).
++        prev = None
+         for i in range(numWaypoints):
+-            waypoint = self._getRandomOceanPos()
++            back = self._patrolWaypoints[0] if (i == numWaypoints - 1 and self._patrolWaypoints) else None
++            waypoint = self._getRandomOceanPos(fromPos=prev, toPos=back)
+             self._patrolWaypoints.append(waypoint)
++            prev = waypoint
+ 
+     def _patrolUpdate(self, task):
+         if self.ship.isEmpty():
+diff --git a/pirates/ship/ShipManagerAI.py b/pirates/ship/ShipManagerAI.py
+index b69428b..5555cc7 100644
+--- a/pirates/ship/ShipManagerAI.py
++++ b/pirates/ship/ShipManagerAI.py
+@@ -9,6 +9,7 @@ from pirates.ship.PlayerShipAI import PlayerShipAI
+ from pirates.ship.NPCShipAI import NPCShipAI
+ from pirates.ship import ShipGlobals
+ from pirates.ship import FlagshipGlobals
++from pirates.ship import StarterWaters
+ from pirates.world import OceanZone
+ from pirates.world import WorldGlobals
+ from pirates.piratesbase.PLocalizerEnglish import *
+@@ -315,7 +316,18 @@ class ShipManagerAI:
+             self.notify.warning('Failed to get config for shipClass %s' % shipClass)
+             return None
+ 
++        # starter waters (2026-11-17, StarterWaters.py): a ship spawning round
++        # Port Royal or Tortuga is a starter-level class; a flagship spawns
++        # elsewhere. A test spawn near an island ignores the rule.
++        startPos, starterHome = None, False
++        if spawnNearIsland is None:
++            shipClass, startPos, starterHome = self._pickStarterSafe(shipClass, isFlagship)
++            shipConfig = ShipGlobals.getShipConfig(shipClass)
++            hullConfig = ShipGlobals.getHullConfig(shipClass)
++
+         ship = NPCShipAI(self.air)
++        ship._starterHome = starterHome
++        ship._starterExempt = spawnNearIsland is not None
+         ship.setBaseTeam(ShipGlobals.getShipTeam(shipClass))
+         # the class level, the one combat and the sink reward use (GameFSMShipAI.
+         # _getShipLevel). Every enemy ship was sent level 1, so each one's name
+@@ -357,6 +369,8 @@ class ShipManagerAI:
+                 sx, sy = pos
+             else:
+                 sx, sy = self._getValidSpawnPosition(oceanGrid, world)
++        elif startPos is not None:
++            sx, sy = startPos
+         else:
+             sx, sy = self._getValidSpawnPosition(oceanGrid, world)
+         
+@@ -388,6 +402,43 @@ class ShipManagerAI:
+         
+         return ship
+ 
++    def _pickStarterSafe(self, shipClass, isFlagship):
++        """
++        Starter waters (2026-11-17): draws the spawn point first. Returns
++        (shipClass, (x, y) or None, starterHome). A regular ship whose point is
++        in starter waters is drawn from the starter-level classes (and patrols
++        there); a flagship redraws its point until it is outside them.
++        """
++        if not StarterWaters.enabled():
++            return shipClass, None, False
++        try:
++            oceanGrid = self.world.oceanGrid
++            world = oceanGrid.getParentObj()
++            pos = self._getValidSpawnPosition(oceanGrid, world)
++            if pos is None:
++                return shipClass, None, False
++            if isFlagship:
++                for _ in range(20):
++                    if not StarterWaters.inStarterWaters(self.air, pos[0], pos[1]):
++                        break
++                    pos = self._getValidSpawnPosition(oceanGrid, world) or pos
++                return shipClass, pos, False
++            if not StarterWaters.inStarterWaters(self.air, pos[0], pos[1]):
++                return shipClass, pos, False
++            if not StarterWaters.isStarterClass(shipClass):
++                low = StarterWaters.starterClasses(REGULAR_NPC_SHIPS)
++                if not low:
++                    return shipClass, pos, False
++                new = random.choice(low)
++                self.notify.warning('TEMP-DIAG starter waters: enemy ship at (%d, %d) is %s (lv %d), not %s (lv %d)' % (
++                    pos[0], pos[1], ShipClassNames.get(new, new), StarterWaters.classLevel(new),
++                    ShipClassNames.get(shipClass, shipClass), StarterWaters.classLevel(shipClass)))
++                shipClass = new
++            return shipClass, pos, True
++        except Exception as e:
++            self.notify.warning('TEMP-DIAG starter waters: spawn check failed (%s), spawning as before' % e)
++            return shipClass, None, False
++
+     def _spawnFlagship(self, shipClass=None):
+         """
+         Spawn a flagship. If shipClass is None, picks a random flagship type.
+diff --git a/pirates/ship/StarterWaters.py b/pirates/ship/StarterWaters.py
+new file mode 100644
+index 0000000..187dcfa
+--- /dev/null
++++ b/pirates/ship/StarterWaters.py
+@@ -0,0 +1,123 @@
++"""
++Starter waters (2026-11-17): the sea round the islands a new pirate sails from
++first (Port Royal and Tortuga). Enemy ships there stay at starter levels:
++
++- a regular enemy ship that spawns there is drawn only from the low-level
++  classes (level npcship-starter-level-max or lower; 12 = the Navy Ferret,
++  Bulwark and Panther, the EITC Sea Viper and the Navy Greyhound);
++- a flagship never spawns there (unless a test knob spawns it near an island);
++- a ship above starter level never picks a patrol, wander or flee point inside
++  those waters, or a straight course through them;
++- a starter ship that spawned there keeps its patrol points there.
++
++The open-source spawn code drew any of its 27 regular classes (levels 2-44)
++anywhere on the ocean and sent each ship to random points anywhere, so a new
++pirate leaving Port Royal met mostly level 16-44 ships (SMOKE-shipfight
++2026-11-17: 12 of 13 ships seen were level 18-32).
++
++Configs: npcship-starter-islands (island uids, space separated), npcship-
++starter-radius (feet from each island's centre; 0 turns the rule off),
++npcship-starter-level-max.
++"""
++import math
++
++from direct.directnotify import DirectNotifyGlobal
++
++from pirates.ship import ShipGlobals
++
++notify = DirectNotifyGlobal.directNotify.newCategory('StarterWaters')
++
++ISLANDS = config.GetString('npcship-starter-islands',
++                           '1150922126.8dzlu 1156207188.95dzlu').split()
++RADIUS = config.GetFloat('npcship-starter-radius', 9000.0)
++LEVEL_MAX = config.GetInt('npcship-starter-level-max', 12)
++
++_centers = None
++
++
++def enabled():
++    return RADIUS > 0 and bool(ISLANDS)
++
++
++def centers(air):
++    """(x, y) of each starter island that is generated here."""
++    global _centers
++    if _centers is not None:
++        return _centers
++    found = []
++    for uid in ISLANDS:
++        try:
++            t = air.uidMgr.justGetMeMeObject(uid).getIslandTransform()
++            found.append((float(t[0]), float(t[1])))
++        except Exception:
++            continue
++    if len(found) == len(ISLANDS):
++        _centers = found
++        notify.warning('TEMP-DIAG starter waters: %d islands at %s, radius %d, enemy ship level max %d'
++                       % (len(found), ', '.join('(%d, %d)' % c for c in found), RADIUS, LEVEL_MAX))
++    return found
++
++
++def classLevel(shipClass):
++    try:
++        return int(ShipGlobals.getShipLevel(shipClass) or 1)
++    except Exception:
++        return 1
++
++
++def isStarterClass(shipClass):
++    return classLevel(shipClass) <= LEVEL_MAX
++
++
++def starterClasses(classes):
++    return [c for c in classes if isStarterClass(c)]
++
++
++def inStarterWaters(air, x, y):
++    if not enabled():
++        return False
++    for cx, cy in centers(air):
++        if math.hypot(x - cx, y - cy) < RADIUS:
++            return True
++    return False
++
++
++def _segDist(px, py, x0, y0, x1, y1):
++    dx, dy = x1 - x0, y1 - y0
++    L = dx * dx + dy * dy
++    t = 0.0 if L <= 0 else max(0.0, min(1.0, ((px - x0) * dx + (py - y0) * dy) / L))
++    return math.hypot(px - (x0 + t * dx), py - (y0 + t * dy))
++
++
++def crossesStarterWaters(air, x0, y0, x1, y1):
++    if not enabled():
++        return False
++    for cx, cy in centers(air):
++        if _segDist(cx, cy, x0, y0, x1, y1) < RADIUS:
++            return True
++    return False
++
++
++def pointOkForShip(air, ship, x, y, fromXY=None, toXY=None):
++    """
++    May this ship sail to (x, y)? Always yes for a starter-level ship or a test
++    spawn. Otherwise the point must be outside starter waters, and so must the
++    straight course from fromXY (unless fromXY is itself inside, so a ship that
++    chased a player in can still leave) and on to toXY.
++    """
++    if not enabled() or getattr(ship, '_starterExempt', False):
++        return True
++    if getattr(ship, '_starterHome', False):
++        # a starter ship that spawned here patrols here, so the waters do not
++        # empty as ships wander off (only spawns would refill them)
++        return inStarterWaters(air, x, y)
++    if isStarterClass(getattr(ship, 'shipClass', 0)):
++        return True
++    if inStarterWaters(air, x, y):
++        return False
++    for other in (fromXY, toXY):
++        if other is None or inStarterWaters(air, other[0], other[1]):
++            continue
++        if crossesStarterWaters(air, other[0], other[1], x, y):
++            return False
++    return True
+-- 
+2.53.0
+

@@ -1,0 +1,58 @@
+From e3b2897900d75b4e5de6863480f334c3288b2af5 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 23:34:14 -0800
+Subject: [PATCH 056/371] client: a pirate who docks at Port Royal stays on the
+ island; the ship he left no longer moves him onto the ocean grid
+
+An island's ocean-grid sphere hears the ship's colliders too. In STORY25 the pirate docked at the far edge of
+Port Royal to repair; his ship (now crewless) sailed on and was deleted 3 s later, its collider left the sphere,
+and removeIslandGrid -> updateLocalAvatarParent put the pirate standing on Port Royal onto the ocean grid
+(la.ship was already None). He stood in LandRoam with no ship and no island: every sail command refused.
+
+Without a ship, only the pirate's own colliders now move him between an island and the ocean. Aboard a ship,
+nothing changes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedIsland.py | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/pirates/world/DistributedIsland.py b/pirates/world/DistributedIsland.py
+index 14bf5a2..496398d 100644
+--- a/pirates/world/DistributedIsland.py
++++ b/pirates/world/DistributedIsland.py
+@@ -432,13 +432,31 @@ class DistributedIsland(DistributedGameArea.DistributedGameArea, DistributedCart
+             else:
+                 self.playerBarrierNP.stash()
+ 
++    # family server (11-16): the grid sphere also hears the ship's colliders. Once the pirate has left his ship
++    # (docked, or teleported), the ship it left still crossing the sphere (sailing on, sinking, or deleted) moved
++    # the pirate standing on Port Royal onto the ocean grid: no ship, no island, every sail command refused.
++    # Without a ship only the pirate's own colliders move him between the island and the ocean.
++    def isLocalAvatarCrossing(self, event):
++        av = base.localAvatar
++        if av.ship:
++            return True
++
++        fromNodePath = event.getFromNodePath()
++        return fromNodePath == av or av.isAncestorOf(fromNodePath)
++
+     def addIslandToOcean(self, event):
++        if not self.isLocalAvatarCrossing(event):
++            return
++
+         if self.parentWorld.worldGrid:
+             self.parentWorld.worldGrid.addIslandGrid(self)
+         else:
+             self.notify.error('worldGrid is none for %s %s' % (self.parentWorld, self))
+ 
+     def removeIslandFromOcean(self, event):
++        if not self.isLocalAvatarCrossing(event):
++            return
++
+         if self.parentWorld:
+             self.parentWorld.worldGrid.removeIslandGrid(self)
+ 
+-- 
+2.53.0
+

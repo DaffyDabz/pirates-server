@@ -1,0 +1,78 @@
+From 26d78ededaac408f5cc314f3982be541da392119 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 18:00:23 -0800
+Subject: [PATCH 313/371] family server (11-20): every ship a pirate owns loads
+ at login, not only his newest (0397)
+
+Server: only one ship-loader job runs per pirate, so the second and later ships were refused at login and the dock
+and the Ships page left them out. They now wait their turn and load one after another; if he logs out first the
+rest are dropped. Lane: sea. Test: test_ship_activate.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/DistributedShipLoaderAI.py | 29 ++++++++++++++++++++++
+ 1 file changed, 29 insertions(+)
+
+diff --git a/pirates/uberdog/DistributedShipLoaderAI.py b/pirates/uberdog/DistributedShipLoaderAI.py
+index 7b99c4b..4c75fbe 100644
+--- a/pirates/uberdog/DistributedShipLoaderAI.py
++++ b/pirates/uberdog/DistributedShipLoaderAI.py
+@@ -41,6 +41,9 @@ class ShipLoaderOperationFSM(FSM):
+         if self.callback:
+             self.callback(*args, **kwargs)
+ 
++        # family server (sea-0001): the next of his ships waiting to be activated
++        self.air.shipLoader._activateNextShip(self.avatar)
++
+ 
+ class CreateShipFSM(ShipLoaderOperationFSM):
+ 
+@@ -122,6 +125,8 @@ class DistributedShipLoaderAI(DistributedObjectGlobalAI):
+         DistributedObjectGlobalAI.__init__(self, air)
+ 
+         self.avatar2fsm = {}
++        # family server (sea-0001): ships waiting to be activated, per pirate
++        self.avatar2pending = {}
+ 
+     def announceGenerate(self):
+         DistributedObjectGlobalAI.announceGenerate(self)
+@@ -193,12 +198,36 @@ class DistributedShipLoaderAI(DistributedObjectGlobalAI):
+         fsm.demand('Finish', shipId)
+ 
+     def activateShip(self, avatar, shipId):
++        # family server (sea-0001): at login every ship he owns is activated, one after another. Only one loader
++        # job runs per pirate, so the second and later ships were refused, and only his newest ship ever reached
++        # his game: the dock and the Ships page left the others out, so he could never sail them. They now wait
++        # their turn.
++        fsm = self.avatar2fsm.get(avatar.doId)
++        pending = self.avatar2pending.setdefault(avatar.doId, [])
++        if shipId in pending or getattr(fsm, 'shipId', None) == shipId:
++            return
++
++        if fsm is not None:
++            pending.append(shipId)
++            return
+ 
+         def _shipActivatedCallback(success):
+             pass
+ 
+         self.runShipLoaderFSM(ActivateShipFSM, avatar, shipId, callback=_shipActivatedCallback)
+ 
++    def _activateNextShip(self, avatar):
++        pending = self.avatar2pending.get(avatar.doId)
++        if not pending or avatar.doId in self.avatar2fsm:
++            return
++
++        # he logged out before his last ships were activated: nothing left to show them to
++        if self.air.doId2do.get(avatar.doId) is not avatar:
++            del self.avatar2pending[avatar.doId]
++            return
++
++        self.activateShip(avatar, pending.pop(0))
++
+     def sendActivateShip(self, avatarId, shipId):
+         self.air.netMessenger.send('activateShip', [avatarId, shipId])
+ 
+-- 
+2.53.0
+

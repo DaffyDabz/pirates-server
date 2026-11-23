@@ -1,0 +1,435 @@
+From d5a45f3bf86e685f798f0cdf8c97a9e697f2f82f Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 15:42:40 -0800
+Subject: [PATCH 286/371] pirates: enemy ships fire only inside 2000 ft, lead a
+ moving ship, and their shots hurt only where the balls come down (0371)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedShipBroadsideAI.py |  55 +++++++--
+ pirates/battle/DistributedShipCannonAI.py    |  57 ++++++++-
+ pirates/ship/GameFSMShipAI.py                | 117 +++++++++++++++++--
+ 3 files changed, 205 insertions(+), 24 deletions(-)
+
+diff --git a/pirates/battle/DistributedShipBroadsideAI.py b/pirates/battle/DistributedShipBroadsideAI.py
+index 4fc23a8..731ef88 100644
+--- a/pirates/battle/DistributedShipBroadsideAI.py
++++ b/pirates/battle/DistributedShipBroadsideAI.py
+@@ -125,7 +125,7 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+         timestamp = globalClockDelta.getRealNetworkTime(bits=16)
+         self.sendUpdate('doBroadside', [side, delays, hitPosList, zoneId, flightTime, timestamp])
+ 
+-    def fireAtTarget(self, targetShip, side):
++    def fireAtTarget(self, targetShip, side, leadVelocity=None):
+         """
+         Fire a broadside at a target ship.
+         
+@@ -165,6 +165,18 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+             # divisor, so the packer rounds floats to whole numbers. Send whole seconds
+             # so the shells the clients draw and the damage below use the same value.
+             flightTime = max(1, min(255, int(round(dist / 500.0))))  # Approximate flight time
++
++            # Family patch (0371): aim where the target will be when the shells come down, not where it
++            # is now. A sailing ship was always behind the shells, so the kids saw the volley miss while
++            # the damage was counted anyway. leadVelocity = the target's (x, y) feet per second.
++            vx, vy = leadVelocity or (0.0, 0.0)
++            if leadVelocity:
++                shipPos = ship.getPos()
++                lead = 0.5 + 0.33 + flightTime
++                leadDist = ((targetPos.getX() + vx * lead - shipPos.getX()) ** 2 +
++                            (targetPos.getY() + vy * lead - shipPos.getY()) ** 2) ** 0.5
++                flightTime = max(1, min(255, int(round(leadDist / 500.0))))
++            hitSpots = []
+             
+             # Get actual number of cannons on this side
+             if side == 0:
+@@ -185,8 +197,12 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+ 
+             for i in range(numCannons):
+                 # whole seconds (uint8 in the dc): most cannons fire at once, some a second later
+-                delays.append(random.choice((0, 0, 1)))
+-                if random.random() < hitChance:
++                delay = random.choice((0, 0, 1))
++                delays.append(delay)
++                landTime = 0.5 + delay + flightTime
++                leadX, leadY = vx * landTime, vy * landTime
++                isHit = random.random() < hitChance
++                if isHit:
+                     hitsLanded += 1
+                     spreadX = random.gauss(0, 8)
+                     spreadY = random.gauss(0, 8)
+@@ -194,7 +210,9 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+                     spreadX = random.choice((-1, 1)) * random.uniform(30, 70)
+                     spreadY = random.choice((-1, 1)) * random.uniform(30, 70)
+                 spreadZ = random.gauss(0, 3)
+-                hitPosList.append((relX + spreadX, relY + spreadY, relZ + spreadZ))
++                hitPosList.append((relX + leadX + spreadX, relY + leadY + spreadY, relZ + spreadZ))
++                if isHit:
++                    hitSpots.append((delay, targetPos.getX() + leadX + spreadX, targetPos.getY() + leadY + spreadY))
+ 
+             # Fire the broadside (visual)
+             self.doBroadside(side, delays, hitPosList, zoneId, flightTime)
+@@ -202,7 +220,8 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+             # Apply damage directly on server
+             # AI broadsides apply damage when the clients' shells land: the cannon's
+             # own delay, the client's 0.5 s wind-up, then the flight time
+-            self._applyBroadsideDamage(targetShip, numCannons, dist, flightTime + 0.5 + max(delays), hitsLanded)
++            # family patch (0371): each shell hurts only if the target is still where it comes down
++            self._applyBroadsideDamage(targetShip, numCannons, dist, flightTime + 0.5, hitsLanded, hitSpots=hitSpots)
+             
+             return True
+             
+@@ -212,14 +231,16 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+             traceback.print_exc()
+             return False
+ 
+-    def _applyBroadsideDamage(self, targetShip, numCannons, distance, flightTime, hitsLanded=None):
++    HULL_HIT_RADIUS = 70.0  # family patch (0371): a shell this close to the ship's middle hits it
++
++    def _applyBroadsideDamage(self, targetShip, numCannons, distance, flightTime, hitsLanded=None, hitSpots=None):
+         """
+         Apply broadside damage to target ship after a delay.
+         This handles server-side damage for AI ship attacks.
+         """
+         from pirates.ship import ShipBalance
+         
+-        def _doDamage(task):
++        def _doDamage(spots, task):
+             try:
+                 # Check if target still exists and is valid
+                 if not targetShip or targetShip.isEmpty():
+@@ -250,6 +271,11 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+                 # Cannons that hit were decided when the broadside was fired
+                 # (fireAtTarget). Only roll here if the caller did not pass them.
+                 hits = hitsLanded
++                if spots is not None:
++                    # family patch (0371): count the shells that came down on the ship where it is now
++                    tp = targetShip.getPos()
++                    r2 = self.HULL_HIT_RADIUS * self.HULL_HIT_RADIUS
++                    hits = len([1 for x, y in spots if (x - tp[0]) ** 2 + (y - tp[1]) ** 2 <= r2])
+                 if hits is None:
+                     # Hit chance per cannon (accuracy decreases with distance)
+                     baseAccuracy = 0.7  # 70% base accuracy
+@@ -293,5 +319,16 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+             return task.done
+         
+         # Schedule damage after flight time
+-        taskMgr.doMethodLater(flightTime, _doDamage, 
+-                              self.uniqueName('broadside-damage-%d' % targetShip.doId))
++        if hitSpots is not None:
++            # family patch (0371): one landing check per firing delay (flightTime here is flight + wind-up)
++            groups = {}
++            for delay, x, y in hitSpots:
++                groups.setdefault(delay, []).append((x, y))
++            for delay in groups:
++                taskMgr.doMethodLater(flightTime + delay, _doDamage,
++                                      self.uniqueName('broadside-damage-%d' % targetShip.doId),
++                                      extraArgs=[groups[delay]], appendTask=True)
++            return
++        taskMgr.doMethodLater(flightTime, _doDamage,
++                              self.uniqueName('broadside-damage-%d' % targetShip.doId),
++                              extraArgs=[None], appendTask=True)
+diff --git a/pirates/battle/DistributedShipCannonAI.py b/pirates/battle/DistributedShipCannonAI.py
+index 0996501..93ca0f8 100644
+--- a/pirates/battle/DistributedShipCannonAI.py
++++ b/pirates/battle/DistributedShipCannonAI.py
+@@ -5,6 +5,55 @@ from pirates.battle.DistributedPCCannonAI import DistributedPCCannonAI
+ from pirates.shipparts.DistributedShippartAI import DistributedShippartAI
+ from pirates.shipparts.CannonDNA import CannonDNA
+ from pirates.uberdog.UberDogGlobals import InventoryType
++import math
++
++# Family patch (0371): the game's own cannonball (Cannon.playAttack: power x 0.6, gravityMult 4.0).
++# fireAtPosition used to send a flat shot (pitch = the angle to the target, about 0), so the ball
++# fell in the sea a few hundred feet out while the damage was counted anyway.
++AI_BALL_GRAVITY = 32.174 * 4.0
++AI_CANNON_EXIT_HEIGHT = 12.0
++
++
++def aiBallSpeed(skillId=None, ammoSkillId=None):
++    try:
++        from pirates.battle import WeaponGlobals
++        if skillId is None:
++            skillId = InventoryType.CannonShoot
++        if ammoSkillId is None:
++            ammoSkillId = InventoryType.CannonRoundShot
++        speed = WeaponGlobals.getAttackProjectilePower(skillId, ammoSkillId) * 0.6
++        if speed > 50:
++            return speed
++    except Exception:
++        pass
++    return 780.0
++
++
++def aiBallistic(dist, dz, speed):
++    """(pitch in degrees, seconds in the air) for the game's cannonball to come down dist feet away
++    and dz feet above the barrel. Out of reach: the 40 degree shot."""
++    if dist < 1.0:
++        return 0.0, 0.0
++
++    def rise(pitch):
++        r = math.radians(pitch)
++        t = dist / (speed * math.cos(r))
++        return speed * math.sin(r) * t - 0.5 * AI_BALL_GRAVITY * t * t
++
++    lo, hi = -20.0, 40.0
++    if rise(hi) < dz:
++        pitch = hi
++    elif rise(lo) > dz:
++        pitch = lo
++    else:
++        for _ in range(40):
++            mid = (lo + hi) * 0.5
++            if rise(mid) < dz:
++                lo = mid
++            else:
++                hi = mid
++        pitch = (lo + hi) * 0.5
++    return pitch, dist / (speed * math.cos(math.radians(pitch)))
+ 
+ 
+ class DistributedCannonDNA(CannonDNA):
+@@ -96,7 +145,8 @@ class DistributedShipCannonAI(DistributedPCCannonAI, DistributedShippartAI, Dist
+             
+             h = -math.degrees(math.atan2(dx, dy))
+             dist = math.sqrt(dx*dx + dy*dy)
+-            p = math.degrees(math.atan2(dz, dist)) if dist > 0 else 0
++            # Family patch (0371): the pitch that carries the ball to targetPos (was a flat shot)
++            p, flightTime = aiBallistic(dist, dz - AI_CANNON_EXIT_HEIGHT, aiBallSpeed(skillId, ammoSkillId))
+             
+             # PosHpr for the projectile
+             posHpr = [shipPos.getX(), shipPos.getY(), shipPos.getZ() + 5, h, p, 0]
+@@ -104,8 +154,9 @@ class DistributedShipCannonAI(DistributedPCCannonAI, DistributedShippartAI, Dist
+             # Send the projectile skill to clients (visual effect)
+             charge = 0
+             self.sendUpdate('useProjectileSkill', [skillId, ammoSkillId, posHpr, timestamp, charge])
+-            
+-            return True
++
++            # seconds until the ball comes down (family patch 0371); still true for old callers
++            return max(flightTime, 0.01)
+             
+         except Exception as e:
+             self.notify.warning('Failed to fire cannon at position: %s' % str(e))
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index e674d3e..f0eec2a 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -73,6 +73,15 @@ BROADSIDE_POWERMOD = CannonGlobals.BROADSIDE_POWERMOD  # 0.7
+ # Individual Cannon Timing (simulated crew firing deck cannons)
+ AI_INDIVIDUAL_CANNON_FIRE_INTERVAL = 4.0  # Increased from 1.5 to 4.0 seconds between individual cannon shots
+ AI_INDIVIDUAL_CANNON_SALVO_SIZE = 3  # Number of cannons to fire per salvo
++
++# Family patch (0371): enemy shots the kids can see land. Enemies fired from up to 6000 ft and the
++# damage was counted at once, wherever the balls went, so a kid lost hull to a ship far off and
++# sailing away (11-19). Enemies now fire inside 2000 ft, aim where a moving ship will be, and a
++# ball only hurts a ship that is still where it comes down. A circling enemy re-plans its course
++# when its target sails more than 200 ft from where it was, instead of sailing on to an old spot.
++AI_FIRE_RANGE = 2000.0
++AI_HULL_HIT_RADIUS = 70.0
++AI_REPLAN_TARGET_MOVE = 200.0
+ AI_INDIVIDUAL_CANNON_DAMAGE = 15  # Base damage per individual cannon hit
+ 
+ # Combat Behavior Thresholds
+@@ -290,6 +299,7 @@ class GameFSMShipAI(FSM.FSM):
+         numCannons = len(self.ship.cannons) if hasattr(self.ship, 'cannons') and self.ship.cannons else 0
+         for i in range(numCannons):
+             taskMgr.remove(self.ship.uniqueName('individual-cannon-%d' % i))
++            taskMgr.remove(self.ship.uniqueName('individual-cannon-land-%d' % i))
+         self.ship.ignore(self._getMovementDoneName())
+         self._currentDestination = None
+         self._targetHeading = None
+@@ -2506,6 +2516,7 @@ class GameFSMShipAI(FSM.FSM):
+         if not target or not self._isValidTarget(target):
+             return False
+         
++        self._trackVelocity(target)  # family patch (0371): samples for the lead
+         currentTime = globalClock.getFrameTime()
+         broadsideCooldown = self._getBroadsideCooldown()
+         if currentTime - self.lastBroadsideTime < broadsideCooldown:
+@@ -2514,7 +2525,7 @@ class GameFSMShipAI(FSM.FSM):
+         dist = self._getDistanceToTarget(target)
+         
+         # Check cannon distance range
+-        if dist < AI_MIN_ATTACK_RANGE or dist > AI_CANNON_DIST_RANGE:
++        if dist < AI_MIN_ATTACK_RANGE or dist > AI_FIRE_RANGE:
+             return False
+         
+         # Check if we have a good broadside angle
+@@ -2541,7 +2552,8 @@ class GameFSMShipAI(FSM.FSM):
+         # Fire broadside using the proper AI method
+         if self.ship.broadside:
+             try:
+-                if self.ship.broadside.fireAtTarget(target, broadsideSide):
++                if self.ship.broadside.fireAtTarget(target, broadsideSide,
++                                                    leadVelocity=self._trackVelocity(target)):
+                     self.lastBroadsideTime = currentTime
+                     return True
+             except Exception as e:
+@@ -2558,8 +2570,10 @@ class GameFSMShipAI(FSM.FSM):
+         if not target or not self._isValidTarget(target):
+             return False
+         
++        self._trackVelocity(target)  # family patch (0371): samples for the lead
++        self._trackVelocity(self.ship)
+         currentTime = globalClock.getFrameTime()
+-        
++
+         # Check cooldown
+         if currentTime - self.lastIndividualCannonTime < AI_INDIVIDUAL_CANNON_FIRE_INTERVAL:
+             return False
+@@ -2567,7 +2581,7 @@ class GameFSMShipAI(FSM.FSM):
+         dist = self._getDistanceToTarget(target)
+         
+         # Check range - individual cannons have similar range to broadside
+-        if dist < AI_MIN_ATTACK_RANGE or dist > AI_CANNON_DIST_RANGE:
++        if dist < AI_MIN_ATTACK_RANGE or dist > AI_FIRE_RANGE:
+             return False
+         
+         # Get the ship's cannons
+@@ -2694,11 +2708,44 @@ class GameFSMShipAI(FSM.FSM):
+         except Exception as e:
+             return False
+ 
++    def _trackVelocity(self, obj):
++        """
++        Family patch (0371): (x, y) feet per second of obj, from its position at the last few AI
++        updates, for aiming where a moving ship will be.
++        """
++        track = self.__dict__.setdefault('_velTrack', {})
++        try:
++            key = obj.doId
++            p = obj.getPos()
++        except Exception:
++            return (0.0, 0.0)
++        now = globalClock.getFrameTime()
++        rec = track.get(key)
++        if rec is None or now - rec[0] > 5.0:
++            if len(track) > 40:
++                track.clear()
++            track[key] = (now, p[0], p[1], 0.0, 0.0)
++            return (0.0, 0.0)
++        t0, x0, y0, vx, vy = rec
++        dt = now - t0
++        if dt >= 0.25:
++            nvx = (p[0] - x0) / dt
++            nvy = (p[1] - y0) / dt
++            if nvx * nvx + nvy * nvy > 400.0 * 400.0:
++                nvx, nvy = 0.0, 0.0  # a jump (teleport, respawn), not sailing
++            vx = vx * 0.4 + nvx * 0.6
++            vy = vy * 0.4 + nvy * 0.6
++            track[key] = (now, p[0], p[1], vx, vy)
++        return (vx, vy)
++
+     def _fireIndividualCannon(self, target, cannonIndex, dist):
+         """
+-        Fire a single deck cannon at the target and apply damage.
++        Fire a single deck cannon at the target.
+         Scheduled by _attemptIndividualCannons through doMethodLater (extraArgs).
+         Hit or miss is a distance-based roll, same curve as the broadside.
++        Family patch (0371): the ball is aimed where the target will be when it comes down, with
++        the pitch that really carries it there, and a hit only does damage if the ship is still
++        there when the ball lands (_landIndividualCannon).
+         """
+         try:
+             if not target or not self._isValidTarget(target):
+@@ -2706,27 +2753,66 @@ class GameFSMShipAI(FSM.FSM):
+             if not self.ship or self.ship.isEmpty() or cannonIndex >= len(self.ship.cannons):
+                 return Task.done
+             cannon = self.ship.cannons[cannonIndex]
++            from pirates.battle.DistributedShipCannonAI import aiBallistic, aiBallSpeed, AI_CANNON_EXIT_HEIGHT
+ 
+             hitChance = 0.7 * max(0.3, 1.0 - (dist / 2000.0) * 0.4)
+             hit = random.random() < hitChance
+ 
+             # Aim on the hull for a hit, splash beside it for a miss
+-            targetPos = target.getPos()
+             if hit:
+                 offX = random.gauss(0, 8)
+                 offY = random.gauss(0, 8)
+             else:
+                 offX = random.choice((-1, 1)) * random.uniform(30, 70)
+                 offY = random.choice((-1, 1)) * random.uniform(30, 70)
+-            aimPos = Point3(targetPos.getX() + offX,
+-                            targetPos.getY() + offY,
+-                            targetPos.getZ() + random.gauss(0, 3))
++
++            targetPos = target.getPos()
++            tvx, tvy = self._trackVelocity(target)
++            shipPos = self.ship.getPos()
++            # the game adds half the firing ship's forward speed to the ball (Cannon.playAttack)
++            svx, svy = self._trackVelocity(self.ship)
++            hr = math.radians(self.ship.getH())
++            fx, fy = -math.sin(hr), math.cos(hr)
++            fwd = svx * fx + svy * fy
++            carryX, carryY = fx * fwd * 0.5, fy * fwd * 0.5
++            speed = aiBallSpeed()
++            flight = 0.0
++            for _ in range(3):
++                landX = targetPos.getX() + tvx * flight + offX
++                landY = targetPos.getY() + tvy * flight + offY
++                sendX = landX - carryX * flight
++                sendY = landY - carryY * flight
++                d = math.hypot(sendX - shipPos.getX(), sendY - shipPos.getY())
++                _, flight = aiBallistic(d, targetPos.getZ() - shipPos.getZ() - AI_CANNON_EXIT_HEIGHT, speed)
++            aimPos = Point3(sendX, sendY, targetPos.getZ() + random.gauss(0, 3))
+ 
+             # Fire the cannon (sends the shot to clients)
+             if hasattr(cannon, 'fireAtPosition'):
+-                cannon.fireAtPosition(aimPos)
++                landed = cannon.fireAtPosition(aimPos)
++                if landed and landed is not True:
++                    flight = landed
+ 
+-            if not hit:
++            if hit:
++                taskMgr.doMethodLater(
++                    flight, self._landIndividualCannon,
++                    self.ship.uniqueName('individual-cannon-land-%d' % cannonIndex),
++                    extraArgs=[target, landX, landY, dist])
++        except Exception as e:
++            self.notify.warning('Individual cannon shot failed: %s' % str(e))
++        return Task.done
++
++    def _landIndividualCannon(self, target, landX, landY, dist):
++        """Family patch (0371): a deck cannon ball comes down; it hurts the ship only if it is there."""
++        try:
++            if not self.ship or self.ship.isEmpty():
++                return Task.done
++            if not target or target.isEmpty():
++                return Task.done
++            state = (getattr(target, 'gameState', None) or [''])[0]
++            if state in ('Sinking', 'Sunk', 'PutAway', 'Off') or target.getHp() <= 0:
++                return Task.done
++            tp = target.getPos()
++            if (tp.getX() - landX) ** 2 + (tp.getY() - landY) ** 2 > AI_HULL_HIT_RADIUS * AI_HULL_HIT_RADIUS:
+                 return Task.done
+             if getattr(target, 'hasSpawnBuff', lambda: False)():
+                 return Task.done
+@@ -2751,7 +2837,7 @@ class GameFSMShipAI(FSM.FSM):
+                 if newHp <= 0:
+                     target.b_setGameState('Sinking', 0)
+         except Exception as e:
+-            self.notify.warning('Individual cannon shot failed: %s' % str(e))
++            self.notify.warning('Individual cannon landing failed: %s' % str(e))
+         return Task.done
+ 
+     # =========================================================================
+@@ -3694,7 +3780,14 @@ class GameFSMShipAI(FSM.FSM):
+         
+         # If we're not at optimal distance, move to get there
+         # But maintain broadside orientation while moving
++        # Family patch (0371): a course planned for where the target was goes stale once it sails on.
++        # The enemy kept sailing to the old spot (away from a kid who had moved) until it got there.
++        if self._isMoving():
++            planned = getattr(self, '_circlePlanTargetPos', None)
++            if planned is None or (Point3(self.targetShip.getPos()) - planned).length() > AI_REPLAN_TARGET_MOVE:
++                self._stopMovement()
+         if not self._isMoving():
++            self._circlePlanTargetPos = Point3(self.targetShip.getPos())
+             if dist > optimalDist * 1.2:
+                 # Too far - move closer while maintaining broadside angle
+                 # Move perpendicular to target (parallel path) to close distance
+-- 
+2.53.0
+

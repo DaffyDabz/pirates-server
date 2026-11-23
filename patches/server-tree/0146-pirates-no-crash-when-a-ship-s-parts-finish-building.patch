@@ -1,0 +1,124 @@
+From 20792ba183b131b8aed1b3c8c52984d6857143b1 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 08:39:38 -0800
+Subject: [PATCH 146/371] pirates: no crash when a ship's parts finish building
+ before its model exists (0163)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShip.py | 68 +++++++++++++++++++++++++++++++++
+ 1 file changed, 68 insertions(+)
+
+diff --git a/pirates/ship/DistributedShip.py b/pirates/ship/DistributedShip.py
+index c0f724b..b154160 100644
+--- a/pirates/ship/DistributedShip.py
++++ b/pirates/ship/DistributedShip.py
+@@ -555,6 +555,13 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+                 axis.instanceTo(np)
+ 
+         self._maxSampleDistance = abs(self._sampleNPs[ShipGlobals.SamplePoints.C].getY() - self._sampleNPs[ShipGlobals.SamplePoints.F].getY())
++        # Family fix 0163: a ship generated again while still on the client
++        # (relaunch under the same id) drops its old silhouette interest first,
++        # so only this generation's interest can report "parts built".
++        if getattr(self, 'zoneSilhouette', None) is not None:
++            self.cr.removeInterest(self.zoneSilhouette, self.uniqueName('silhouette'))
++            self.zoneSilhouette = None
++
+         self.zoneSilhouette = self.cr.addInterest(self.getDoId(), PiratesGlobals.ShipZoneSilhouette, self.uniqueName('silhouette'), event = self.mainBuiltEvent)
+         self.registerMainBuiltFunction(self.computeDimensions)
+         self.registerMainBuiltFunction(self.loadFlat)
+@@ -633,6 +640,13 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+             self.center.removeNode()
+             self.hullCenter.removeNode()
+ 
++        # Family fix 0163: a ship with no model under its root (parts not here
++        # yet, or already torn down) has no bounds; measuring it crashed the
++        # client (NEWP10-NP2 TypeError at tb[1][1]). Measure once the model exists.
++        if not self._mainPartsHere():
++            self._waitForMainParts()
++            return
++
+         tb = self.root.getTightBounds()
+         self.bow = self.transNode.attachNewNode('bowPos')
+         self.port = self.transNode.attachNewNode('portPos')
+@@ -844,6 +858,12 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+                 self._undoSinking()
+ 
+         self.ignoreAll()
++        # Family fix 0163: a torn-down ship never runs its parts-built step later
++        taskMgr.remove(self.uniqueName('waitMainParts'))
++        if getattr(self, 'mainBuiltEvent', None):
++            self.ignore(self.mainBuiltEvent)
++        if getattr(self, 'fullBuiltEvent', None):
++            self.ignore(self.fullBuiltEvent)
+         for collModel in self.collModels:
+             collModel.removeNode()
+ 
+@@ -999,6 +1019,9 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+         self.handleUseKey()
+ 
+     def setBuildComplete(self):
++        if not self.isGenerated():
++            return    # Family fix 0163: late event for a ship already torn down
++
+         self.buildComplete = True
+         self.optimizeShip()
+         self.performBuildCompleteFunctions()
+@@ -1022,9 +1045,54 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+         self.buildCompleteFunctions = []
+ 
+     def setMainPartsBuilt(self):
++        # Family fix 0163: the silhouette interest can finish before this
++        # ship's hull is on it (relaunch under the same id, NEWP10-NP2) or after
++        # the ship was torn down. Run the parts-built step only on a live ship
++        # whose model is really here; otherwise wait for it.
++        if not self.isGenerated():
++            return
++
++        if not self._mainPartsHere():
++            self._waitForMainParts()
++            return
++
++        taskMgr.remove(self.uniqueName('waitMainParts'))
+         self.mainPartsBuilt = True
+         self.performMainBuiltFunctions()
+ 
++    def _mainPartsHere(self):
++        root = getattr(self, 'root', None)
++        if root is None or root.isEmpty():
++            return False
++
++        hull = self.hull[0] if self.hull else None
++        geom = getattr(hull, 'geom_High', None) if hull is not None else None
++        if geom is None or geom.isEmpty():
++            return False
++
++        return root.getTightBounds() is not None and geom.getTightBounds() is not None
++
++    def _waitForMainParts(self):
++        name = self.uniqueName('waitMainParts')
++        if taskMgr.hasTaskNamed(name):
++            return
++
++        def check(task):
++            if not self.isGenerated():
++                return task.done
++
++            if not self._mainPartsHere():
++                return task.again
++
++            if not self.mainPartsBuilt:
++                self.mainPartsBuilt = True
++                self.performMainBuiltFunctions()
++            if self.isGenerated():
++                self.computeDimensions()
++            return task.done
++
++        taskMgr.doMethodLater(0.5, check, name)
++
+     def getMainPartsBuilt(self):
+         return self.mainPartsBuilt
+ 
+-- 
+2.53.0
+

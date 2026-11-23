@@ -1,0 +1,49 @@
+From 9f1ed4f97cd56b18c7922c790635899bb862a6b7 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 23:40:29 -0800
+Subject: [PATCH 132/371] pirates: the starter-waters test log lines are gone,
+ as server-tree patch 0147 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/ShipManagerAI.py | 8 ++------
+ pirates/ship/StarterWaters.py | 2 --
+ 2 files changed, 2 insertions(+), 8 deletions(-)
+
+diff --git a/pirates/ship/ShipManagerAI.py b/pirates/ship/ShipManagerAI.py
+index 5555cc7..1ac3d05 100644
+--- a/pirates/ship/ShipManagerAI.py
++++ b/pirates/ship/ShipManagerAI.py
+@@ -429,14 +429,10 @@ class ShipManagerAI:
+                 low = StarterWaters.starterClasses(REGULAR_NPC_SHIPS)
+                 if not low:
+                     return shipClass, pos, False
+-                new = random.choice(low)
+-                self.notify.warning('TEMP-DIAG starter waters: enemy ship at (%d, %d) is %s (lv %d), not %s (lv %d)' % (
+-                    pos[0], pos[1], ShipClassNames.get(new, new), StarterWaters.classLevel(new),
+-                    ShipClassNames.get(shipClass, shipClass), StarterWaters.classLevel(shipClass)))
+-                shipClass = new
++                shipClass = random.choice(low)
+             return shipClass, pos, True
+         except Exception as e:
+-            self.notify.warning('TEMP-DIAG starter waters: spawn check failed (%s), spawning as before' % e)
++            self.notify.warning('starter waters: spawn check failed (%s), spawning as before' % e)
+             return shipClass, None, False
+ 
+     def _spawnFlagship(self, shipClass=None):
+diff --git a/pirates/ship/StarterWaters.py b/pirates/ship/StarterWaters.py
+index 187dcfa..9e791fa 100644
+--- a/pirates/ship/StarterWaters.py
++++ b/pirates/ship/StarterWaters.py
+@@ -53,8 +53,6 @@ def centers(air):
+             continue
+     if len(found) == len(ISLANDS):
+         _centers = found
+-        notify.warning('TEMP-DIAG starter waters: %d islands at %s, radius %d, enemy ship level max %d'
+-                       % (len(found), ', '.join('(%d, %d)' % c for c in found), RADIUS, LEVEL_MAX))
+     return found
+ 
+ 
+-- 
+2.53.0
+

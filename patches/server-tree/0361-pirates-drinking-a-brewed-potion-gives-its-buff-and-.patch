@@ -1,0 +1,1428 @@
+From ff896dae7a0656b80db7172d7b28e1bf51c34714 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 22:37:29 -0800
+Subject: [PATCH 361/371] pirates: drinking a brewed potion gives its buff and
+ its look (burp, fart, barf, blue flame, invisible, shrink/grow, colour,
+ sparkles; damage, speed, regen, rep and gold bonuses; groggy removed), as
+ server-tree patch 0445 (client patch 58 = v501, code + art, no DC change, AI
+ restart)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/BattleManagerAI.py           |   5 +
+ pirates/battle/BattleManagerBase.py         |  21 ++
+ pirates/battle/DistributedBattleAvatar.py   |  11 +
+ pirates/battle/DistributedBattleNPCAI.py    |   5 +
+ pirates/battle/PotionBuffs.py               | 216 +++++++++++++++
+ pirates/battle/PotionFx.py                  | 291 ++++++++++++++++++++
+ pirates/battle/WeaponConstants.py           |  39 +++
+ pirates/effects/BlueFlame.py                | 115 ++++++++
+ pirates/effects/BurpEffect.py               | 118 ++++++++
+ pirates/effects/FartEffect.py               | 118 ++++++++
+ pirates/effects/VomitEffect.py              | 108 ++++++++
+ pirates/minigame/DistributedPotionGameAI.py |   7 +
+ pirates/pirate/Biped.py                     |   5 +-
+ pirates/pirate/BipedAnimationMixer.py       |   3 +
+ pirates/pirate/DistributedPlayerPirateAI.py |   3 +
+ pirates/piratesbase/PLocalizerEnglish.py    |  19 ++
+ pirates/piratesgui/BuffIcon.py              |  48 +++-
+ 17 files changed, 1130 insertions(+), 2 deletions(-)
+ create mode 100644 pirates/battle/PotionBuffs.py
+ create mode 100644 pirates/battle/PotionFx.py
+ create mode 100644 pirates/effects/BlueFlame.py
+ create mode 100644 pirates/effects/BurpEffect.py
+ create mode 100644 pirates/effects/FartEffect.py
+ create mode 100644 pirates/effects/VomitEffect.py
+
+diff --git a/pirates/battle/BattleManagerAI.py b/pirates/battle/BattleManagerAI.py
+index 9d805ed..a946133 100644
+--- a/pirates/battle/BattleManagerAI.py
++++ b/pirates/battle/BattleManagerAI.py
+@@ -11,6 +11,7 @@ from direct.distributed.ClockDelta import globalClockDelta
+ from pirates.battle.BattleManagerBase import BattleManagerBase
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.battle import WeaponGlobals
++from pirates.battle import PotionBuffs
+ from pirates.battle import EnemyGlobals
+ from pirates.battle import WeaponConstants
+ from pirates.uberdog import UberDogGlobals
+@@ -575,9 +576,13 @@ class BattleManagerAI(BattleManagerBase):
+         overallReputation = 0
+         usedReps = {}
+         goldReward = EnemyGlobals.getGoldDrop(target.getAvatarType(), target.getLevel())
++        # family server (11-21): a gold potion he drank
++        goldReward = int(goldReward * (1 + PotionBuffs.getGoldBonus(attacker)))
+ 
+         for skillId in attacker.battleSkillDiary.getSkills():
+             ammoSkillId, timestamp, reputation = attacker.battleSkillDiary.getSkill(skillId)
++            # family server (11-21): a reputation potion he drank
++            reputation = int(reputation * (1 + PotionBuffs.getRepBonus(attacker)))
+             reputationCategoryId = WeaponGlobals.getSkillReputationCategoryId(skillId)
+             usedReps[reputationCategoryId] = usedReps.get(reputationCategoryId, 0) + reputation
+ 
+diff --git a/pirates/battle/BattleManagerBase.py b/pirates/battle/BattleManagerBase.py
+index b5a4091..db4ab18 100644
+--- a/pirates/battle/BattleManagerBase.py
++++ b/pirates/battle/BattleManagerBase.py
+@@ -1,5 +1,6 @@
+ from direct.directnotify import DirectNotifyGlobal
+ from pirates.battle import WeaponGlobals
++from pirates.battle import PotionBuffs
+ from pirates.pirate import AvatarTypes
+ from pirates.uberdog.UberDogGlobals import InventoryType
+ from pirates.battle import EnemyGlobals
+@@ -85,6 +86,9 @@ class BattleManagerBase:
+                 elif attackType == WeaponGlobals.AC_COMBAT:
+                     pass
+ 
++            # family server (11-21): a Marksman Draught-style accuracy potion he drank
++            chanceOfHit *= 1 + PotionBuffs.getAccuracyBonus(attacker)
++
+         randVal = attacker.battleRandom.getRandom('willWeaponHit:accuracy')
+         hitRoll = chanceOfHit - randVal * 100
+         randVal = attacker.battleRandom.getRandom('willWeaponHit:dodge')
+@@ -265,6 +269,14 @@ class BattleManagerBase:
+                     tHealth = min(-1, tHealth - tHealth * WeaponGlobals.WEAKEN_PENALTY)
+                     aHealth = min(-1, aHealth - aHealth * WeaponGlobals.WEAKEN_PENALTY)
+ 
++            # family server (11-21): a damage potion for this weapon (cannon, pistol, cutlass or doll) he drank
++            bonus = PotionBuffs.getDamageBonus(attacker, WeaponGlobals.getSkillReputationCategoryId(skillId))
++            if bonus:
++                if tHealth < 0:
++                    tHealth *= 1 + bonus
++                if aHealth < 0:
++                    aHealth *= 1 + bonus
++
+         if target and skillId != InventoryType.UseItem:
+             if hasattr(target, 'getSkillEffects'):
+                 skillEffects = target.getSkillEffects()
+@@ -417,6 +429,10 @@ class BattleManagerBase:
+             skillEffects = attacker.getSkillEffects()
+             if WeaponGlobals.C_WEAKEN in skillEffects:
+                 tDamage = min(-1, tDamage - tDamage * WeaponGlobals.WEAKEN_PENALTY)
++            # family server (11-21): a Swashbuckler Stew-style damage potion he drank
++            bonus = PotionBuffs.getDamageBonus(attacker, WeaponGlobals.getSkillReputationCategoryId(skillId))
++            if bonus and tDamage < 0:
++                tDamage *= 1 + bonus
+         if hasattr(target, 'getSkillEffects'):
+             skillEffects = target.getSkillEffects()
+             if WeaponGlobals.C_CURSE in skillEffects:
+@@ -536,6 +552,11 @@ class BattleManagerBase:
+         if WeaponGlobals.C_OPENFIRE in _buffIds(attacker):
+             damage = damage * WeaponGlobals.OPEN_FIRE_BONUS
+ 
++        # family server (11-21): a Cannoneer Draft-style damage potion the pirate firing drank
++        bonus = PotionBuffs.getDamageBonus(attacker, WeaponGlobals.getSkillReputationCategoryId(skillId))
++        if bonus:
++            damage = damage * (1 + bonus)
++
+         if WeaponGlobals.C_TAKECOVER in _buffIds(target):
+             damage = damage * WeaponGlobals.TAKE_COVER_BONUS
+ 
+diff --git a/pirates/battle/DistributedBattleAvatar.py b/pirates/battle/DistributedBattleAvatar.py
+index fb1781a..81790f4 100644
+--- a/pirates/battle/DistributedBattleAvatar.py
++++ b/pirates/battle/DistributedBattleAvatar.py
+@@ -71,6 +71,7 @@ from pirates.effects import TextEffect
+ from otp.otpbase import OTPRender
+ from pirates.battle.Teamable import Teamable
+ from pirates.piratesgui.CrewBuffDisplay import CrewBuffDisplay
++from pirates.battle import PotionBuffs, PotionFx
+ 
+ class DistributedBattleAvatar(DistributedReputationAvatar, WeaponBase, Teamable):
+     DiskUseColor = (1, 0, 0, 1)
+@@ -200,6 +201,7 @@ class DistributedBattleAvatar(DistributedReputationAvatar, WeaponBase, Teamable)
+             yieldThread('sound')
+ 
+     def disable(self):
++        PotionFx.clear(self)
+         self.ignoreAll()
+         self.detachNode()
+         self.stopSmooth()
+@@ -1268,6 +1270,11 @@ class DistributedBattleAvatar(DistributedReputationAvatar, WeaponBase, Teamable)
+         return buffIds
+ 
+     def addStatusEffect(self, effectId, attackerId, duration):
++        if PotionBuffs.isPotionBuff(effectId):
++            # family server (11-21): a drunk potion's look (burp, flame on the head, sparkles...)
++            PotionFx.addStatusEffect(self, effectId)
++            return
++
+         attacker = self.cr.doId2do.get(attackerId)
+         if effectId == WeaponGlobals.C_BLIND:
+             if self.isLocal():
+@@ -1463,6 +1470,10 @@ class DistributedBattleAvatar(DistributedReputationAvatar, WeaponBase, Teamable)
+         if self.findAllBuffCopyKeys(effectId):
+             return
+         
++        if PotionBuffs.isPotionBuff(effectId):
++            PotionFx.removeStatusEffect(self, effectId)
++            return
++
+         if effectId == WeaponGlobals.C_BLIND:
+             if self.isLocal():
+                 self.guiMgr.hideSmokePanel()
+diff --git a/pirates/battle/DistributedBattleNPCAI.py b/pirates/battle/DistributedBattleNPCAI.py
+index dd5285b..047b6ac 100644
+--- a/pirates/battle/DistributedBattleNPCAI.py
++++ b/pirates/battle/DistributedBattleNPCAI.py
+@@ -7,6 +7,7 @@ from pirates.pirate.BattleNPCGameFSMAI import BattleNPCGameFSMAI
+ from pirates.piratesbase import PLocalizer
+ from pirates.pirate import AvatarTypes
+ from pirates.battle import EnemyGlobals
++from pirates.battle import PotionBuffs
+ 
+ 
+ class DistributedBattleNPCAI(DistributedBattleAvatarAI):
+@@ -197,6 +198,10 @@ class DistributedBattleNPCAI(DistributedBattleAvatarAI):
+         if self.gameFSM.state == 'Death':
+             return
+ 
++        # family server (11-21): a pirate who drank an invisibility potion walks past unseen
++        if PotionBuffs.hasInvisibility(avatar):
++            return
++
+         # if we are in ambush mode and an avatar just entered our aggro
+         # sphere, ambush them and try to kill them.
+         if self.gameFSM.state == 'Ambush':
+diff --git a/pirates/battle/PotionBuffs.py b/pirates/battle/PotionBuffs.py
+new file mode 100644
+index 0000000..ec56511
+--- /dev/null
++++ b/pirates/battle/PotionBuffs.py
+@@ -0,0 +1,216 @@
++"""family server (11-21): what a brewed potion does when drunk. The potion table on Port Royal pays gold for a finished
++brew (0441) and now the pirate also drinks it: the original game's buff for that recipe, for the original time, with the
++original strength. Ids are WeaponConstants C_* (the original id + 60). The numbers are the original game's
++PotionGlobals.__potionBuffs; which buffs replace which is its dontStackList.
++
++Shared: the AI applies and ends buffs (applyPotion); the battle manager on both sides reads them (get*Bonus)."""
++from pirates.battle import WeaponConstants as W
++
++# the original game's recipe potionID + this = our effect id
++POTION_ID_OFFSET = 60
++
++DAMAGE = 'damage'
++
++# effect id -> (seconds, potency); potency is the fraction added (0.1 = +10%)
++BUFFS = {
++    W.C_CANNON_DAMAGE_LVL1: (180, 0.1), W.C_CANNON_DAMAGE_LVL2: (240, 0.15), W.C_CANNON_DAMAGE_LVL3: (300, 0.2),
++    W.C_PISTOL_DAMAGE_LVL1: (180, 0.1), W.C_PISTOL_DAMAGE_LVL2: (240, 0.15), W.C_PISTOL_DAMAGE_LVL3: (300, 0.2),
++    W.C_CUTLASS_DAMAGE_LVL1: (180, 0.1), W.C_CUTLASS_DAMAGE_LVL2: (240, 0.15), W.C_CUTLASS_DAMAGE_LVL3: (300, 0.2),
++    W.C_DOLL_DAMAGE_LVL1: (180, 0.1), W.C_DOLL_DAMAGE_LVL2: (240, 0.15), W.C_DOLL_DAMAGE_LVL3: (300, 0.2),
++    W.C_HASTEN_LVL1: (60, 0.3), W.C_HASTEN_LVL2: (180, 0.3), W.C_HASTEN_LVL3: (360, 0.3),
++    W.C_REP_BONUS_LVL1: (180, 0.15), W.C_REP_BONUS_LVL2: (180, 0.3),
++    W.C_GOLD_BONUS_LVL1: (180, 0.1), W.C_GOLD_BONUS_LVL2: (180, 0.2),
++    W.C_INVISIBILITY_LVL1: (60, 0), W.C_INVISIBILITY_LVL2: (120, 0),
++    W.C_REGEN_LVL1: (120, 0.03), W.C_REGEN_LVL2: (180, 0.03), W.C_REGEN_LVL3: (240, 0.03), W.C_REGEN_LVL4: (300, 0.03),
++    W.C_BURP: (50, 0), W.C_FART: (50, 0), W.C_VOMIT: (33, 0),
++    W.C_HEAD_GROW: (300, 0), W.C_CRAZY_SKIN_COLOR: (300, 0), W.C_SIZE_REDUCE: (300, 0), W.C_SIZE_INCREASE: (300, 0),
++    W.C_HEAD_FIRE: (300, 0),
++    W.C_ACCURACY_BONUS_LVL1: (180, 0.1), W.C_ACCURACY_BONUS_LVL2: (240, 0.15), W.C_ACCURACY_BONUS_LVL3: (300, 0.2),
++    W.C_REMOVE_GROGGY: (0, 0)}
++
++CANNON_DAMAGE = (W.C_CANNON_DAMAGE_LVL1, W.C_CANNON_DAMAGE_LVL2, W.C_CANNON_DAMAGE_LVL3)
++PISTOL_DAMAGE = (W.C_PISTOL_DAMAGE_LVL1, W.C_PISTOL_DAMAGE_LVL2, W.C_PISTOL_DAMAGE_LVL3)
++CUTLASS_DAMAGE = (W.C_CUTLASS_DAMAGE_LVL1, W.C_CUTLASS_DAMAGE_LVL2, W.C_CUTLASS_DAMAGE_LVL3)
++DOLL_DAMAGE = (W.C_DOLL_DAMAGE_LVL1, W.C_DOLL_DAMAGE_LVL2, W.C_DOLL_DAMAGE_LVL3)
++HASTEN = (W.C_HASTEN_LVL1, W.C_HASTEN_LVL2, W.C_HASTEN_LVL3)
++REP = (W.C_REP_BONUS_LVL1, W.C_REP_BONUS_LVL2)
++GOLD = (W.C_GOLD_BONUS_LVL1, W.C_GOLD_BONUS_LVL2)
++INVISIBILITY = (W.C_INVISIBILITY_LVL1, W.C_INVISIBILITY_LVL2)
++REGEN = (W.C_REGEN_LVL1, W.C_REGEN_LVL2, W.C_REGEN_LVL3, W.C_REGEN_LVL4)
++ACCURACY = (W.C_ACCURACY_BONUS_LVL1, W.C_ACCURACY_BONUS_LVL2, W.C_ACCURACY_BONUS_LVL3)
++SIZE = (W.C_SIZE_REDUCE, W.C_SIZE_INCREASE)
++GASSY = (W.C_BURP, W.C_FART, W.C_VOMIT)
++
++# drinking one takes these off first (the original dontStackList)
++_REPLACES = {}
++for _family in (CANNON_DAMAGE, PISTOL_DAMAGE, CUTLASS_DAMAGE, DOLL_DAMAGE, HASTEN, REP, GOLD, REGEN, ACCURACY):
++    for _id in _family:
++        _REPLACES[_id] = _family
++
++for _id in INVISIBILITY:
++    _REPLACES[_id] = INVISIBILITY + GASSY + SIZE + (W.C_HEAD_GROW, W.C_CRAZY_SKIN_COLOR, W.C_HEAD_FIRE)
++
++_REPLACES[W.C_BURP] = GASSY + INVISIBILITY
++_REPLACES[W.C_VOMIT] = GASSY + INVISIBILITY
++_REPLACES[W.C_FART] = GASSY + INVISIBILITY + SIZE
++_REPLACES[W.C_HEAD_GROW] = (W.C_HEAD_GROW,) + INVISIBILITY
++_REPLACES[W.C_CRAZY_SKIN_COLOR] = (W.C_CRAZY_SKIN_COLOR, W.C_HEAD_FIRE) + INVISIBILITY + SIZE
++for _id in SIZE:
++    _REPLACES[_id] = SIZE + INVISIBILITY + (W.C_CRAZY_SKIN_COLOR, W.C_HEAD_FIRE, W.C_FART)
++
++_REPLACES[W.C_HEAD_FIRE] = (W.C_HEAD_FIRE, W.C_CRAZY_SKIN_COLOR) + INVISIBILITY + SIZE
++_REPLACES[W.C_REMOVE_GROGGY] = ()
++
++# weapon reputation category -> its damage potions (InventoryType CannonRep / PistolRep / CutlassRep / DollRep)
++_DAMAGE_BY_REP = {13711: CANNON_DAMAGE, 13704: PISTOL_DAMAGE, 13703: CUTLASS_DAMAGE, 13709: DOLL_DAMAGE}
++
++REGEN_EVERY = 5.0
++
++
++def getEffectId(potionId):
++    """Our effect id for a recipe's potionID, or None when the potion has no buff."""
++    effectId = potionId + POTION_ID_OFFSET
++    if effectId in BUFFS:
++        return effectId
++
++    return None
++
++
++def isPotionBuff(effectId):
++    return effectId in BUFFS
++
++
++def buffIds(av):
++    """The effect ids on an avatar: the AI keeps [id, seconds, time, attacker] entries, the client a list of ids."""
++    if av is None or not hasattr(av, 'getSkillEffects'):
++        return []
++
++    try:
++        effects = av.getSkillEffects() or []
++    except Exception:
++        return []
++
++    return [e[0] if isinstance(e, (list, tuple)) else e for e in effects]
++
++
++def _best(av, family):
++    ids = buffIds(av)
++    return max([BUFFS[i][1] for i in family if i in ids] or [0])
++
++
++def getDamageBonus(av, repId):
++    family = _DAMAGE_BY_REP.get(repId)
++    if not family:
++        return 0
++
++    return _best(av, family)
++
++
++def getAccuracyBonus(av):
++    return _best(av, ACCURACY)
++
++
++def getRepBonus(av):
++    return _best(av, REP)
++
++
++def getGoldBonus(av):
++    return _best(av, GOLD)
++
++
++def hasInvisibility(av):
++    ids = buffIds(av)
++    return any(i in ids for i in INVISIBILITY)
++
++
++# ---------------- AI only ----------------
++def _taskName(doId, effectId):
++    return 'potionBuff-%d-%d' % (doId, effectId)
++
++
++def _regenTaskName(doId):
++    return 'potionRegen-%d' % doId
++
++
++def _setHaste(av, haste):
++    av.hasteMod = haste
++    av.sendUpdate('setHasteMod', [haste])
++
++
++def _endBuff(air, av, effectId):
++    from direct.task.TaskManagerGlobal import taskMgr
++    taskMgr.remove(_taskName(av.doId, effectId))
++    while av.hasSkillEffect(effectId):
++        av.expireSkillEffect(effectId)
++
++    if effectId in HASTEN and not any(i in buffIds(av) for i in HASTEN):
++        _setHaste(av, 0)
++
++    if effectId in REGEN and not any(i in buffIds(av) for i in REGEN):
++        taskMgr.remove(_regenTaskName(av.doId))
++
++
++def _removeGroggy(air, av):
++    inventory = air.inventoryManager.getInventory(av.doId) if hasattr(air, 'inventoryManager') else None
++    if not inventory:
++        return
++
++    inventory.setVitaeLeft(0)
++    inventory.setVitaeLevel(0)
++
++
++def applyPotion(air, av, potionId):
++    """The pirate drinks a potion of this recipe potionID. Returns the effect id given, or None."""
++    from direct.task.TaskManagerGlobal import taskMgr
++    effectId = getEffectId(potionId)
++    if effectId is None or av is None:
++        return None
++
++    seconds, potency = BUFFS[effectId]
++    if effectId == W.C_REMOVE_GROGGY:
++        _removeGroggy(air, av)
++        return effectId
++
++    for other in _REPLACES.get(effectId, ()):
++        if av.hasSkillEffect(other):
++            _endBuff(air, av, other)
++
++    av.addSkillEffect(effectId, seconds, av.doId)
++    doId = av.doId
++
++    def _expire(task):
++        if air.doId2do.get(doId) is av:
++            _endBuff(air, av, effectId)
++
++        return task.done
++
++    taskMgr.doMethodLater(seconds, _expire, _taskName(doId, effectId))
++
++    if effectId in HASTEN:
++        _setHaste(av, potency)
++
++    if effectId in REGEN:
++        taskMgr.remove(_regenTaskName(doId))
++
++        def _regen(task):
++            if air.doId2do.get(doId) is not av or not any(i in buffIds(av) for i in REGEN):
++                return task.done
++
++            hp, maxHp = av.getHp()[0], av.getMaxHp()
++            if 0 < hp < maxHp:
++                av.b_setHp(min(maxHp, hp + max(1, int(maxHp * potency))))
++
++            return task.again
++
++        taskMgr.doMethodLater(REGEN_EVERY, _regen, _regenTaskName(doId))
++
++    return effectId
++
++
++def clearPotions(av):
++    """The pirate is leaving: stop his buff timers (his effects go with the avatar)."""
++    from direct.task.TaskManagerGlobal import taskMgr
++    for effectId in BUFFS:
++        taskMgr.remove(_taskName(av.doId, effectId))
++
++    taskMgr.remove(_regenTaskName(av.doId))
+diff --git a/pirates/battle/PotionFx.py b/pirates/battle/PotionFx.py
+new file mode 100644
+index 0000000..ecec441
+--- /dev/null
++++ b/pirates/battle/PotionFx.py
+@@ -0,0 +1,291 @@
++"""family server (11-21): what a drunk potion looks like on a pirate (client). The AI gives the buff (PotionBuffs);
++every client that sees the pirate gets it through setSkillEffects and plays it here, ported from the original game's
++PotionStatusEffectManager: burp, fart and barf every 15 seconds with their animation, sound and puff; a blue flame on
++the head; see-through for invisibility (gone to everyone else); shrink and grow; a bold skin colour; sparkles for the
++rest. Removing a buff plays the original wear-off sound."""
++import random
++from panda3d.core import Vec4
++from direct.interval.IntervalGlobal import *
++from pirates.battle import WeaponConstants as W
++from pirates.battle import PotionBuffs
++from pirates.effects.BurpEffect import BurpEffect
++from pirates.effects.FartEffect import FartEffect
++from pirates.effects.VomitEffect import VomitEffect
++from pirates.effects.BlueFlame import BlueFlame
++from pirates.effects.HealSparks import HealSparks
++from pirates.effects.HealRays import HealRays
++
++# the original PotionGlobals delays
++GASSY_EFFECT_DELAY = 15.0
++GENERIC_EFFECT_DELAY = 10.0
++
++# shrink and grow: the original sent the size from the server; these are ours
++SIZE_SCALE = {W.C_SIZE_REDUCE: 0.75, W.C_SIZE_INCREASE: 1.25}
++CRAZY_COLORS = (Vec4(0.2, 0.9, 0.2, 1), Vec4(0.3, 0.5, 1.0, 1), Vec4(1.0, 0.3, 0.8, 1), Vec4(1.0, 0.6, 0.1, 1),
++                Vec4(0.7, 0.3, 1.0, 1))
++
++# effect id -> (anim, sound names, effect class, seconds into the anim the puff starts, where the puff sits)
++GASSY = {
++    W.C_BURP: ('burp', ('burp', 'burp02', 'burp03'), BurpEffect, 1.2, lambda av: (0, 0.5, av.height - 0.6)),
++    W.C_FART: ('fart', ('fart', 'fart02', 'fart03', 'fart04', 'fart05'), FartEffect, 0.7,
++               lambda av: (0, -1.0, av.height / 2.0)),
++    W.C_VOMIT: ('barf', ('barf', 'barf02', 'barf03', 'barf04'), VomitEffect, 1.0, lambda av: (0, 0.6, av.height - 0.6))}
++
++_sounds = {}
++
++
++def _sfx(name):
++    if name not in _sounds:
++        _sounds[name] = loader.loadSfx('audio/sfx_pot_fx_%s.mp3' % name)
++
++    return _sounds[name]
++
++
++def _playSfx(av, name):
++    try:
++        SoundInterval(_sfx(name), node=av, cutOff=100).start()
++    except Exception:
++        pass
++
++
++class _AvatarPotionFx:
++
++    def __init__(self, av):
++        self.av = av
++        self.loops = {}
++        self.puffs = {}
++        self.headFire = None
++        self.sparks = None
++        self.rays = None
++        self.genericSeq = None
++        self.genericId = None
++        self.sizeIval = None
++        self.oldScale = None
++        self.oldColor = None
++        self.invisible = False
++
++    def geom(self):
++        return self.av.getGeomNode()
++
++    # -------- burp, fart, barf --------
++    def _puff(self, effectId):
++        anim, sounds, cls, delay, where = GASSY[effectId]
++        effect = cls.getEffect()
++        if effect:
++            effect.reparentTo(self.av)
++            effect.setPos(*where(self.av))
++            effect.effectScale = self.av.getEnemyScale()
++            effect.play()
++            self.puffs[effectId] = effect
++
++    def _gassyOnce(self, effectId):
++        anim, sounds, cls, delay, where = GASSY[effectId]
++        _playSfx(self.av, random.choice(sounds))
++        if self.av.getGameState() == 'LandRoam':
++            try:
++                self.av.actorInterval(anim, playRate=1.0, blendInT=0.2, blendOutT=0.2).start()
++            except Exception:
++                pass
++
++        taskMgr.doMethodLater(delay, self._puffLater, self._puffTask(effectId), extraArgs=[effectId])
++
++    def _puffLater(self, effectId):
++        self._puff(effectId)
++
++    def _puffTask(self, effectId):
++        return 'potionPuff-%s-%d' % (id(self), effectId)
++
++    def addGassy(self, effectId):
++        if effectId in self.loops:
++            return
++
++        loop = Sequence(Wait(0.75), Func(self._gassyOnce, effectId), Wait(GASSY_EFFECT_DELAY - 0.75))
++        self.loops[effectId] = loop
++        loop.loop()
++
++    def removeGassy(self, effectId):
++        loop = self.loops.pop(effectId, None)
++        if loop:
++            loop.pause()
++
++        taskMgr.remove(self._puffTask(effectId))
++        effect = self.puffs.pop(effectId, None)
++        if effect:
++            effect.stop()
++
++    # -------- head fire --------
++    def addHeadFire(self):
++        if self.headFire:
++            return
++
++        self.headFire = BlueFlame.getEffect()
++        if self.headFire:
++            self.headFire.reparentTo(self.av)
++            self.headFire.setPos(0, 0, self.av.height * 0.8)
++            self.headFire.effectScale = 0.3 * self.av.getEnemyScale()
++            self.headFire.startLoop()
++
++    def removeHeadFire(self):
++        if self.headFire:
++            self.headFire.stopLoop()
++            self.headFire = None
++
++    # -------- invisibility --------
++    def setInvisible(self, invisible):
++        if invisible == self.invisible:
++            return
++
++        self.invisible = invisible
++        geom = self.geom()
++        if self.av.isLocal():
++            if invisible:
++                geom.setTransparency(1)
++                geom.setAlphaScale(0.35)
++            else:
++                geom.setAlphaScale(1.0)
++                geom.clearTransparency()
++        elif invisible:
++            geom.hide()
++        else:
++            geom.show()
++
++    # -------- shrink and grow --------
++    def setSize(self, factor):
++        geom = self.geom()
++        if self.oldScale is None:
++            self.oldScale = geom.getScale()
++
++        if self.sizeIval:
++            self.sizeIval.finish()
++
++        self.sizeIval = LerpScaleInterval(geom, 1.0, self.oldScale * factor, blendType='easeInOut')
++        self.sizeIval.start()
++        if factor == 1.0:
++            self.oldScale = None
++
++    # -------- crazy skin colour --------
++    def setCrazyColor(self, on):
++        geom = self.geom()
++        if on:
++            if self.oldColor is None:
++                self.oldColor = geom.getColorScale()
++
++            geom.setColorScale(random.choice(CRAZY_COLORS))
++        elif self.oldColor is not None:
++            geom.setColorScale(self.oldColor)
++            self.oldColor = None
++
++    # -------- everything else: sparkles --------
++    def addGeneric(self, effectId):
++        if self.genericSeq and self.genericSeq.isPlaying():
++            return
++
++        self.genericId = effectId
++        self.genericSeq = Sequence(Func(self._startSparkles), Func(_playSfx, self.av, 'sparkle'),
++                                   Wait(GENERIC_EFFECT_DELAY), Func(self._stopSparkles))
++        self.genericSeq.start()
++
++    def _startSparkles(self):
++        if base.options.getSpecialEffectsSetting() >= base.options.SpecialEffectsMedium:
++            self.sparks = HealSparks.getEffect()
++            if self.sparks:
++                self.sparks.reparentTo(self.av)
++                self.sparks.setPos(0, 0, 4)
++                self.sparks.setScale(1.5, 1.5, 2)
++                self.sparks.setEffectColor(Vec4(0.3, 1, 1, 0.3))
++                self.sparks.startLoop()
++
++        if base.options.getSpecialEffectsSetting() >= base.options.SpecialEffectsHigh:
++            self.rays = HealRays.getEffect()
++            if self.rays:
++                self.rays.reparentTo(self.av)
++                self.rays.setPos(0, 0, 4)
++                self.rays.setScale(0.75, 0.75, 2)
++                self.rays.setEffectColor(Vec4(0.3, 1, 1, 1))
++                self.rays.startLoop()
++
++    def _stopSparkles(self):
++        for effect in (self.sparks, self.rays):
++            if effect:
++                effect.stopLoop()
++
++        self.sparks = self.rays = None
++
++    def removeGeneric(self, effectId):
++        if effectId == self.genericId and self.genericSeq:
++            self.genericSeq.finish()
++            self.genericSeq = None
++            self.genericId = None
++
++    def clear(self):
++        for effectId in list(self.loops):
++            self.removeGassy(effectId)
++
++        self.removeHeadFire()
++        if self.genericSeq:
++            self.genericSeq.finish()
++            self.genericSeq = None
++
++        if self.sizeIval:
++            self.sizeIval.finish()
++            self.sizeIval = None
++
++        self.setInvisible(False)
++        self.setCrazyColor(False)
++        if self.oldScale is not None:
++            self.geom().setScale(self.oldScale)
++            self.oldScale = None
++
++
++def _fx(av, make=True):
++    fx = getattr(av, '_potionFx', None)
++    if fx is None and make:
++        fx = av._potionFx = _AvatarPotionFx(av)
++
++    return fx
++
++
++def addStatusEffect(av, effectId):
++    fx = _fx(av)
++    if effectId in GASSY:
++        fx.addGassy(effectId)
++    elif effectId == W.C_HEAD_FIRE:
++        fx.addHeadFire()
++    elif effectId in PotionBuffs.INVISIBILITY:
++        fx.setInvisible(True)
++    elif effectId in SIZE_SCALE:
++        _playSfx(av, 'shrink' if SIZE_SCALE[effectId] < 1.0 else 'grow')
++        fx.setSize(SIZE_SCALE[effectId])
++    elif effectId == W.C_CRAZY_SKIN_COLOR:
++        _playSfx(av, 'transformation')
++        fx.setCrazyColor(True)
++    else:
++        fx.addGeneric(effectId)
++
++
++def removeStatusEffect(av, effectId):
++    fx = _fx(av)
++    if effectId in GASSY:
++        fx.removeGassy(effectId)
++    elif effectId == W.C_HEAD_FIRE:
++        fx.removeHeadFire()
++    elif effectId in PotionBuffs.INVISIBILITY:
++        fx.setInvisible(False)
++    elif effectId in SIZE_SCALE:
++        fx.setSize(1.0)
++    elif effectId == W.C_CRAZY_SKIN_COLOR:
++        fx.setCrazyColor(False)
++    else:
++        fx.removeGeneric(effectId)
++
++    _playSfx(av, 'debuff')
++
++
++def clear(av):
++    fx = _fx(av, make=False)
++    if fx:
++        av._potionFx = None
++        try:
++            fx.clear()
++        except Exception:
++            pass
+diff --git a/pirates/battle/WeaponConstants.py b/pirates/battle/WeaponConstants.py
+index 78ce34d..5218391 100644
+--- a/pirates/battle/WeaponConstants.py
++++ b/pirates/battle/WeaponConstants.py
+@@ -40,6 +40,45 @@ C_OPENFIRE = 32
+ C_RAM = 33
+ C_TAKECOVER = 34
+ C_RECHARGE = 35
++# family server (11-21): what a brewed potion does when drunk (pirates.battle.PotionBuffs). Each is the original
++# game's id + 60: its 41 and 43 are our voodoo stun lock and hex stun.
++C_CANNON_DAMAGE_LVL1 = 101
++C_CANNON_DAMAGE_LVL2 = 102
++C_CANNON_DAMAGE_LVL3 = 103
++C_PISTOL_DAMAGE_LVL1 = 104
++C_PISTOL_DAMAGE_LVL2 = 105
++C_PISTOL_DAMAGE_LVL3 = 106
++C_CUTLASS_DAMAGE_LVL1 = 107
++C_CUTLASS_DAMAGE_LVL2 = 108
++C_CUTLASS_DAMAGE_LVL3 = 109
++C_DOLL_DAMAGE_LVL1 = 110
++C_DOLL_DAMAGE_LVL2 = 111
++C_DOLL_DAMAGE_LVL3 = 112
++C_HASTEN_LVL1 = 113
++C_HASTEN_LVL2 = 114
++C_HASTEN_LVL3 = 115
++C_REP_BONUS_LVL1 = 116
++C_REP_BONUS_LVL2 = 117
++C_GOLD_BONUS_LVL1 = 118
++C_GOLD_BONUS_LVL2 = 119
++C_INVISIBILITY_LVL1 = 120
++C_INVISIBILITY_LVL2 = 121
++C_REGEN_LVL1 = 122
++C_REGEN_LVL2 = 123
++C_REGEN_LVL3 = 124
++C_REGEN_LVL4 = 125
++C_BURP = 126
++C_FART = 127
++C_VOMIT = 128
++C_HEAD_GROW = 129
++C_CRAZY_SKIN_COLOR = 130
++C_SIZE_REDUCE = 131
++C_SIZE_INCREASE = 132
++C_HEAD_FIRE = 133
++C_ACCURACY_BONUS_LVL1 = 137
++C_ACCURACY_BONUS_LVL2 = 138
++C_ACCURACY_BONUS_LVL3 = 139
++C_REMOVE_GROGGY = 140
+ AREA_OFF = 0
+ AREA_SPHERE = 1
+ AREA_CONE = 2
+diff --git a/pirates/effects/BlueFlame.py b/pirates/effects/BlueFlame.py
+new file mode 100644
+index 0000000..d091fa4
+--- /dev/null
++++ b/pirates/effects/BlueFlame.py
+@@ -0,0 +1,115 @@
++# family server (11-21): the original game's potion effect, ported for the brewed potions (PotionFx).
++import random
++from panda3d.core import *
++from panda3d.physics import *
++from direct.interval.IntervalGlobal import *
++from direct.actor import Actor
++from direct.particles import ParticleEffect
++from direct.particles import Particles
++from direct.particles import ForceGroup
++from .PooledEffect import PooledEffect
++from .EffectController import EffectController
++
++class BlueFlame(PooledEffect, EffectController):
++    cardScale = 64.0
++    burningSfx = None
++
++    def __init__(self):
++        PooledEffect.__init__(self)
++        EffectController.__init__(self)
++        model = loader.loadModel('models/effects/particleMaps')
++        self.card = model.find('**/particleFire2')
++        if not self.burningSfx:
++            self.burningSfx = loader.loadSfx('audio/sfx_fire_loop.wav')
++        self.fireSfxIval = None
++        if not BlueFlame.particleDummy:
++            BlueFlame.particleDummy = render.attachNewNode(ModelNode('BurpEffectParticleDummy'))
++            BlueFlame.particleDummy.setDepthWrite(0)
++            BlueFlame.particleDummy.setFogOff()
++            BlueFlame.particleDummy.setLightOff()
++            BlueFlame.particleDummy.setColorScaleOff()
++            BlueFlame.particleDummy.setTwoSided(1)
++        self.f = ParticleEffect.ParticleEffect('FlamingSkull')
++        self.f.reparentTo(self)
++        self.p0 = Particles.Particles('particles-1')
++        self.p0.setFactory('ZSpinParticleFactory')
++        self.p0.setRenderer('SpriteParticleRenderer')
++        self.p0.setEmitter('SphereSurfaceEmitter')
++        self.f.addParticles(self.p0)
++        self.p0.setPoolSize(128)
++        self.p0.setBirthRate(0.2)
++        self.p0.setLitterSize(1)
++        self.p0.setLitterSpread(0)
++        self.p0.setSystemLifespan(0.0)
++        self.p0.setLocalVelocityFlag(0)
++        self.p0.setSystemGrowsOlderFlag(0)
++        self.p0.factory.setLifespanBase(1.2)
++        self.p0.factory.setLifespanSpread(0.5)
++        self.p0.factory.setMassBase(1.0)
++        self.p0.factory.setMassSpread(0.2)
++        self.p0.factory.setTerminalVelocityBase(400.0)
++        self.p0.factory.setTerminalVelocitySpread(0.0)
++        self.p0.factory.setInitialAngle(0.0)
++        self.p0.factory.setInitialAngleSpread(20.0)
++        self.p0.factory.enableAngularVelocity(1)
++        self.p0.factory.setAngularVelocity(0.0)
++        self.p0.factory.setAngularVelocitySpread(0.0)
++        self.p0.renderer.setAlphaMode(BaseParticleRenderer.PRALPHAOUT)
++        self.p0.renderer.setUserAlpha(1.0)
++        self.p0.renderer.setFromNode(self.card)
++        self.p0.renderer.setColor(Vec4(1.0, 1.0, 1.0, 1.0))
++        self.p0.renderer.setXScaleFlag(1)
++        self.p0.renderer.setYScaleFlag(1)
++        self.p0.renderer.setAnimAngleFlag(1)
++        self.p0.renderer.setInitialXScale(0.0018 * self.cardScale)
++        self.p0.renderer.setInitialYScale(0.0018 * self.cardScale)
++        self.p0.renderer.setFinalXScale(0.0001 * self.cardScale)
++        self.p0.renderer.setFinalYScale(0.0001 * self.cardScale)
++        self.p0.renderer.setNonanimatedTheta(0.0)
++        self.p0.renderer.setAlphaBlendMethod(BaseParticleRenderer.PPBLENDLINEAR)
++        self.p0.renderer.setAlphaDisable(0)
++        self.p0.renderer.setColorBlendMode(ColorBlendAttrib.MAdd, ColorBlendAttrib.OIncomingAlpha, ColorBlendAttrib.OOne)
++        self.p0.renderer.getColorInterpolationManager().addLinear(0.0, 1.0, Vec4(0.2, 0.6, 1.0, 1.0), Vec4(0.2, 0.2, 0.6, 0.5), 1)
++        self.p0.emitter.setEmissionType(BaseParticleEmitter.ETRADIATE)
++        self.p0.emitter.setAmplitude(-0.75)
++        self.p0.emitter.setAmplitudeSpread(0.5)
++        self.p0.emitter.setOffsetForce(Vec3(0.0, 0.0, 4.0))
++        self.p0.emitter.setExplicitLaunchVector(Vec3(1.0, 0.0, 0.0))
++        self.p0.emitter.setRadiateOrigin(Point3(0.0, 0.0, 0.0))
++        self.p0.emitter.setRadius(0.5)
++        return
++
++    def playFireSfx(self):
++        if self.burningSfx and not self.fireSfxIval:
++            self.fireSfxIval = SoundInterval(self.burningSfx, node=self, cutOff=150, seamlessLoop=False)
++            self.fireSfxIval.loop()
++
++    def stopFireSfx(self):
++        if self.fireSfxIval:
++            self.fireSfxIval.finish()
++            self.fireSfxIval = None
++        return
++
++    def createTrack(self):
++        self.p0.renderer.setInitialXScale(0.01 * self.cardScale)
++        self.p0.renderer.setInitialYScale(0.01 * self.cardScale)
++        growSize = LerpFunctionInterval(self.setNewSize, 3.0, toData=1.0, fromData=0.001)
++        self.startEffect = Sequence(Func(self.p0.setBirthRate, 0.01), Func(self.p0.clearToInitial), Func(self.f.start, self, self.particleDummy), Func(self.playFireSfx), Func(self.f.reparentTo, self), growSize)
++        self.endEffect = Sequence(Func(self.p0.setBirthRate, 100.0), Func(self.stopFireSfx), Wait(1.0), Func(self.cleanUpEffect))
++        self.track = Parallel(self.startEffect, Wait(5.0), self.endEffect)
++
++    def setNewSize(self, time):
++        if self.p0:
++            self.p0.emitter.setAmplitude(-2.0 * time)
++            self.p0.renderer.setFinalXScale(0.001 * time * self.cardScale)
++            self.p0.renderer.setFinalYScale(0.001 * time * self.cardScale)
++            self.p0.renderer.setUserAlpha(min(0.5 * time * 3, 0.5))
++
++    def cleanUpEffect(self):
++        EffectController.cleanUpEffect(self)
++        if self.pool and self.pool.isUsed(self):
++            self.pool.checkin(self)
++
++    def destroy(self):
++        EffectController.destroy(self)
++        PooledEffect.destroy(self)
+\ No newline at end of file
+diff --git a/pirates/effects/BurpEffect.py b/pirates/effects/BurpEffect.py
+new file mode 100644
+index 0000000..06ed17b
+--- /dev/null
++++ b/pirates/effects/BurpEffect.py
+@@ -0,0 +1,118 @@
++# family server (11-21): the original game's potion effect, ported for the brewed potions (PotionFx).
++from panda3d.core import *
++from panda3d.physics import *
++from direct.interval.IntervalGlobal import *
++from direct.actor import Actor
++from direct.particles import ParticleEffect
++from direct.particles import Particles
++from direct.particles import ForceGroup
++from .PooledEffect import PooledEffect
++from .EffectController import EffectController
++from otp.otpbase import OTPRender
++import random
++
++class BurpEffect(PooledEffect, EffectController):
++    cardScale = 128.0
++
++    def __init__(self):
++        PooledEffect.__init__(self)
++        EffectController.__init__(self)
++        model = loader.loadModel('models/effects/particleMaps')
++        self.card = model.find('**/particleGroundFog')
++        if not BurpEffect.particleDummy:
++            BurpEffect.particleDummy = render.attachNewNode(ModelNode('BurpEffectParticleDummy'))
++            BurpEffect.particleDummy.setDepthWrite(0)
++            BurpEffect.particleDummy.setFogOff()
++            BurpEffect.particleDummy.setLightOff()
++            BurpEffect.particleDummy.setColorScaleOff()
++            BurpEffect.particleDummy.setTwoSided(1)
++        self.icon = loader.loadModel('models/effects/skull')
++        self.icon.setBillboardAxis(0.0)
++        self.icon.setDepthWrite(0)
++        self.icon.setFogOff()
++        self.icon.setLightOff()
++        self.icon.setColorScaleOff()
++        self.icon.reparentTo(self)
++        self.icon.setPos(self, 0, 0, -0.3)
++        self.icon.setBin('fixed', 65)
++        self.icon.hide(OTPRender.ShadowCameraBitmask)
++        self.f = ParticleEffect.ParticleEffect('BurpEffect')
++        self.f.reparentTo(self)
++        self.p0 = Particles.Particles('particles-1')
++        self.p0.setFactory('PointParticleFactory')
++        self.p0.setRenderer('SpriteParticleRenderer')
++        self.p0.setEmitter('SphereSurfaceEmitter')
++        self.f.addParticles(self.p0)
++        f0 = ForceGroup.ForceGroup('gravity')
++        force0 = LinearVectorForce(Vec3(0.0, 0.0, 0.5), 1.0, 0)
++        force0.setVectorMasks(1, 1, 1)
++        force0.setActive(1)
++        f0.addForce(force0)
++        force1 = LinearJitterForce(1.0, 0)
++        force1.setVectorMasks(1, 1, 1)
++        force1.setActive(1)
++        f0.addForce(force1)
++        self.f.addForceGroup(f0)
++        self.p0.setPoolSize(128)
++        self.p0.setBirthRate(0.1)
++        self.p0.setLitterSize(9)
++        self.p0.setLitterSpread(0)
++        self.p0.setSystemLifespan(0.0)
++        self.p0.setLocalVelocityFlag(0)
++        self.p0.setSystemGrowsOlderFlag(0)
++        self.p0.factory.setLifespanBase(6.0)
++        self.p0.factory.setLifespanSpread(0.1)
++        self.p0.factory.setMassBase(1.0)
++        self.p0.factory.setMassSpread(0.0)
++        self.p0.factory.setTerminalVelocityBase(400.0)
++        self.p0.factory.setTerminalVelocitySpread(0.0)
++        self.p0.renderer.setAlphaMode(BaseParticleRenderer.PRALPHAOUT)
++        self.p0.renderer.setUserAlpha(0.2)
++        self.p0.renderer.setFromNode(self.card)
++        self.p0.renderer.setColor(Vec4(1.0, 1.0, 0.0, 1.0))
++        self.p0.renderer.setXScaleFlag(1)
++        self.p0.renderer.setYScaleFlag(1)
++        self.p0.renderer.setAnimAngleFlag(1)
++        self.p0.renderer.setInitialXScale(0.001 * self.cardScale)
++        self.p0.renderer.setInitialYScale(0.001 * self.cardScale)
++        self.p0.renderer.setFinalXScale(0.02 * self.cardScale)
++        self.p0.renderer.setFinalYScale(0.02 * self.cardScale)
++        self.p0.renderer.setNonanimatedTheta(0.0)
++        self.p0.renderer.setAlphaBlendMethod(BaseParticleRenderer.PPNOBLEND)
++        self.p0.renderer.setAlphaDisable(0)
++        self.p0.emitter.setEmissionType(BaseParticleEmitter.ETRADIATE)
++        self.p0.emitter.setAmplitude(1.0)
++        self.p0.emitter.setAmplitudeSpread(0.0)
++        self.p0.emitter.setOffsetForce(Vec3(0.0, 0.0, -1.0))
++        self.p0.emitter.setExplicitLaunchVector(Vec3(0.0, 0.0, 0.0))
++        self.p0.emitter.setRadiateOrigin(Point3(0.0, 0.0, 0.0))
++        self.p0.emitter.setRadius(0.25)
++
++    def createTrack(self):
++        self.icon.unstash()
++        self.icon.setColorScale(0.0, 0.0, 0.0, 0.0)
++        self.icon.setScale(1.0)
++        self.icon.reparentTo(render)
++        temp = self.attachNewNode('temp')
++        temp.setPos(0.5, 0.0, -1.25)
++        self.icon.setPos(temp.getPos(render))
++        temp.detachNode()
++        skullFadeIn = self.icon.colorScaleInterval(2.0, Vec4(0.1, 0.1, 0, 0.35), startColorScale=Vec4(0, 0, 0, 0))
++        skullFadeOut = self.icon.colorScaleInterval(1.0, Vec4(0, 0, 0, 0), startColorScale=Vec4(0.1, 0.1, 0, 0.35))
++        skullScaleUp = self.icon.scaleInterval(4.0, 3.0, startScale=0.1, blendType='easeOut')
++        self.startEffect = Sequence(Func(self.p0.setBirthRate, 0.02), Func(self.p0.clearToInitial), Func(self.f.start, self, self.particleDummy), Func(skullFadeIn.start), Func(skullScaleUp.start))
++        self.endEffect = Sequence(Func(self.p0.setBirthRate, 100.0), Sequence(skullFadeOut, Func(skullScaleUp.finish), Func(self.icon.stash)), Wait(6.5), Func(self.cleanUpEffect))
++        self.track = Sequence(self.startEffect, Wait(1.5), self.endEffect)
++
++    def cleanUpEffect(self):
++        self.icon.stash()
++        EffectController.cleanUpEffect(self)
++        if self.pool and self.pool.isUsed(self):
++            self.pool.checkin(self)
++
++    def destroy(self):
++        self.icon.detachNode()
++        self.icon = None
++        EffectController.destroy(self)
++        PooledEffect.destroy(self)
++        return
+\ No newline at end of file
+diff --git a/pirates/effects/FartEffect.py b/pirates/effects/FartEffect.py
+new file mode 100644
+index 0000000..5401629
+--- /dev/null
++++ b/pirates/effects/FartEffect.py
+@@ -0,0 +1,118 @@
++# family server (11-21): the original game's potion effect, ported for the brewed potions (PotionFx).
++from panda3d.core import *
++from panda3d.physics import *
++from direct.interval.IntervalGlobal import *
++from direct.actor import Actor
++from direct.particles import ParticleEffect
++from direct.particles import Particles
++from direct.particles import ForceGroup
++from .PooledEffect import PooledEffect
++from .EffectController import EffectController
++from otp.otpbase import OTPRender
++import random
++
++class FartEffect(PooledEffect, EffectController):
++    cardScale = 128.0
++
++    def __init__(self):
++        PooledEffect.__init__(self)
++        EffectController.__init__(self)
++        model = loader.loadModel('models/effects/particleMaps')
++        self.card = model.find('**/particleGroundFog')
++        if not FartEffect.particleDummy:
++            FartEffect.particleDummy = render.attachNewNode(ModelNode('FartEffectParticleDummy'))
++            FartEffect.particleDummy.setDepthWrite(0)
++            FartEffect.particleDummy.setFogOff()
++            FartEffect.particleDummy.setLightOff()
++            FartEffect.particleDummy.setColorScaleOff()
++            FartEffect.particleDummy.setTwoSided(1)
++        self.icon = loader.loadModel('models/effects/skull')
++        self.icon.setBillboardAxis(0.0)
++        self.icon.setDepthWrite(0)
++        self.icon.setFogOff()
++        self.icon.setLightOff()
++        self.icon.setColorScaleOff()
++        self.icon.reparentTo(self)
++        self.icon.setPos(self, 0, 0, -0.3)
++        self.icon.setBin('fixed', 65)
++        self.icon.hide(OTPRender.ShadowCameraBitmask)
++        self.f = ParticleEffect.ParticleEffect('FartEffect')
++        self.f.reparentTo(self)
++        self.p0 = Particles.Particles('particles-1')
++        self.p0.setFactory('PointParticleFactory')
++        self.p0.setRenderer('SpriteParticleRenderer')
++        self.p0.setEmitter('SphereSurfaceEmitter')
++        self.f.addParticles(self.p0)
++        f0 = ForceGroup.ForceGroup('gravity')
++        force0 = LinearVectorForce(Vec3(0.0, 0.0, 0.5), 1.0, 0)
++        force0.setVectorMasks(1, 1, 1)
++        force0.setActive(1)
++        f0.addForce(force0)
++        force1 = LinearJitterForce(1.0, 0)
++        force1.setVectorMasks(1, 1, 1)
++        force1.setActive(1)
++        f0.addForce(force1)
++        self.f.addForceGroup(f0)
++        self.p0.setPoolSize(128)
++        self.p0.setBirthRate(0.2)
++        self.p0.setLitterSize(5)
++        self.p0.setLitterSpread(0)
++        self.p0.setSystemLifespan(0.0)
++        self.p0.setLocalVelocityFlag(0)
++        self.p0.setSystemGrowsOlderFlag(0)
++        self.p0.factory.setLifespanBase(5.0)
++        self.p0.factory.setLifespanSpread(0.1)
++        self.p0.factory.setMassBase(1.0)
++        self.p0.factory.setMassSpread(0.0)
++        self.p0.factory.setTerminalVelocityBase(400.0)
++        self.p0.factory.setTerminalVelocitySpread(0.0)
++        self.p0.renderer.setAlphaMode(BaseParticleRenderer.PRALPHAOUT)
++        self.p0.renderer.setUserAlpha(0.2)
++        self.p0.renderer.setFromNode(self.card)
++        self.p0.renderer.setColor(Vec4(0.0, 1.0, 0.0, 1.0))
++        self.p0.renderer.setXScaleFlag(1)
++        self.p0.renderer.setYScaleFlag(1)
++        self.p0.renderer.setAnimAngleFlag(1)
++        self.p0.renderer.setInitialXScale(0.001 * self.cardScale)
++        self.p0.renderer.setInitialYScale(0.001 * self.cardScale)
++        self.p0.renderer.setFinalXScale(0.02 * self.cardScale)
++        self.p0.renderer.setFinalYScale(0.02 * self.cardScale)
++        self.p0.renderer.setNonanimatedTheta(0.0)
++        self.p0.renderer.setAlphaBlendMethod(BaseParticleRenderer.PPNOBLEND)
++        self.p0.renderer.setAlphaDisable(0)
++        self.p0.emitter.setEmissionType(BaseParticleEmitter.ETRADIATE)
++        self.p0.emitter.setAmplitude(1.0)
++        self.p0.emitter.setAmplitudeSpread(0.0)
++        self.p0.emitter.setOffsetForce(Vec3(0.0, -1.0, 0.0))
++        self.p0.emitter.setExplicitLaunchVector(Vec3(0.0, 0.0, 0.0))
++        self.p0.emitter.setRadiateOrigin(Point3(0.0, 0.0, 0.0))
++        self.p0.emitter.setRadius(0.25)
++
++    def createTrack(self):
++        self.icon.unstash()
++        self.icon.setColorScale(0.0, 0.0, 0.0, 0.0)
++        self.icon.setScale(1.0)
++        self.icon.reparentTo(render)
++        temp = self.attachNewNode('temp')
++        temp.setPos(0.0, -1.0, 0.5)
++        self.icon.setPos(temp.getPos(render))
++        temp.detachNode()
++        skullFadeIn = self.icon.colorScaleInterval(2.0, Vec4(0.1, 0.1, 0, 0.35), startColorScale=Vec4(0, 0, 0, 0))
++        skullFadeOut = self.icon.colorScaleInterval(0.5, Vec4(0, 0, 0, 0), startColorScale=Vec4(0.1, 0.1, 0, 0.35))
++        skullScaleUp = self.icon.scaleInterval(4.0, 3.0, startScale=0.1, blendType='easeOut')
++        self.startEffect = Sequence(Func(self.p0.setBirthRate, 0.02), Func(self.p0.clearToInitial), Func(self.f.start, self, self.particleDummy), Wait(0.5), Func(skullFadeIn.start), Func(skullScaleUp.start))
++        self.endEffect = Sequence(Func(self.p0.setBirthRate, 100.0), Sequence(skullFadeOut, Func(skullScaleUp.finish), Func(self.icon.stash)), Wait(5.5), Func(self.cleanUpEffect))
++        self.track = Sequence(self.startEffect, Wait(4.0), self.endEffect)
++
++    def cleanUpEffect(self):
++        self.icon.stash()
++        EffectController.cleanUpEffect(self)
++        if self.pool and self.pool.isUsed(self):
++            self.pool.checkin(self)
++
++    def destroy(self):
++        self.icon.detachNode()
++        self.icon = None
++        EffectController.destroy(self)
++        PooledEffect.destroy(self)
++        return
+\ No newline at end of file
+diff --git a/pirates/effects/VomitEffect.py b/pirates/effects/VomitEffect.py
+new file mode 100644
+index 0000000..60d75a8
+--- /dev/null
++++ b/pirates/effects/VomitEffect.py
+@@ -0,0 +1,108 @@
++# family server (11-21): the original game's potion effect, ported for the brewed potions (PotionFx).
++import random
++from direct.interval.IntervalGlobal import *
++from direct.actor import Actor
++from direct.particles import ParticleEffect
++from direct.particles import Particles
++from direct.particles import ForceGroup
++from direct.task import Task
++from direct.task.TaskManagerGlobal import taskMgr
++from panda3d.core import *
++from panda3d.physics import *
++from .PooledEffect import PooledEffect
++from .EffectController import EffectController
++
++class VomitEffect(PooledEffect, EffectController):
++    cardScale = 128.0
++
++    def __init__(self):
++        PooledEffect.__init__(self)
++        EffectController.__init__(self)
++        model = loader.loadModel('models/effects/particleMaps')
++        self.card = loader.loadModel('models/effects/particleMapsPotion').find('**/pir_t_efx_msc_vomit')
++        if not VomitEffect.particleDummy:
++            VomitEffect.particleDummy = render.attachNewNode(ModelNode('VomitEffectParticleDummy'))
++            VomitEffect.particleDummy.setDepthWrite(0)
++            VomitEffect.particleDummy.setFogOff()
++            VomitEffect.particleDummy.setLightOff()
++            VomitEffect.particleDummy.setColorScaleOff()
++            VomitEffect.particleDummy.setTwoSided(1)
++        self.f = ParticleEffect.ParticleEffect('VomitEffect')
++        self.f.reparentTo(self)
++        self.p0 = Particles.Particles('particles-1')
++        self.p0.setFactory('ZSpinParticleFactory')
++        self.p0.setRenderer('SpriteParticleRenderer')
++        self.p0.setEmitter('SphereSurfaceEmitter')
++        self.f.addParticles(self.p0)
++        self.f0 = None
++        self.setParticleOptions()
++        return
++
++    def setParticleOptions(self):
++        if self.f0 != None:
++            self.f.removeForceGroup(self.f0)
++        self.f0 = ForceGroup.ForceGroup('gravity')
++        force0 = LinearVectorForce(Vec3(0.0, 0.0, -50.0), 1.0, 0)
++        force0.setVectorMasks(1, 1, 1)
++        force0.setActive(1)
++        self.f0.addForce(force0)
++        force1 = LinearJitterForce(15.0, 0)
++        force1.setVectorMasks(1, 1, 1)
++        force1.setActive(1)
++        self.f0.addForce(force1)
++        self.f.addForceGroup(self.f0)
++        self.p0.setPoolSize(150)
++        self.p0.setBirthRate(0.05)
++        self.p0.setLitterSize(8)
++        self.p0.setLitterSpread(0)
++        self.p0.setSystemLifespan(0.0)
++        self.p0.setLocalVelocityFlag(0)
++        self.p0.setSystemGrowsOlderFlag(0)
++        self.p0.factory.setLifespanBase(0.4)
++        self.p0.factory.setLifespanSpread(0.05)
++        self.p0.factory.setMassBase(1.0)
++        self.p0.factory.setMassSpread(0.0)
++        self.p0.factory.setTerminalVelocityBase(400.0)
++        self.p0.factory.setTerminalVelocitySpread(0.0)
++        self.p0.factory.setInitialAngle(0.0)
++        self.p0.factory.setInitialAngleSpread(20.0)
++        self.p0.factory.enableAngularVelocity(1)
++        self.p0.factory.setAngularVelocity(0.0)
++        self.p0.factory.setAngularVelocitySpread(0.0)
++        self.p0.renderer.setAlphaMode(BaseParticleRenderer.PRALPHAUSER)
++        self.p0.renderer.setUserAlpha(0.25)
++        self.p0.renderer.setFromNode(self.card)
++        self.p0.renderer.setXScaleFlag(1)
++        self.p0.renderer.setYScaleFlag(1)
++        self.p0.renderer.setAnimAngleFlag(1)
++        self.p0.renderer.setInitialXScale(0.00035 * self.cardScale)
++        self.p0.renderer.setInitialYScale(0.00035 * self.cardScale)
++        self.p0.renderer.setFinalXScale(0.004 * self.cardScale)
++        self.p0.renderer.setFinalYScale(0.004 * self.cardScale)
++        self.p0.renderer.setNonanimatedTheta(0.0)
++        self.p0.renderer.setAlphaBlendMethod(BaseParticleRenderer.PPNOBLEND)
++        self.p0.renderer.setAlphaDisable(0)
++        self.p0.emitter.setEmissionType(BaseParticleEmitter.ETRADIATE)
++        self.p0.emitter.setAmplitude(1.0)
++        self.p0.emitter.setAmplitudeSpread(0.0)
++        self.p0.emitter.setOffsetForce(Vec3(0.0, 0.0, -6.0))
++        self.p0.emitter.setExplicitLaunchVector(Vec3(0.0, 0.0, 0.0))
++        self.p0.emitter.setRadiateOrigin(Point3(0.0, 0.0, 0.0))
++        self.p0.emitter.setRadius(0.125)
++        return
++
++    def createTrack(self):
++        taskName = '%s-OrientEmitterTask' % self.__class__.__name__
++        self.setParticleOptions()
++        self.startEffect = Sequence(Func(self.p0.setBirthRate, 0.02), Func(self.p0.clearToInitial), Func(self.f.start, self, self.particleDummy))
++        self.endEffect = Sequence(Func(self.p0.setBirthRate, 100.0), Wait(1.0), Func(self.cleanUpEffect))
++        self.track = Sequence(self.startEffect, Wait(0.7), self.endEffect)
++
++    def cleanUpEffect(self):
++        EffectController.cleanUpEffect(self)
++        if self.pool and self.pool.isUsed(self):
++            self.pool.checkin(self)
++
++    def destroy(self):
++        EffectController.destroy(self)
++        PooledEffect.destroy(self)
+\ No newline at end of file
+diff --git a/pirates/minigame/DistributedPotionGameAI.py b/pirates/minigame/DistributedPotionGameAI.py
+index b37ebef..8e77c9a 100755
+--- a/pirates/minigame/DistributedPotionGameAI.py
++++ b/pirates/minigame/DistributedPotionGameAI.py
+@@ -4,6 +4,7 @@ from direct.directnotify import DirectNotifyGlobal
+ from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from pirates.minigame import PotionGlobals
+ from pirates.minigame import PotionRecipeData
++from pirates.battle import PotionBuffs
+ 
+ 
+ class DistributedPotionGameAI(DistributedObjectAI):
+@@ -131,6 +132,12 @@ class DistributedPotionGameAI(DistributedObjectAI):
+         gold = PotionGlobals.getPotionGold(recipeId)
+         self.notify.debug('%s completed recipe %d! (%d gold)' % (self.avatarId, recipeId, gold))
+         self.__giveGold(gold)
++        # family server (11-21): he drinks what he brewed: the original game's buff for this potion
++        avatar = self.air.doId2do.get(self.avatarId)
++        try:
++            PotionBuffs.applyPotion(self.air, avatar, recipeId)
++        except Exception:
++            self.notify.warning('potion %d buff for avatar %d failed' % (recipeId, self.avatarId))
+         self.__resetRecipe()
+ 
+     def claimXPBonus(self, bonusLevel):
+diff --git a/pirates/pirate/Biped.py b/pirates/pirate/Biped.py
+index 01e04eb..bbe421b 100644
+--- a/pirates/pirate/Biped.py
++++ b/pirates/pirate/Biped.py
+@@ -175,6 +175,9 @@ fsfCustomAnimList = [
+     'kneel_fromidle',
+     'emote_laugh',
+     'mixing_idle',
++    'barf',
++    'burp',
++    'fart',
+     'repair_bench',
+     'repairfloor_idle',
+     'repairfloor_into',
+@@ -214,7 +217,7 @@ plsCustomAnimList = (('drunk_idle', 'pls_drunk_idle'), ('drunk_into_look', 'pls_
+ stopLookaroundAnimList = [
+     'walk',
+     'run']
+-DefaultAnimList = (('idle', 'idle'), ('idle_centered', 'idle_centered'), ('idle_handhip', 'idle_handhip'), ('idle_flex', 'idle_flex'), ('idle_handhip_from_idle', 'idle_handhip_from_idle'), ('idle_B_shiftWeight', 'idle_B_shiftWeight'), ('idle_sit', 'idle_sit'), ('idle_arm_scratch', 'idle_arm_scratch'), ('idle_butt_scratch', 'idle_butt_scratch'), ('idle_head_scratch', 'idle_head_scratch'), ('idle_head_scratch_side', 'idle_head_scratch_side'), ('idle_sit_alt', 'idle_sit_alt'), ('walk', 'walk'), ('run', 'run'), ('walk_back_diagonal_left', 'walk_back_diagonal_left'), ('walk_back_diagonal_right', 'walk_back_diagonal_right'), ('strafe_left', 'strafe_left'), ('strafe_right', 'strafe_right'), ('run_diagonal_left', 'run_diagonal_left'), ('run_diagonal_right', 'run_diagonal_right'), ('run_with_weapon', 'run_with_weapon'), ('jump', 'jump'), ('jump_idle', 'jump_idle'), ('fall_ground', 'fall_ground'), ('coin_flip_idle', 'coin_flip_idle'), ('coin_flip_old_idle', 'coin_flip_old_idle'), ('coin_flip_look_idle', 'coin_flip_look_idle'), ('chant_a_idle', 'chant_a_idle'), ('chant_b_idle', 'chant_b_idle'), ('summon_idle', 'summon_idle'), ('map_head_look_left_idle', 'map_head_look_left_idle'), ('map_head_into_look_left', 'map_head_into_look_left'), ('map_head_outof_look_left', 'map_head_outof_look_left'), ('map_look_arm_left', 'map_look_arm_left'), ('map_look_arm_right', 'map_look_arm_right'), ('map_look_pant_right', 'map_look_pant_right'), ('map_look_boot_left', 'map_look_boot_left'), ('map_look_boot_right', 'map_look_boot_right'), ('kneel', 'kneel'), ('kraken_struggle_idle', 'kraken_struggle_idle'), ('kraken_fight_idle', 'kraken_fight_idle'), ('wheel', 'wheel'), ('semi_conscious_loop', 'semi_conscious_loop'), ('semi_conscious_standup', 'semi_conscious_standup'), ('drink_potion', 'drink_potion'), ('emote_anger', 'emote_anger'), ('emote_celebrate', 'emote_celebrate'), ('emote_coin_flip', 'emote_coin_flip'), ('emote_clap', 'emote_clap'), ('emote_dance_jig', 'emote_dance_jig'), ('emote_fear', 'emote_fear'), ('emote_flex', 'emote_flex'), ('emote_laugh', 'emote_laugh'), ('emote_no', 'emote_no'), ('emote_sad', 'emote_sad'), ('emote_smile', 'emote_smile'), ('emote_thriller', 'emote_thriller'), ('emote_yawn', 'emote_yawn'), ('emote_wave', 'emote_wave'), ('emote_wink', 'emote_wink'), ('emote_yes', 'emote_yes'), ('sweep', 'sweep'), ('sweep_idle', 'sweep_idle'), ('sweep_look_idle', 'sweep_look_idle'), ('sweep_into_look', 'sweep_into_look'), ('sweep_outof_look', 'sweep_outof_look'), ('axe_chop_idle', 'axe_chop_idle'), ('axe_chop_look_idle', 'axe_chop_look_idle'), ('bar_wipe', 'bar_wipe'), ('bar_wipe_into_look', 'bar_wipe_into_look'), ('bar_wipe_look_idle', 'bar_wipe_look_idle'), ('bar_wipe_outof_look', 'bar_wipe_outof_look'), ('bar_talk01_idle', 'bar_talk01_idle'), ('bar_talk01_into_look', 'bar_talk01_into_look'), ('bar_talk01_look_idle', 'bar_talk01_look_idle'), ('bar_talk01_outof_look', 'bar_talk01_outof_look'), ('bar_talk02_idle', 'bar_talk02_idle'), ('bar_talk02_into_look', 'bar_talk02_into_look'), ('bar_talk02_look_idle', 'bar_talk02_look_idle'), ('bar_talk02_outof_look', 'bar_talk02_outof_look'), ('bar_talk03_idle', 'bar_talk03_idle'), ('bar_write_idle', 'bar_write_idle'), ('bar_write_into_look', 'bar_write_into_look'), ('bar_write_look_idle', 'bar_write_look_idle'), ('bar_write_outof_look', 'bar_write_outof_look'), ('barrel_hide_idle', 'barrel_hide_idle'), ('barrel_hide_into_look', 'barrel_hide_into_look'), ('barrel_hide_look_idle', 'barrel_hide_look_idle'), ('barrel_hide_outof_look', 'barrel_hide_outof_look'), ('lute_idle', 'lute_idle'), ('lute_into_look', 'lute_into_look'), ('lute_look_idle', 'lute_look_idle'), ('lute_outof_look', 'lute_outof_look'), ('loom_idle', 'loom_idle'), ('loom_into_look', 'loom_into_look'), ('loom_look_idle', 'loom_look_idle'), ('loom_outof_look', 'loom_outof_look'), ('primp_idle', 'primp_idle'), ('primp_into_look', 'primp_into_look'), ('primp_look_idle', 'primp_look_idle'), ('primp_outof_look', 'primp_outof_look'), ('sit_hanginglegs_outof_look', 'sit_hanginglegs_outof_look'), ('sit_hanginglegs_look_idle', 'sit_hanginglegs_look_idle'), ('sit_hanginglegs_into_look', 'sit_hanginglegs_into_look'), ('sit_hanginglegs_idle', 'sit_hanginglegs_idle'), ('sit_sleep_outof_look', 'sit_sleep_outof_look'), ('sit_sleep_look_idle', 'sit_sleep_look_idle'), ('sit_sleep_into_look', 'sit_sleep_into_look'), ('sit_sleep_idle', 'sit_sleep_idle'), ('sleep_outof_look', 'sleep_outof_look'), ('sleep_into_look', 'sleep_into_look'), ('sleep_idle', 'sleep_idle'), ('sleep_sick_idle', 'sleep_sick_idle'), ('sleep_sick_into_look', 'sleep_sick_into_look'), ('sleep_sick_look_idle', 'sleep_sick_look_idle'), ('sleep_sick_outof_look', 'sleep_sick_outof_look'), ('stir_idle', 'stir_idle'), ('stir_into_look', 'stir_into_look'), ('stir_outof_look', 'stir_outof_look'), ('stir_look_idle', 'stir_look_idle'), ('sow_idle', 'sow_idle'), ('sow_into_look', 'sow_into_look'), ('sow_look_idle', 'sow_look_idle'), ('sow_outof_look', 'sow_outof_look'), ('tatoo_idle', 'tatoo_idle'), ('tatoo_into_look', 'tatoo_into_look'), ('tatoo_look_idle', 'tatoo_look_idle'), ('tatoo_outof_look', 'tatoo_outof_look'), ('tatoo_receive_idle', 'tatoo_receive_idle'), ('tatoo_receive_into_look', 'tatoo_receive_into_look'), ('tatoo_receive_look_idle', 'tatoo_receive_look_idle'), ('tatoo_receive_outof_look', 'tatoo_receive_outof_look'), ('doctor_work_idle', 'doctor_work_idle'), ('doctor_work_into_look', 'doctor_work_into_look'), ('doctor_work_look_idle', 'doctor_work_look_idle'), ('doctor_work_outof_look', 'doctor_work_outof_look'), ('patient_work_idle', 'patient_work_idle'), ('crazy_idle', 'crazy_idle'), ('crazy_look_idle', 'crazy_look_idle'), ('flute_idle', 'flute_idle'), ('flute_look_idle', 'flute_look_idle'), ('handdig_idle', 'handdig_idle'), ('searching_idle', 'searching_idle'), ('moaning_idle', 'moaning_idle'), ('swim', 'swim'), ('swim_left', 'swim_left'), ('swim_right', 'swim_right'), ('swim_left_diagonal', 'swim_left_diagonal'), ('swim_right_diagonal', 'swim_right_diagonal'), ('swim_back', 'swim_back'), ('swim_back_diagonal_left', 'swim_back_diagonal_left'), ('swim_back_diagonal_right', 'swim_back_diagonal_right'), ('tread_water', 'tread_water'), ('tread_water_into_teleport', 'tread_water_into_teleport'), ('swim_into_tread_water', 'swim_into_tread_water'), ('mixing_idle', 'mixing_idle'), ('repair_bench', 'repair_bench'), ('repairfloor_idle', 'repairfloor_idle'), ('repairfloor_into', 'repairfloor_into'), ('repairfloor_outof', 'repairfloor_outof'), ('search_med', 'search_med'), ('search_low', 'search_low'), ('bomb_throw', 'bomb_throw'), ('bomb_draw', 'bomb_draw'), ('bomb_hurt', 'bomb_hurt'), ('bomb_idle', 'bomb_idle'), ('bomb_charge', 'bomb_charge'), ('bomb_charge_loop', 'bomb_charge_loop'), ('bomb_charge_throw', 'bomb_charge_throw'), ('bigbomb_throw', 'bigbomb_throw'), ('bigbomb_idle', 'bigbomb_idle'), ('bigbomb_draw', 'bigbomb_draw'), ('bigbomb_walk', 'bigbomb_walk'), ('bigbomb_walk_back', 'bigbomb_walk_back'), ('bigbomb_walk_back_left', 'bigbomb_walk_back_left'), ('bigbomb_walk_back_right', 'bigbomb_walk_back_right'), ('bigbomb_walk_left', 'bigbomb_walk_left'), ('bigbomb_walk_left_diagonal', 'bigbomb_walk_left_diagonal'), ('bigbomb_walk_right', 'bigbomb_walk_right'), ('bigbomb_walk_right_diagonal', 'bigbomb_walk_right_diagonal'), ('bigbomb_charge', 'bigbomb_charge'), ('bigbomb_charge_loop', 'bigbomb_charge_loop'), ('bigbomb_charge_throw', 'bigbomb_charge_throw'), ('kneel_fromidle', 'kneel_fromidle'), ('wheel_idle', 'wheel_idle'), ('boxing_fromidle', 'boxing_fromidle'), ('boxing_hit_head_right', 'boxing_hit_head_right'), ('boxing_idle', 'boxing_idle'), ('boxing_idle_alt', 'boxing_idle_alt'), ('boxing_kick', 'boxing_kick'), ('boxing_punch', 'boxing_punch'), ('boxing_haymaker', 'boxing_haymaker'), ('fishing_idle', 'fishing_idle'), ('fishing_pole_idle', 'fishing_pole_idle'), ('fishing_pole_cast', 'fishing_pole_cast'), ('fishing_drawpole', 'fishing_drawpole'), ('gun_reload', 'gun_reload'), ('gun_draw', 'gun_draw'), ('gun_hurt', 'gun_hurt'), ('gun_fire', 'gun_fire'), ('gun_pointedup_idle', 'gun_pointedup_idle'), ('gun_putaway', 'gun_putaway'), ('gun_aim_idle', 'gun_aim_idle'), ('blacksmith_work_idle', 'blacksmith_work_idle'), ('blacksmith_work_look_idle', 'blacksmith_work_look_idle'), ('blacksmith_work_outof_look', 'blacksmith_work_outof_look'), ('blacksmith_work_into_look', 'blacksmith_work_into_look'), ('shovel', 'shovel'), ('shovel_idle', 'shovel_idle'), ('shovel_idle_into_dig', 'shovel_idle_into_dig'), ('fsh_idle', 'fsh_idle'), ('fsh_smallCast', 'fsh_smallCast'), ('fsh_bigCast', 'fsh_bigCast'), ('fsh_smallSuccess', 'fsh_smallSuccess'), ('fsh_bigSuccess', 'fsh_bigSuccess'), ('chest_idle', 'chest_idle'), ('chest_strafe_left', 'chest_strafe_left'), ('chest_strafe_right', 'chest_strafe_right'), ('chest_walk', 'chest_walk'), ('chest_putdown', 'chest_putdown'), ('chest_kneel_to_steal', 'chest_kneel_to_steal'), ('chest_steal', 'chest_steal'), ('rigging_climb', 'rigging_climb'), ('board', 'board'), ('rope_grab', 'rope_grab'), ('rope_grab_from_idle', 'rope_grab_from_idle'), ('rope_board', 'rope_board'), ('rope_dismount', 'rope_dismount'), ('swing_aboard', 'swing_aboard'), ('intro', 'crawl_up_b'), ('jail_dropinto', 'jail_dropinto'), ('jail_idle', 'jail_idle'), ('jail_standup', 'jail_standup'), ('sand_in_eyes', 'sand_in_eyes'), ('sand_in_eyes_holdweapon_noswing', 'sand_in_eyes_holdweapon_noswing'), ('sand_in_eyes_wWeapon', 'sand_in_eyes_wWeapon'), ('stock_idle', 'stock_idle'), ('stock_sleep', 'stock_sleep'), ('stock_sleep_to_idle', 'stock_sleep_to_idle'), ('death', 'death'), ('death2', 'death2'), ('death3', 'death3'), ('death4', 'death4'), ('bayonet_drill', 'bayonet_drill'), ('bayonet_attack_idle', 'bayonet_attack_idle'), ('bayonet_attack_walk', 'bayonet_attack_walk'), ('bayonet_attackA', 'bayonet_attackA'), ('bayonet_attackB', 'bayonet_attackB'), ('bayonet_attackC', 'bayonet_attackC'), ('bayonet_idle', 'bayonet_idle'), ('bayonet_run', 'bayonet_run'), ('bayonet_idle_to_fight_idle', 'bayonet_idle_to_fight_idle'), ('bayonet_walk', 'bayonet_walk'), ('bayonet_attack_idle', 'bayonet_attack_idle'), ('sword_draw', 'sword_draw'), ('sword_idle', 'sword_idle'), ('sword_putaway', 'sword_putaway'), ('sword_slash', 'sword_slash'), ('sword_thrust', 'sword_thrust'), ('sword_hit', 'sword_hit'), ('sword_cleave', 'sword_cleave'), ('sword_lunge', 'sword_lunge'), ('sword_comboA', 'sword_comboA'), ('sword_roll_thrust', 'sword_roll_thrust'), ('cutlass_attention', 'cutlass_attention'), ('cutlass_combo', 'cutlass_combo'), ('cutlass_hurt', 'cutlass_hurt'), ('cutlass_taunt', 'cutlass_taunt'), ('cutlass_sweep', 'cutlass_sweep'), ('cutlass_bladestorm', 'cutlass_bladestorm'), ('cutlass_headbutt', 'cutlass_headbutt'), ('cutlass_walk_navy', 'cutlass_walk_navy'), ('dagger_combo', 'dagger_combo'), ('dagger_asp', 'dagger_asp'), ('dagger_hurt', 'dagger_hurt'), ('dagger_throw_sand', 'dagger_throw_sand'), ('dagger_vipers_nest', 'dagger_vipers_nest'), ('bomb_receive', 'bomb_receive'), ('dagger_receive', 'dagger_receive'), ('doll_receive', 'doll_receive'), ('staff_receive', 'staff_receive'), ('knife_throw', 'knife_throw'), ('voodoo_draw', 'voodoo_draw'), ('voodoo_doll_hurt', 'voodoo_doll_hurt'), ('voodoo_idle', 'voodoo_idle'), ('voodoo_tune', 'voodoo_tune'), ('voodoo_strafe_left', 'voodoo_strafe_left'), ('voodoo_strafe_right', 'voodoo_strafe_right'), ('voodoo_swarm', 'voodoo_swarm'), ('voodoo_walk', 'voodoo_walk'), ('voodoo_doll_poke', 'voodoo_doll_poke'), ('wand_cast_fire', 'wand_cast_fire'), ('wand_cast_idle', 'wand_cast_idle'), ('wand_cast_start', 'wand_cast_start'), ('wand_hurt', 'wand_hurt'), ('wand_idle', 'wand_idle'), ('turn_left', 'turn_left'), ('turn_right', 'turn_right'), ('spin_left', 'spin_left'), ('spin_right', 'spin_right'), ('attention', 'attention'), ('march', 'march'), ('left_face', 'left_face'), ('0_tut_act_1_1_1_jail', '0_tut_act_1_1_1_jail'), ('0_tut_act_1_1_2_jail', '0_tut_act_1_1_2_jail'), ('tut_1_1_5_a_idle_dan', 'tut_1_1_5_a_idle_dan'), ('tut_1_1_5_b_dan', 'tut_1_1_5_b_dan'), ('1_tut_act_1_1_5_a_dan', '1_tut_act_1_1_5_a_dan'), ('1_tut_act_1_1_5_c_dan', '1_tut_act_1_1_5_c_dan'), ('0_tut_act_1_2_dock', '0_tut_act_1_2_dock'), ('1_tut_act_1_2_dock', '1_tut_act_1_2_dock'), ('0_tut_act_1_2_b_dock', '0_tut_act_1_2_b_dock'), ('1_tut_act_1_2_b_dock', '1_tut_act_1_2_b_dock'), ('0_tut_act_1_3_jr_a', '0_tut_act_1_3_jr_a'), ('0_tut_act_1_3_jr_b', '0_tut_act_1_3_jr_b'), ('1_tut_act_1_3_jr_a', '1_tut_act_1_3_jr_a'), ('1_tut_act_1_3_jr_b', '1_tut_act_1_3_jr_b'), ('2_tut_act_1_3_jr_a', '2_tut_act_1_3_jr_a'), ('2_tut_act_1_3_jr_b', '2_tut_act_1_3_jr_b'), ('3_tut_act_1_3_jr_a', '3_tut_act_1_3_jr_a'), ('3_tut_act_1_3_jr_b', '3_tut_act_1_3_jr_b'), ('0_tut_act_2_1_wt', '0_tut_act_2_1_wt'), ('0_tut_act_2_1_b_wt', '0_tut_act_2_1_b_wt'), ('0_tut_act_2_2_td', '0_tut_act_2_2_td'), ('1_tut_act_2_2_td', '1_tut_act_2_2_td'), ('2_tut_act_2_2_td', '2_tut_act_2_2_td'), ('3_tut_act_2_2_td', '3_tut_act_2_2_td'), ('4_tut_act_2_2_td', '4_tut_act_2_2_td'), ('5_tut_act_2_2_td', '5_tut_act_2_2_td'), ('0_tut_act_2_3_es', '0_tut_act_2_3_es'), ('0_tut_act_2_4_cb_a', '0_tut_act_2_4_cb_a'), ('0_tut_act_2_4_cb_b', '0_tut_act_2_4_cb_b'), ('0_tut_act_2_4_cb_c', '0_tut_act_2_4_cb_c'), ('0_tut_act_2_5_js', '0_tut_act_2_5_js'), ('1_tut_act_2_5_js', '1_tut_act_2_5_js'), ('1_tut_act_3_1_bp', '1_tut_act_3_1_bp'), ('2_tut_act_3_1_bp', '2_tut_act_3_1_bp'), ('3_tut_act_3_1_bp', '3_tut_act_3_1_bp'), ('4_tut_act_3_1_bp', '4_tut_act_3_1_bp'), ('0_tut_act_3_2_js', '0_tut_act_3_2_js'), ('1_tut_act_3_2_js', '1_tut_act_3_2_js'), ('sit', 'sit'), ('sit_idle', 'sit_idle'), ('deal_idle', 'deal_idle'), ('deal', 'deal'), ('deal_left', 'deal_left'), ('deal_right', 'deal_right'), ('into_deal', 'into_deal'), ('cards_bad_tell', 'cards_bad_tell'), ('cards_bet', 'cards_bet'), ('cards_cheat', 'cards_cheat'), ('cards_check', 'cards_check'), ('cards_good_tell', 'cards_good_tell'), ('cards_hide', 'cards_hide'), ('cards_hide_hit', 'cards_hide_hit'), ('cards_hide_idle', 'cards_hide_idle'), ('cards_pick_up', 'cards_pick_up'), ('cards_pick_up_idle', 'cards_pick_up_idle'), ('cards_set_down', 'cards_set_down'), ('cards_set_down_lose', 'cards_set_down_lose'), ('cards_set_down_win', 'cards_set_down_win'), ('cards_set_down_win_show', 'cards_set_down_win_show'), ('cards_blackjack_hit', 'cards_blackjack_hit'), ('cards_blackjack_stay', 'cards_blackjack_stay'), ('kick_door', 'kick_door'), ('kick_door_loop', 'kick_door_loop'), ('teleport', 'teleport'), ('tentacle_squeeze', 'tentacle_squeeze'), ('tentacle_idle', 'tentacle_idle'), ('screenshot_pose', 'screenshot_pose'), ('friend_pose', 'friend_pose'), ('foil_coup', 'foil_coup'), ('foil_hack', 'foil_hack'), ('foil_idle', 'foil_idle'), ('foil_slash', 'foil_slash'), ('foil_thrust', 'foil_thrust'), ('foil_kick', 'foil_kick'), ('sword_advance', 'sword_advance'), ('dualcutlass_comboA', 'dualcutlass_comboA'), ('dualcutlass_comboB', 'dualcutlass_comboB'), ('dualcutlass_draw', 'dualcutlass_draw'), ('dualcutlass_idle', 'dualcutlass_idle'), ('dualcutlass_hurt', 'dualcutlass_hurt'), ('dualcutlass_walk', 'dualcutlass_walk'))
++DefaultAnimList = (('idle', 'idle'), ('idle_centered', 'idle_centered'), ('idle_handhip', 'idle_handhip'), ('idle_flex', 'idle_flex'), ('idle_handhip_from_idle', 'idle_handhip_from_idle'), ('idle_B_shiftWeight', 'idle_B_shiftWeight'), ('idle_sit', 'idle_sit'), ('idle_arm_scratch', 'idle_arm_scratch'), ('idle_butt_scratch', 'idle_butt_scratch'), ('idle_head_scratch', 'idle_head_scratch'), ('idle_head_scratch_side', 'idle_head_scratch_side'), ('idle_sit_alt', 'idle_sit_alt'), ('walk', 'walk'), ('run', 'run'), ('walk_back_diagonal_left', 'walk_back_diagonal_left'), ('walk_back_diagonal_right', 'walk_back_diagonal_right'), ('strafe_left', 'strafe_left'), ('strafe_right', 'strafe_right'), ('run_diagonal_left', 'run_diagonal_left'), ('run_diagonal_right', 'run_diagonal_right'), ('run_with_weapon', 'run_with_weapon'), ('jump', 'jump'), ('jump_idle', 'jump_idle'), ('fall_ground', 'fall_ground'), ('coin_flip_idle', 'coin_flip_idle'), ('coin_flip_old_idle', 'coin_flip_old_idle'), ('coin_flip_look_idle', 'coin_flip_look_idle'), ('chant_a_idle', 'chant_a_idle'), ('chant_b_idle', 'chant_b_idle'), ('summon_idle', 'summon_idle'), ('map_head_look_left_idle', 'map_head_look_left_idle'), ('map_head_into_look_left', 'map_head_into_look_left'), ('map_head_outof_look_left', 'map_head_outof_look_left'), ('map_look_arm_left', 'map_look_arm_left'), ('map_look_arm_right', 'map_look_arm_right'), ('map_look_pant_right', 'map_look_pant_right'), ('map_look_boot_left', 'map_look_boot_left'), ('map_look_boot_right', 'map_look_boot_right'), ('kneel', 'kneel'), ('kraken_struggle_idle', 'kraken_struggle_idle'), ('kraken_fight_idle', 'kraken_fight_idle'), ('wheel', 'wheel'), ('semi_conscious_loop', 'semi_conscious_loop'), ('semi_conscious_standup', 'semi_conscious_standup'), ('drink_potion', 'drink_potion'), ('emote_anger', 'emote_anger'), ('emote_celebrate', 'emote_celebrate'), ('emote_coin_flip', 'emote_coin_flip'), ('emote_clap', 'emote_clap'), ('emote_dance_jig', 'emote_dance_jig'), ('emote_fear', 'emote_fear'), ('emote_flex', 'emote_flex'), ('emote_laugh', 'emote_laugh'), ('emote_no', 'emote_no'), ('emote_sad', 'emote_sad'), ('emote_smile', 'emote_smile'), ('emote_thriller', 'emote_thriller'), ('emote_yawn', 'emote_yawn'), ('emote_wave', 'emote_wave'), ('emote_wink', 'emote_wink'), ('emote_yes', 'emote_yes'), ('sweep', 'sweep'), ('sweep_idle', 'sweep_idle'), ('sweep_look_idle', 'sweep_look_idle'), ('sweep_into_look', 'sweep_into_look'), ('sweep_outof_look', 'sweep_outof_look'), ('axe_chop_idle', 'axe_chop_idle'), ('axe_chop_look_idle', 'axe_chop_look_idle'), ('bar_wipe', 'bar_wipe'), ('bar_wipe_into_look', 'bar_wipe_into_look'), ('bar_wipe_look_idle', 'bar_wipe_look_idle'), ('bar_wipe_outof_look', 'bar_wipe_outof_look'), ('bar_talk01_idle', 'bar_talk01_idle'), ('bar_talk01_into_look', 'bar_talk01_into_look'), ('bar_talk01_look_idle', 'bar_talk01_look_idle'), ('bar_talk01_outof_look', 'bar_talk01_outof_look'), ('bar_talk02_idle', 'bar_talk02_idle'), ('bar_talk02_into_look', 'bar_talk02_into_look'), ('bar_talk02_look_idle', 'bar_talk02_look_idle'), ('bar_talk02_outof_look', 'bar_talk02_outof_look'), ('bar_talk03_idle', 'bar_talk03_idle'), ('bar_write_idle', 'bar_write_idle'), ('bar_write_into_look', 'bar_write_into_look'), ('bar_write_look_idle', 'bar_write_look_idle'), ('bar_write_outof_look', 'bar_write_outof_look'), ('barrel_hide_idle', 'barrel_hide_idle'), ('barrel_hide_into_look', 'barrel_hide_into_look'), ('barrel_hide_look_idle', 'barrel_hide_look_idle'), ('barrel_hide_outof_look', 'barrel_hide_outof_look'), ('lute_idle', 'lute_idle'), ('lute_into_look', 'lute_into_look'), ('lute_look_idle', 'lute_look_idle'), ('lute_outof_look', 'lute_outof_look'), ('loom_idle', 'loom_idle'), ('loom_into_look', 'loom_into_look'), ('loom_look_idle', 'loom_look_idle'), ('loom_outof_look', 'loom_outof_look'), ('primp_idle', 'primp_idle'), ('primp_into_look', 'primp_into_look'), ('primp_look_idle', 'primp_look_idle'), ('primp_outof_look', 'primp_outof_look'), ('sit_hanginglegs_outof_look', 'sit_hanginglegs_outof_look'), ('sit_hanginglegs_look_idle', 'sit_hanginglegs_look_idle'), ('sit_hanginglegs_into_look', 'sit_hanginglegs_into_look'), ('sit_hanginglegs_idle', 'sit_hanginglegs_idle'), ('sit_sleep_outof_look', 'sit_sleep_outof_look'), ('sit_sleep_look_idle', 'sit_sleep_look_idle'), ('sit_sleep_into_look', 'sit_sleep_into_look'), ('sit_sleep_idle', 'sit_sleep_idle'), ('sleep_outof_look', 'sleep_outof_look'), ('sleep_into_look', 'sleep_into_look'), ('sleep_idle', 'sleep_idle'), ('sleep_sick_idle', 'sleep_sick_idle'), ('sleep_sick_into_look', 'sleep_sick_into_look'), ('sleep_sick_look_idle', 'sleep_sick_look_idle'), ('sleep_sick_outof_look', 'sleep_sick_outof_look'), ('stir_idle', 'stir_idle'), ('stir_into_look', 'stir_into_look'), ('stir_outof_look', 'stir_outof_look'), ('stir_look_idle', 'stir_look_idle'), ('sow_idle', 'sow_idle'), ('sow_into_look', 'sow_into_look'), ('sow_look_idle', 'sow_look_idle'), ('sow_outof_look', 'sow_outof_look'), ('tatoo_idle', 'tatoo_idle'), ('tatoo_into_look', 'tatoo_into_look'), ('tatoo_look_idle', 'tatoo_look_idle'), ('tatoo_outof_look', 'tatoo_outof_look'), ('tatoo_receive_idle', 'tatoo_receive_idle'), ('tatoo_receive_into_look', 'tatoo_receive_into_look'), ('tatoo_receive_look_idle', 'tatoo_receive_look_idle'), ('tatoo_receive_outof_look', 'tatoo_receive_outof_look'), ('doctor_work_idle', 'doctor_work_idle'), ('doctor_work_into_look', 'doctor_work_into_look'), ('doctor_work_look_idle', 'doctor_work_look_idle'), ('doctor_work_outof_look', 'doctor_work_outof_look'), ('patient_work_idle', 'patient_work_idle'), ('crazy_idle', 'crazy_idle'), ('crazy_look_idle', 'crazy_look_idle'), ('flute_idle', 'flute_idle'), ('flute_look_idle', 'flute_look_idle'), ('handdig_idle', 'handdig_idle'), ('searching_idle', 'searching_idle'), ('moaning_idle', 'moaning_idle'), ('swim', 'swim'), ('swim_left', 'swim_left'), ('swim_right', 'swim_right'), ('swim_left_diagonal', 'swim_left_diagonal'), ('swim_right_diagonal', 'swim_right_diagonal'), ('swim_back', 'swim_back'), ('swim_back_diagonal_left', 'swim_back_diagonal_left'), ('swim_back_diagonal_right', 'swim_back_diagonal_right'), ('tread_water', 'tread_water'), ('tread_water_into_teleport', 'tread_water_into_teleport'), ('swim_into_tread_water', 'swim_into_tread_water'), ('mixing_idle', 'mixing_idle'), ('barf', 'barf'), ('burp', 'burp'), ('fart', 'fart'), ('repair_bench', 'repair_bench'), ('repairfloor_idle', 'repairfloor_idle'), ('repairfloor_into', 'repairfloor_into'), ('repairfloor_outof', 'repairfloor_outof'), ('search_med', 'search_med'), ('search_low', 'search_low'), ('bomb_throw', 'bomb_throw'), ('bomb_draw', 'bomb_draw'), ('bomb_hurt', 'bomb_hurt'), ('bomb_idle', 'bomb_idle'), ('bomb_charge', 'bomb_charge'), ('bomb_charge_loop', 'bomb_charge_loop'), ('bomb_charge_throw', 'bomb_charge_throw'), ('bigbomb_throw', 'bigbomb_throw'), ('bigbomb_idle', 'bigbomb_idle'), ('bigbomb_draw', 'bigbomb_draw'), ('bigbomb_walk', 'bigbomb_walk'), ('bigbomb_walk_back', 'bigbomb_walk_back'), ('bigbomb_walk_back_left', 'bigbomb_walk_back_left'), ('bigbomb_walk_back_right', 'bigbomb_walk_back_right'), ('bigbomb_walk_left', 'bigbomb_walk_left'), ('bigbomb_walk_left_diagonal', 'bigbomb_walk_left_diagonal'), ('bigbomb_walk_right', 'bigbomb_walk_right'), ('bigbomb_walk_right_diagonal', 'bigbomb_walk_right_diagonal'), ('bigbomb_charge', 'bigbomb_charge'), ('bigbomb_charge_loop', 'bigbomb_charge_loop'), ('bigbomb_charge_throw', 'bigbomb_charge_throw'), ('kneel_fromidle', 'kneel_fromidle'), ('wheel_idle', 'wheel_idle'), ('boxing_fromidle', 'boxing_fromidle'), ('boxing_hit_head_right', 'boxing_hit_head_right'), ('boxing_idle', 'boxing_idle'), ('boxing_idle_alt', 'boxing_idle_alt'), ('boxing_kick', 'boxing_kick'), ('boxing_punch', 'boxing_punch'), ('boxing_haymaker', 'boxing_haymaker'), ('fishing_idle', 'fishing_idle'), ('fishing_pole_idle', 'fishing_pole_idle'), ('fishing_pole_cast', 'fishing_pole_cast'), ('fishing_drawpole', 'fishing_drawpole'), ('gun_reload', 'gun_reload'), ('gun_draw', 'gun_draw'), ('gun_hurt', 'gun_hurt'), ('gun_fire', 'gun_fire'), ('gun_pointedup_idle', 'gun_pointedup_idle'), ('gun_putaway', 'gun_putaway'), ('gun_aim_idle', 'gun_aim_idle'), ('blacksmith_work_idle', 'blacksmith_work_idle'), ('blacksmith_work_look_idle', 'blacksmith_work_look_idle'), ('blacksmith_work_outof_look', 'blacksmith_work_outof_look'), ('blacksmith_work_into_look', 'blacksmith_work_into_look'), ('shovel', 'shovel'), ('shovel_idle', 'shovel_idle'), ('shovel_idle_into_dig', 'shovel_idle_into_dig'), ('fsh_idle', 'fsh_idle'), ('fsh_smallCast', 'fsh_smallCast'), ('fsh_bigCast', 'fsh_bigCast'), ('fsh_smallSuccess', 'fsh_smallSuccess'), ('fsh_bigSuccess', 'fsh_bigSuccess'), ('chest_idle', 'chest_idle'), ('chest_strafe_left', 'chest_strafe_left'), ('chest_strafe_right', 'chest_strafe_right'), ('chest_walk', 'chest_walk'), ('chest_putdown', 'chest_putdown'), ('chest_kneel_to_steal', 'chest_kneel_to_steal'), ('chest_steal', 'chest_steal'), ('rigging_climb', 'rigging_climb'), ('board', 'board'), ('rope_grab', 'rope_grab'), ('rope_grab_from_idle', 'rope_grab_from_idle'), ('rope_board', 'rope_board'), ('rope_dismount', 'rope_dismount'), ('swing_aboard', 'swing_aboard'), ('intro', 'crawl_up_b'), ('jail_dropinto', 'jail_dropinto'), ('jail_idle', 'jail_idle'), ('jail_standup', 'jail_standup'), ('sand_in_eyes', 'sand_in_eyes'), ('sand_in_eyes_holdweapon_noswing', 'sand_in_eyes_holdweapon_noswing'), ('sand_in_eyes_wWeapon', 'sand_in_eyes_wWeapon'), ('stock_idle', 'stock_idle'), ('stock_sleep', 'stock_sleep'), ('stock_sleep_to_idle', 'stock_sleep_to_idle'), ('death', 'death'), ('death2', 'death2'), ('death3', 'death3'), ('death4', 'death4'), ('bayonet_drill', 'bayonet_drill'), ('bayonet_attack_idle', 'bayonet_attack_idle'), ('bayonet_attack_walk', 'bayonet_attack_walk'), ('bayonet_attackA', 'bayonet_attackA'), ('bayonet_attackB', 'bayonet_attackB'), ('bayonet_attackC', 'bayonet_attackC'), ('bayonet_idle', 'bayonet_idle'), ('bayonet_run', 'bayonet_run'), ('bayonet_idle_to_fight_idle', 'bayonet_idle_to_fight_idle'), ('bayonet_walk', 'bayonet_walk'), ('bayonet_attack_idle', 'bayonet_attack_idle'), ('sword_draw', 'sword_draw'), ('sword_idle', 'sword_idle'), ('sword_putaway', 'sword_putaway'), ('sword_slash', 'sword_slash'), ('sword_thrust', 'sword_thrust'), ('sword_hit', 'sword_hit'), ('sword_cleave', 'sword_cleave'), ('sword_lunge', 'sword_lunge'), ('sword_comboA', 'sword_comboA'), ('sword_roll_thrust', 'sword_roll_thrust'), ('cutlass_attention', 'cutlass_attention'), ('cutlass_combo', 'cutlass_combo'), ('cutlass_hurt', 'cutlass_hurt'), ('cutlass_taunt', 'cutlass_taunt'), ('cutlass_sweep', 'cutlass_sweep'), ('cutlass_bladestorm', 'cutlass_bladestorm'), ('cutlass_headbutt', 'cutlass_headbutt'), ('cutlass_walk_navy', 'cutlass_walk_navy'), ('dagger_combo', 'dagger_combo'), ('dagger_asp', 'dagger_asp'), ('dagger_hurt', 'dagger_hurt'), ('dagger_throw_sand', 'dagger_throw_sand'), ('dagger_vipers_nest', 'dagger_vipers_nest'), ('bomb_receive', 'bomb_receive'), ('dagger_receive', 'dagger_receive'), ('doll_receive', 'doll_receive'), ('staff_receive', 'staff_receive'), ('knife_throw', 'knife_throw'), ('voodoo_draw', 'voodoo_draw'), ('voodoo_doll_hurt', 'voodoo_doll_hurt'), ('voodoo_idle', 'voodoo_idle'), ('voodoo_tune', 'voodoo_tune'), ('voodoo_strafe_left', 'voodoo_strafe_left'), ('voodoo_strafe_right', 'voodoo_strafe_right'), ('voodoo_swarm', 'voodoo_swarm'), ('voodoo_walk', 'voodoo_walk'), ('voodoo_doll_poke', 'voodoo_doll_poke'), ('wand_cast_fire', 'wand_cast_fire'), ('wand_cast_idle', 'wand_cast_idle'), ('wand_cast_start', 'wand_cast_start'), ('wand_hurt', 'wand_hurt'), ('wand_idle', 'wand_idle'), ('turn_left', 'turn_left'), ('turn_right', 'turn_right'), ('spin_left', 'spin_left'), ('spin_right', 'spin_right'), ('attention', 'attention'), ('march', 'march'), ('left_face', 'left_face'), ('0_tut_act_1_1_1_jail', '0_tut_act_1_1_1_jail'), ('0_tut_act_1_1_2_jail', '0_tut_act_1_1_2_jail'), ('tut_1_1_5_a_idle_dan', 'tut_1_1_5_a_idle_dan'), ('tut_1_1_5_b_dan', 'tut_1_1_5_b_dan'), ('1_tut_act_1_1_5_a_dan', '1_tut_act_1_1_5_a_dan'), ('1_tut_act_1_1_5_c_dan', '1_tut_act_1_1_5_c_dan'), ('0_tut_act_1_2_dock', '0_tut_act_1_2_dock'), ('1_tut_act_1_2_dock', '1_tut_act_1_2_dock'), ('0_tut_act_1_2_b_dock', '0_tut_act_1_2_b_dock'), ('1_tut_act_1_2_b_dock', '1_tut_act_1_2_b_dock'), ('0_tut_act_1_3_jr_a', '0_tut_act_1_3_jr_a'), ('0_tut_act_1_3_jr_b', '0_tut_act_1_3_jr_b'), ('1_tut_act_1_3_jr_a', '1_tut_act_1_3_jr_a'), ('1_tut_act_1_3_jr_b', '1_tut_act_1_3_jr_b'), ('2_tut_act_1_3_jr_a', '2_tut_act_1_3_jr_a'), ('2_tut_act_1_3_jr_b', '2_tut_act_1_3_jr_b'), ('3_tut_act_1_3_jr_a', '3_tut_act_1_3_jr_a'), ('3_tut_act_1_3_jr_b', '3_tut_act_1_3_jr_b'), ('0_tut_act_2_1_wt', '0_tut_act_2_1_wt'), ('0_tut_act_2_1_b_wt', '0_tut_act_2_1_b_wt'), ('0_tut_act_2_2_td', '0_tut_act_2_2_td'), ('1_tut_act_2_2_td', '1_tut_act_2_2_td'), ('2_tut_act_2_2_td', '2_tut_act_2_2_td'), ('3_tut_act_2_2_td', '3_tut_act_2_2_td'), ('4_tut_act_2_2_td', '4_tut_act_2_2_td'), ('5_tut_act_2_2_td', '5_tut_act_2_2_td'), ('0_tut_act_2_3_es', '0_tut_act_2_3_es'), ('0_tut_act_2_4_cb_a', '0_tut_act_2_4_cb_a'), ('0_tut_act_2_4_cb_b', '0_tut_act_2_4_cb_b'), ('0_tut_act_2_4_cb_c', '0_tut_act_2_4_cb_c'), ('0_tut_act_2_5_js', '0_tut_act_2_5_js'), ('1_tut_act_2_5_js', '1_tut_act_2_5_js'), ('1_tut_act_3_1_bp', '1_tut_act_3_1_bp'), ('2_tut_act_3_1_bp', '2_tut_act_3_1_bp'), ('3_tut_act_3_1_bp', '3_tut_act_3_1_bp'), ('4_tut_act_3_1_bp', '4_tut_act_3_1_bp'), ('0_tut_act_3_2_js', '0_tut_act_3_2_js'), ('1_tut_act_3_2_js', '1_tut_act_3_2_js'), ('sit', 'sit'), ('sit_idle', 'sit_idle'), ('deal_idle', 'deal_idle'), ('deal', 'deal'), ('deal_left', 'deal_left'), ('deal_right', 'deal_right'), ('into_deal', 'into_deal'), ('cards_bad_tell', 'cards_bad_tell'), ('cards_bet', 'cards_bet'), ('cards_cheat', 'cards_cheat'), ('cards_check', 'cards_check'), ('cards_good_tell', 'cards_good_tell'), ('cards_hide', 'cards_hide'), ('cards_hide_hit', 'cards_hide_hit'), ('cards_hide_idle', 'cards_hide_idle'), ('cards_pick_up', 'cards_pick_up'), ('cards_pick_up_idle', 'cards_pick_up_idle'), ('cards_set_down', 'cards_set_down'), ('cards_set_down_lose', 'cards_set_down_lose'), ('cards_set_down_win', 'cards_set_down_win'), ('cards_set_down_win_show', 'cards_set_down_win_show'), ('cards_blackjack_hit', 'cards_blackjack_hit'), ('cards_blackjack_stay', 'cards_blackjack_stay'), ('kick_door', 'kick_door'), ('kick_door_loop', 'kick_door_loop'), ('teleport', 'teleport'), ('tentacle_squeeze', 'tentacle_squeeze'), ('tentacle_idle', 'tentacle_idle'), ('screenshot_pose', 'screenshot_pose'), ('friend_pose', 'friend_pose'), ('foil_coup', 'foil_coup'), ('foil_hack', 'foil_hack'), ('foil_idle', 'foil_idle'), ('foil_slash', 'foil_slash'), ('foil_thrust', 'foil_thrust'), ('foil_kick', 'foil_kick'), ('sword_advance', 'sword_advance'), ('dualcutlass_comboA', 'dualcutlass_comboA'), ('dualcutlass_comboB', 'dualcutlass_comboB'), ('dualcutlass_draw', 'dualcutlass_draw'), ('dualcutlass_idle', 'dualcutlass_idle'), ('dualcutlass_hurt', 'dualcutlass_hurt'), ('dualcutlass_walk', 'dualcutlass_walk'))
+ 
+ class Biped(UsesAnimationMixer, Avatar, UsesEffectNode):
+     SfxNames = {
+diff --git a/pirates/pirate/BipedAnimationMixer.py b/pirates/pirate/BipedAnimationMixer.py
+index 4d99331..cc63b66 100644
+--- a/pirates/pirate/BipedAnimationMixer.py
++++ b/pirates/pirate/BipedAnimationMixer.py
+@@ -117,6 +117,9 @@ class BipedAnimationMixer(AnimationMixer):
+         'coin_flip_look_idle': (LOOP['IDLE'], LOOP['IDLE'], LOOP['IDLE']),
+         'coin_flip_old_idle': (LOOP['IDLE'], LOOP['IDLE'], LOOP['IDLE']),
+         'drink_potion': (ACTION['INPLACE_1'], ACTION['INMOTION_2'], ACTION['INMOTION_2']),
++        'barf': (ACTION['INPLACE_1'], ACTION['INMOTION_2'], ACTION['INMOTION_2']),
++        'burp': (ACTION['INPLACE_1'], ACTION['INMOTION_2'], ACTION['INMOTION_2']),
++        'fart': (ACTION['INPLACE_1'], ACTION['INMOTION_2'], ACTION['INMOTION_2']),
+         'search_low': (LOOP['IDLE'], LOOP['IDLE'], LOOP['IDLE']),
+         'search_med': (LOOP['IDLE'], LOOP['IDLE'], LOOP['IDLE']),
+         'searching': (LOOP['IDLE'], LOOP['IDLE'], LOOP['IDLE']),
+diff --git a/pirates/pirate/DistributedPlayerPirateAI.py b/pirates/pirate/DistributedPlayerPirateAI.py
+index 60a1074..9d6ad3c 100644
+--- a/pirates/pirate/DistributedPlayerPirateAI.py
++++ b/pirates/pirate/DistributedPlayerPirateAI.py
+@@ -21,6 +21,7 @@ from pirates.world.DistributedGameAreaAI import DistributedGameAreaAI
+ from pirates.world.DistributedGAInteriorAI import DistributedGAInteriorAI
+ from pirates.uberdog.UberDogGlobals import InventoryCategory, InventoryType
+ from pirates.battle import WeaponGlobals
++from pirates.battle import PotionBuffs
+ from pirates.reputation import ReputationGlobals
+ from pirates.piratesbase import Freebooter
+ from pirates.pirate import TitleGlobals
+@@ -983,6 +984,8 @@ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI,
+ 
+         taskMgr.remove(self.uniqueName('process-groggy'))
+         taskMgr.remove(self.uniqueName('process-double-xp'))
++        # family server (11-21): his potion buff timers
++        PotionBuffs.clearPotions(self)
+ 
+         DistributedPlayerAI.delete(self)
+         DistributedBattleAvatarAI.delete(self)
+diff --git a/pirates/piratesbase/PLocalizerEnglish.py b/pirates/piratesbase/PLocalizerEnglish.py
+index 26e379d..64a21cb 100644
+--- a/pirates/piratesbase/PLocalizerEnglish.py
++++ b/pirates/piratesbase/PLocalizerEnglish.py
+@@ -1031,6 +1031,25 @@ BuffRam = 'RAMMING SPEED \n Ramming Maneuver \n'
+ BuffTakeCover = 'TAKE COVER \n Decreases Damage Take by Shipmates \n'
+ BuffPowerRecharge = 'LEADERSHIP \n Increases the rate of recharge for sailing skills and cannons \n'
+ BuffDuration = ' Duration: %s seconds'
++# family server (11-21): the brewed potions' buffs, the original game's wording
++BuffPotionHasten = 'HASTEN \n Increases speed %d%% \n'
++BuffReputation = 'REPUTATION BONUS \n Increases reputation gained %d%% \n'
++BuffGold = 'GOLD BONUS \n Increases gold gained from land battles %d%% \n'
++BuffCannonDamage = 'CANNON DAMAGE BONUS \n Increases cannon damage %d%% \n'
++BuffPistolDamage = 'SHOOTING DAMAGE BONUS \n Increases shooting damage %d%% \n'
++BuffCutlassDamage = 'SWORD DAMAGE BONUS \n Increases sword damage %d%% \n'
++BuffDollDamage = 'DOLL DAMAGE BONUS \n Increases doll damage %d%% \n'
++BuffBurp = 'BURP \n You are burping! \n'
++BuffFart = 'FART \n You are farting! \n'
++BuffVomit = 'VOMIT \n You are throwing up! \n'
++BuffAccuracy = 'ACCURACY BONUS \n Increases accuracy %d%% \n'
++BuffPotionRegen = 'BATTLE REGENERATION \n Regain %d%% health continuously \n'
++BuffHeadFire = 'MYSTICAL FIRE \n A mystical blue fire burns on your head! \n'
++BuffInvisibility = 'INVISIBILITY \n You disappear from sight. \n'
++BuffHeadGrow = 'HEAD GROW \n Your head looks strangely large. \n'
++BuffCrazySkinColor = 'CRAZY SKIN COLOR \n Your skin has turned a strange color! \n'
++BuffSizeReduce = 'SHRINK \n Decreases pirate size. \n'
++BuffSizeIncrease = 'GROW \n Increases pirate size. \n'
+ CrewBuffCaptainOrder = "Captain's Orders:"
+ CrewBuffTakeCover = 'Shipmates immune\nto damage! Ship takes \n%s%% less damage!'
+ CrewBuffOpenFire = '+%s%% Damage Bonus for\nCannons & Broadsides!'
+diff --git a/pirates/piratesgui/BuffIcon.py b/pirates/piratesgui/BuffIcon.py
+index 1957906..fa36f6f 100644
+--- a/pirates/piratesgui/BuffIcon.py
++++ b/pirates/piratesgui/BuffIcon.py
+@@ -34,9 +34,48 @@ buffTable = {
+     WeaponGlobals.C_TAKECOVER: ('sail_take_cover', PLocalizer.BuffTakeCover),
+     WeaponGlobals.C_RECHARGE: ('sail_recharge', PLocalizer.BuffPowerRecharge)}
+ 
++# family server (11-21): the brewed potions' buffs (PotionBuffs), with the original game's icons on their own card
++from pirates.battle import WeaponConstants as W
++from pirates.battle import PotionBuffs
++
++
++def _potionText(text, effectId):
++    return text % int(PotionBuffs.BUFFS[effectId][1] * 100)
++
++
++potionIcons = {}
++for _ids, _icon, _text in (
++        (PotionBuffs.CANNON_DAMAGE, 'buff_cannonDmgUp', PLocalizer.BuffCannonDamage),
++        (PotionBuffs.PISTOL_DAMAGE, 'buff_gunDmgUp', PLocalizer.BuffPistolDamage),
++        (PotionBuffs.CUTLASS_DAMAGE, 'buff_swordDmgUp', PLocalizer.BuffCutlassDamage),
++        (PotionBuffs.DOLL_DAMAGE, 'buff_voodooDmgUp', PLocalizer.BuffDollDamage),
++        (PotionBuffs.HASTEN, 'buff_hasten', PLocalizer.BuffPotionHasten),
++        (PotionBuffs.REP, 'buff_repBoost', PLocalizer.BuffReputation),
++        (PotionBuffs.GOLD, 'buff_goldBoost', PLocalizer.BuffGold),
++        (PotionBuffs.REGEN, 'buff_healthRegeneration', PLocalizer.BuffPotionRegen),
++        (PotionBuffs.ACCURACY, 'buff_accuracy', PLocalizer.BuffAccuracy)):
++    for _id in _ids:
++        potionIcons[_id] = (_icon, _potionText(_text, _id))
++
++for _ids, _icon, _text in (
++        (PotionBuffs.INVISIBILITY, 'buff_invisibility', PLocalizer.BuffInvisibility),
++        ((W.C_BURP,), 'buff_burp', PLocalizer.BuffBurp),
++        ((W.C_FART,), 'buff_fart', PLocalizer.BuffFart),
++        ((W.C_VOMIT,), 'buff_puke', PLocalizer.BuffVomit),
++        ((W.C_HEAD_GROW,), 'buff_headIncrease', PLocalizer.BuffHeadGrow),
++        ((W.C_CRAZY_SKIN_COLOR,), 'buff_crazyColor', PLocalizer.BuffCrazySkinColor),
++        ((W.C_SIZE_REDUCE,), 'buff_avatarDecrease', PLocalizer.BuffSizeReduce),
++        ((W.C_SIZE_INCREASE,), 'buff_avatarIncrease', PLocalizer.BuffSizeIncrease),
++        ((W.C_HEAD_FIRE,), 'buff_headOnFire', PLocalizer.BuffHeadFire)):
++    for _id in _ids:
++        potionIcons[_id] = (_icon, _text)
++
++buffTable.update(potionIcons)
++
+ class BuffIcon(DirectFrame):
+     Background = None
+     Card = None
++    PotionCard = None
+     
+     def __init__(self, parent, effectId, duration, attackerId, **kw):
+         optiondefs = (('relief', None, None),)
+@@ -67,7 +106,14 @@ class BuffIcon(DirectFrame):
+         self.dial = DialMeter(parent = self, meterColor = Vec4(0.3, 0.0, 0.8, 1), baseColor = Vec4(0, 0, 0, 1), scale = 0.17, sortOrder = 0)
+         info = buffTable.get(self.effectId)
+         if info:
+-            self.myIcon = DirectButton(parent = self, relief = None, geom = self.Card.find('**/' + info[0]), geom_scale = self.iconScale, sortOrder = 1)
++            card = self.Card
++            if self.effectId in potionIcons:
++                if not BuffIcon.PotionCard:
++                    BuffIcon.PotionCard = loader.loadModel('models/textureCards/buff_icons_potion')
++
++                card = BuffIcon.PotionCard
++
++            self.myIcon = DirectButton(parent = self, relief = None, geom = card.find('**/' + info[0]), geom_scale = self.iconScale, sortOrder = 1)
+             self.myIcon.bind(DGG.ENTER, self.showDetails)
+             self.myIcon.bind(DGG.EXIT, self.hideDetails)
+         else:
+-- 
+2.53.0
+

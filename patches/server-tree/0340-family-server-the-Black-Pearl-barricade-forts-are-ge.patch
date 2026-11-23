@@ -1,0 +1,54 @@
+From ebdc6a13667171df849b84055ef110e75ee82323 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 02:37:46 -0800
+Subject: [PATCH 340/371] family server: the Black Pearl barricade forts are
+ generated in the island's ship-deployer zone, so players see and can shoot
+ them
+
+TreasureMapBlackPearlWorldBuilderAI._createSimpleFort generated each fort in the island grid cell at its own
+spot. A client sees grid cells only within about 225 ft (viewingRadius 2 x 75 ft), and the forts are shot at
+from the Black Pearl 1000+ ft out, so no client ever had a fort and stage three of the Black Pearl could not be
+played (boats' BPFORT1/2/3 saw 0 forts).
+
+The forts now go in island zone 101 (PiratesGlobals.IslandShipDeployerZone), which every client inside the
+island's level-1 sphere already has interest in (DistributedIsland.loadZoneLevel(1)). The client draws and
+collides each fort on the island's own '=uid=' node, so the zone does not change where it appears. Offline sim
+with the real builder on the real Black Pearl data and the client grid (boats' sim_fortzone.py): HEAD 0/9 forts
+from the bay and from 1000 ft off two forts, patched 9/9 from all three. AI only. The fort cannons
+(_createFortCannon) still use the grid cell; not changed here.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../treasuremap/TreasureMapBlackPearlWorldBuilderAI.py   | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/treasuremap/TreasureMapBlackPearlWorldBuilderAI.py b/pirates/treasuremap/TreasureMapBlackPearlWorldBuilderAI.py
+index b192e6c..f08c3a6 100644
+--- a/pirates/treasuremap/TreasureMapBlackPearlWorldBuilderAI.py
++++ b/pirates/treasuremap/TreasureMapBlackPearlWorldBuilderAI.py
+@@ -18,6 +18,7 @@ from direct.directnotify.DirectNotifyGlobal import directNotify
+ from pirates.world.DistributedFortAI import DistributedFortAI
+ from pirates.battle.DistributedFortCannonAI import DistributedFortCannonAI
+ from pirates.treasuremap import TreasureMapBlackPearlGlobals
++from pirates.piratesbase import PiratesGlobals
+ 
+ 
+ class TreasureMapBlackPearlWorldBuilderAI(DirectObject):
+@@ -153,8 +154,12 @@ class TreasureMapBlackPearlWorldBuilderAI(DirectObject):
+         if self.treasureMapInstance:
+             fort.setTreasureMapInstance(self.treasureMapInstance)
+ 
+-        # Generate the fort as a child of the island
+-        zoneId = self.island.getZoneFromXYZ(pos)
++        # Generate the fort as a child of the island, in the island zone every client within the
++        # island's level-1 sphere has interest in (DistributedIsland.loadZoneLevel(1)). A grid cell
++        # is seen only from about 225 ft away, and the forts are shot at from the Black Pearl
++        # 2000-6000 ft out, so in a grid cell no client ever had the fort and no hit could land.
++        # The fort draws and collides on the island's own '=uid=<objKey>' node, not at its own spot.
++        zoneId = PiratesGlobals.IslandShipDeployerZone
+         self.island.generateChildWithRequired(fort, zoneId)
+         fort.setPos(self.island, pos[0], pos[1], pos[2])
+         fort.setHpr(hpr[0], hpr[1], hpr[2])
+-- 
+2.53.0
+

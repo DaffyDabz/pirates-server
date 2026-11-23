@@ -1,0 +1,74 @@
+From 035bcb667690686cf3cb51cf3ae5f7c5370f8544 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 15:40:55 -0800
+Subject: [PATCH 020/371] quests: a finished quest is handed in only to its own
+ NPC, not to whoever the pirate talks to
+
+completeTaskState finalized the first quest that was complete after the event, even one finished
+earlier and only waiting for its hand-in. So talking to any NPC played that other quest's finishing
+scene, and the visit the talk was meant for got no credit (the loop returned before reaching it).
+Talks (requestInteract) now skip an already finished quest unless the NPC is one it is handed in to:
+its return givers, its tasks' return givers, or its giver. A quest with none of those, and every
+non-NPC event, keeps the old behaviour.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 23 +++++++++++++++++++++--
+ 1 file changed, 21 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 49ae88c..33095da 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -505,7 +505,17 @@ class QuestManagerAI(DirectObject):
+         questStub.handleQuestComplete(quest, questHistory)
+         self._giveRewards(avatar, quest.getRewards())
+ 
+-    def completeTaskState(self, avatar, questEvent, callback=None):
++    def getReturnNpcUids(self, quest):
++        # the NPCs a finished quest is handed in to: the quest's return givers, its tasks' (a visit task's NPC),
++        # then whoever gave it
++        dna = quest.getQuestDNA()
++        uids = list((dna.getReturnGiverIds() if dna else None) or ())
++        for task in quest.getTasks() or ():
++            uids += list(task.getReturnGiverIds() or ())
++        uids.append(quest.getGiverId())
++        return [uid for uid in uids if isinstance(uid, str) and uid not in ('', '0')]
++
++    def completeTaskState(self, avatar, questEvent, callback=None, npc=None):
+         questObjects = list(self.quests.get(avatar.doId, {}).values())
+         if not questObjects:
+             return False
+@@ -514,11 +524,20 @@ class QuestManagerAI(DirectObject):
+             if quest.getQuestDNA() is None:
+                 continue
+ 
++            wasComplete = quest.isComplete()
+             quest.handleEvent(avatar, questEvent)
+ 
+             # check to see if the quest event has been completed,
+             # if so then handle the callback we set...
+             if quest.isComplete():
++                if wasComplete and npc is not None:
++                    # done earlier, only the hand-in left: that belongs to the quest's own NPC. Any NPC the
++                    # pirate talked to used to play the first finished quest's scene, and the visit this
++                    # talk was for never got its credit.
++                    owners = self.getReturnNpcUids(quest)
++                    if owners and npc.getUniqueId() not in owners:
++                        continue
++
+                 if callback is not None:
+                     callback(quest)
+                 else:
+@@ -814,7 +833,7 @@ class QuestManagerAI(DirectObject):
+         def interactCallback(quest):
+             self.finalizeCutscene(avatar, quest, npc=npc, endInteract=endInteract)
+ 
+-        return self.completeTaskState(avatar, questEvent, callback=interactCallback)
++        return self.completeTaskState(avatar, questEvent, callback=interactCallback, npc=npc)
+ 
+     def attemptBribeNPC(self, avatar, npc):
+         parentObj = avatar.getParentObj()
+-- 
+2.53.0
+

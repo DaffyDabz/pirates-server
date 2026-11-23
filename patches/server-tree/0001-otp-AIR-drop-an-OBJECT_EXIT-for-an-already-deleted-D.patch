@@ -1,0 +1,36 @@
+From f8a34f43a62815600ab20c9ee7df84fbacb06173 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 18 Sep 2026 00:35:11 -0700
+Subject: [PATCH 001/371] otp/AIR: drop an OBJECT_EXIT for an already-deleted
+ DO instead of crashing the AI (bug 7)
+
+A DO delete()d locally but left in doId2do has parentId/zoneId None; removeDOFromTables
+-> getLocation raised TypeError out of the reader poll and segfaulted the district.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+---
+ otp/distributed/AstronInternalRepository.py | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/otp/distributed/AstronInternalRepository.py b/otp/distributed/AstronInternalRepository.py
+index ba0abed..bdd7da4 100644
+--- a/otp/distributed/AstronInternalRepository.py
++++ b/otp/distributed/AstronInternalRepository.py
+@@ -326,6 +326,14 @@ class AstronInternalRepository(ConnectionRepository):
+             return
+ 
+         do = self.doId2do[doId]
++        if do.parentId is None or do.zoneId is None:
++            # Already delete()d here (delete() nulls the location) but never left
++            # doId2do. removeDOFromTables would raise a TypeError in getLocation,
++            # which escapes the reader poll and takes the whole district down.
++            self.notify.warning('Received AI exit for already-deleted object %d (%s)' % (doId, do.__class__.__name__))
++            del self.doId2do[doId]
++            return
++
+         self.removeDOFromTables(do)
+         do.delete()
+         do.sendDeleteEvent()
+-- 
+2.53.0
+

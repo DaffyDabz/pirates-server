@@ -1,0 +1,44 @@
+From 0b69e45f4a30baa55b8a6f56eaa6d68c689d6434 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:27:11 -0800
+Subject: [PATCH 173/371] pirates: poker timeout never spends gold (0215)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/DistributedPokerTableAI.py | 11 +++++++----
+ 1 file changed, 7 insertions(+), 4 deletions(-)
+
+diff --git a/pirates/minigame/DistributedPokerTableAI.py b/pirates/minigame/DistributedPokerTableAI.py
+index 84908c8..33016e6 100644
+--- a/pirates/minigame/DistributedPokerTableAI.py
++++ b/pirates/minigame/DistributedPokerTableAI.py
+@@ -434,12 +434,14 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         self.sendUpdate('requestAIPlayerTurn', [seatIndex])
+ 
+     def _playerTimeoutTask(self, seatIndex, task=None):
++        # Away from the table: check when that costs nothing, else fold. A timeout
++        # never spends his gold.
+         self._timeouts[seatIndex] = self._timeouts.get(seatIndex, 0) + 1
+-        if self._timeouts[seatIndex] >= PlayingCardGlobals.MaximumTimeouts:
+-            self._applyAction(seatIndex, PlayingCardGlobals.Fold, 0)
++        callAmount = max(0, self._maxBet - self._playerActions[seatIndex][1])
++        if callAmount == 0 and self._timeouts[seatIndex] < PlayingCardGlobals.MaximumTimeouts:
++            self._applyAction(seatIndex, PlayingCardGlobals.Check, 0)
+         else:
+-            # Auto-check / call with zero
+-            self._applyAction(seatIndex, PlayingCardGlobals.CheckCall, 0)
++            self._applyAction(seatIndex, PlayingCardGlobals.Fold, 0)
+         return Task.done
+ 
+     def _aiActTask(self, seatIndex, task=None):
+@@ -473,6 +475,7 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+             return  # not his turn
+ 
+         taskMgr.remove(self.uniqueName('poker-timeout'))
++        self._timeouts[seatIndex] = 0  # he is here: the count is of timeouts in a row
+ 
+         actionCode = action[0] if action else PlayingCardGlobals.Fold
+         amount = action[1] if len(action) > 1 else 0
+-- 
+2.53.0
+

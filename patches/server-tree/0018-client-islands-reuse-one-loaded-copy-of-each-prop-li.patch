@@ -1,0 +1,92 @@
+From 5dc9f913533717da569555ae892fb55e7dccceb5 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 15:28:10 -0800
+Subject: [PATCH 018/371] client: islands reuse one loaded copy of each prop
+ (live in the client since Sept 18)
+
+ClientArea placed the same few props thousands of times, each through
+loader.loadModelCopy (~1.3 ms per call). It now keeps one master per model
+path and hands out copyTo copies (~0.05 ms). This was already live in the
+client folder since 2026-09-18 but never recorded here.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/ClientArea.py | 29 ++++++++++++++++++++++++-----
+ 1 file changed, 24 insertions(+), 5 deletions(-)
+
+diff --git a/pirates/world/ClientArea.py b/pirates/world/ClientArea.py
+index 6370604..fb36b43 100644
+--- a/pirates/world/ClientArea.py
++++ b/pirates/world/ClientArea.py
+@@ -23,6 +23,25 @@ from pirates.effects import ObjectEffects
+ from pirates.effects import SoundFX
+ AREA_CHILD_TYPE_PROP = 1
+ 
++# Per-path cache of loaded props. Islands place the same few props thousands of
++# times; a ModelPool hit through loader.loadModelCopy still costs ~1.3 ms (path
++# search + pool lookup), a copyTo of a kept master ~0.05 ms. Callers dismantle
++# the returned node, so every caller still gets its own unique copy.
++_modelCopyCache = {}
++
++def cachedModelCopy(modelName):
++    if modelName not in _modelCopyCache:
++        _modelCopyCache[modelName] = loader.loadModelCopy(modelName)
++    master = _modelCopyCache[modelName]
++    if master is None:
++        return None
++    return master.copyTo(NodePath())
++
++def cachedModelExists(modelName):
++    if modelName not in _modelCopyCache:
++        _modelCopyCache[modelName] = loader.loadModelCopy(modelName)
++    return _modelCopyCache[modelName] is not None
++
+ class GridLODDef:
+     
+     def __init__(self, area, zoneId):
+@@ -390,7 +409,7 @@ class ClientArea(DirectObject):
+                             altId = objData.get('AltBlockerId')
+                             objModel = self.loadPiecesModels(modelName, altId)
+                         else:
+-                            objModel = loader.loadModelCopy(modelName)
++                            objModel = cachedModelCopy(modelName)
+                         if objModel == None:
+                             self.notify.warning('Could not load model %s, not creating object.' % modelName)
+                             return None
+@@ -754,21 +773,21 @@ class ClientArea(DirectObject):
+         if bLODLoaded:
+             obj.setLODNode()
+         
+-        if loader.loadModelCopy(newModelName) != None:
++        if cachedModelExists(newModelName):
+             if bLODLoaded:
+                 obj.addLOD(1, 200, 0)
+             
+             obj.loadModel(newModelName, newPartName, '1')
+         
+         newModelName = re.sub('_hi', '_med', newModelName)
+-        if loader.loadModelCopy(newModelName) != None:
++        if cachedModelExists(newModelName):
+             if bLODLoaded:
+                 obj.addLOD(2, 400, 200)
+             
+             obj.loadModel(newModelName, newPartName, '2')
+         
+         newModelName = re.sub('_med', '_low', newModelName)
+-        if loader.loadModelCopy(newModelName) != None:
++        if cachedModelExists(newModelName):
+             if bLODLoaded:
+                 obj.addLOD(3, 1000, 400)
+             
+@@ -776,7 +795,7 @@ class ClientArea(DirectObject):
+         
+         self.setupUniqueActor(obj, newAnimName)
+         newModelName = re.sub('_low', '_zero_coll', newModelName)
+-        coll = loader.loadModelCopy(newModelName)
++        coll = cachedModelCopy(newModelName)
+         if coll:
+             coll.reparentTo(obj)
+ 
+-- 
+2.53.0
+

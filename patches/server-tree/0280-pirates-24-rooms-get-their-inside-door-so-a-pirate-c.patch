@@ -1,0 +1,93 @@
+From 144e12eefdbdc7f3e1200525890f3d10691171c0 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 15:42:39 -0800
+Subject: [PATCH 280/371] pirates: 24 rooms get their inside door, so a pirate
+ can walk back out and the outside door no longer errors (0366)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedDoorBaseAI.py |  8 +++++
+ pirates/world/GameAreaBuilderAI.py     | 46 ++++++++++++++++++++++++++
+ 2 files changed, 54 insertions(+)
+
+diff --git a/pirates/world/DistributedDoorBaseAI.py b/pirates/world/DistributedDoorBaseAI.py
+index a699860..f0071de 100644
+--- a/pirates/world/DistributedDoorBaseAI.py
++++ b/pirates/world/DistributedDoorBaseAI.py
+@@ -34,6 +34,14 @@ class DistributedDoorBaseAI(DistributedInteractiveAI, FSM):
+             self.notify.warning('Freebooter (%s) attempted to force open KINGSHEAD_DOOR' % avatar.doId)
+             return self.DENY
+ 
++        # family server (11-19, 0366): a door with no partner on the other side refuses, instead of raising an
++        # AttributeError on the click below and leaving the kid stuck at a door that never opens.
++        if not self.otherDoor:
++            self.notify.warning('Door %s (%s) has no other side; avatar %d cannot go through.' % (
++                self.doId, self.buildingUid, avatar.doId))
++
++            return self.DENY
++
+         if not self.avatarId:
+             self.request('Opened', avatar.doId)
+ 
+diff --git a/pirates/world/GameAreaBuilderAI.py b/pirates/world/GameAreaBuilderAI.py
+index 729bbc3..beb43ed 100644
+--- a/pirates/world/GameAreaBuilderAI.py
++++ b/pirates/world/GameAreaBuilderAI.py
+@@ -137,8 +137,54 @@ class GameAreaBuilderAI(ClientAreaBuilderAI):
+             self.air.worldCreator.loadObjectDict(objectList, self.parent, objKey, True)
+ 
+         self.air.worldCreator.loadObjectsFromFile(interiorFile + '.py', interior)
++        self.addMissingInteriorDoors(interior, interiorFile, modelPath)
+         return interior
+ 
++    # family server (11-19, 0366): where each room model's inside doors stand, copied from the rooms that already
++    # have them (the same spots as the model's door_locator and door_locator_2, which the client draws the door at).
++    INTERIOR_DOOR_SPOTS = {
++        'interior_tavern': [((29.01, -38.82, 0.0), 0.0), ((-42.937, 40.889, 0.736), -180.0)],
++        'interior_tavern_b': [((19.911, -9.53, 0.487), 78.799), ((-22.427, 42.298, 0.736), -180.0)],
++        'interior_spanish_store': [((-13.404, 47.298, 5.038), 178.916)],
++        'interior_spanish_npc': [((0.226, -30.04, -0.042), -1.084)],
++        'interior_shanty_npc_house': [((0.047, -29.861, 0.067), 0.0)],
++        'interior_shanty_store': [((41.986, -7.423, 0.079), 90.0)],
++        'interior_mansion_gov': [((1.1, 20.1, 0.0), 180.0)],
++        'interior_shanty_guildhall': [((-3.4, -32.4, 0.0), 0.0)],
++        'interior_storage': [((-58.868, 0.406, 0.0), -90.0)],
++        'navy_jail_interior': [((50.086, -39.78, 10.921), 0.0)],
++    }
++
++    def addMissingInteriorDoors(self, interior, interiorFile, modelPath):
++        # family server (11-19, 0366): 26 rooms had an outside door but no inside door on the server, because their
++        # inside door lives only in an 'AdditionalData' file (the client reads those, the server never does) or in no
++        # file at all. A kid could not walk in, and one put inside (a teleport, his return spot at login) could not
++        # walk out. Each outside door left without a partner now gets its inside door here, at the model's own door
++        # spot; rooms that already have their doors are left alone. A back door is only made where the model has a
++        # second door spot.
++        spots = self.INTERIOR_DOOR_SPOTS.get(str(modelPath).split('/')[-1], [])
++        pairs = ((0, interior.getExteriorFrontDoor, interior.getInteriorFrontDoor, interior.setInteriorFrontDoor),
++                 (1, interior.getExteriorBackDoor, interior.getInteriorBackDoor, interior.setInteriorBackDoor))
++        for index, getExteriorDoor, getInteriorDoor, setInteriorDoor in pairs:
++            exteriorDoor = getExteriorDoor()
++            if not exteriorDoor or exteriorDoor.getOtherDoor():
++                continue
++
++            if index == 1 and (len(spots) < 2 or not interior.getInteriorFrontDoor()):
++                self.notify.info('Room %s has no second inside door spot; its back door stays shut.' % interiorFile)
++                continue
++
++            # an inside door the file made without an outside partner was never generated; replace it
++            setInteriorDoor(None)
++            pos, h = spots[index] if index < len(spots) else ((0, 0, 0), 0)
++            doorData = {'Pos': pos, 'Hpr': (h, 0, 0), 'Scale': (1, 1, 1)}
++            uid = '%s-door-%d' % (interior.getUniqueId(), index)
++            door = interior.builder.createDoorLocatorNode(interior, interior.getUniqueId(), uid, doorData)
++            if door:
++                self.notify.info('Added the missing inside door %d of room %s.' % (index, interiorFile))
++            else:
++                self.notify.warning('Could not add the missing inside door %d of room %s.' % (index, interiorFile))
++
+     def createDoorLocatorNode(self, parent, parentUid, objKey, objectData, wantTruePosHpr=True):
+         from pirates.world.DistributedBuildingDoorAI import DistributedBuildingDoorAI
+ 
+-- 
+2.53.0
+

@@ -1,0 +1,106 @@
+From 7439aa61ad43e67cfb238bb36d696f30944086e0 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:53:20 -0800
+Subject: [PATCH 104/371] pirates: one cannonball tears one sail, and a shot-up
+ ship shows it and slows, as server-tree patch 0118 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/WeaponBaseAI.py         | 13 +++++++---
+ pirates/shipparts/DistributedSailAI.py | 35 +++++++++++++++++++++++---
+ 2 files changed, 41 insertions(+), 7 deletions(-)
+
+diff --git a/pirates/battle/WeaponBaseAI.py b/pirates/battle/WeaponBaseAI.py
+index 2288f5c..9d1b1c1 100644
+--- a/pirates/battle/WeaponBaseAI.py
++++ b/pirates/battle/WeaponBaseAI.py
+@@ -1,3 +1,5 @@
++import random
++
+ from direct.directnotify import DirectNotifyGlobal
+ from direct.distributed.ClockDelta import globalClockDelta
+ 
+@@ -110,9 +112,14 @@ class WeaponBaseAI(WeaponBaseBase):
+                     target.hull.projectileWeaponHit(skillId, ammoSkillId, skillResult, targetEffects, pos, normal, codes, avatar)
+ 
+                 if sailCode > 0:
+-                    for sail in target.sails:
+-                        if sail.hp > 0:
+-                            sail.projectileWeaponHit(skillId, ammoSkillId, skillResult, targetEffects, pos, normal, codes, avatar)
++                    # one ball tears one sail. Every standing sail used to take the
++                    # full hit (and the ship lost hull hp once per sail), so a single
++                    # ball into the rigging hurt a 3-mast ship three times over. The
++                    # client tags every sail and mast with sailCode 1, so which sail
++                    # was hit is not known: pick one of those still standing
++                    standing = [sail for sail in target.sails if sail.hp > 0]
++                    if standing:
++                        random.choice(standing).projectileWeaponHit(skillId, ammoSkillId, skillResult, targetEffects, pos, normal, codes, avatar)
+ 
+             self.sendUpdate('setProjectileSkillResult', [skillId, ammoSkillId, skillResult, target.doId, [], attackerEffects, targetEffects, areaIdEffects, pos, normal, codes, avatar.doId, timestamp])
+ 
+diff --git a/pirates/shipparts/DistributedSailAI.py b/pirates/shipparts/DistributedSailAI.py
+index 39f1d19..754de6b 100644
+--- a/pirates/shipparts/DistributedSailAI.py
++++ b/pirates/shipparts/DistributedSailAI.py
+@@ -39,19 +39,44 @@ class DistributedSailAI(DistributedShippartAI, DistributedDestructibleArrayAI, D
+         return self.maxHp
+ 
+     def setHp(self, hp):
+-        self.hp = min(hp, self.maxHp)
+-        self.hp = max(hp, 0)
++        # the second clamp used the raw hp, so a hit could send a sail below 0
++        # (and a repair above its max); int, since sail damage can be a float
++        self.hp = int(max(min(hp, self.maxHp), 0))
+ 
+     def d_setHp(self, hp):
+         self.sendUpdate('setHp', [hp])
+ 
+     def b_setHp(self, hp):
+         self.setHp(hp)
+-        self.d_setHp(hp)
++        self.d_setHp(self.hp)
+ 
+     def getHp(self):
+         return self.hp
+ 
++    def _loseShipSailPoints(self, hpLost):
++        """
++        The ship's sail points (setSp) are what the client fills the sail bar
++        with and what slows a shot-up ship (DistributedShip.calcModifiedStats:
++        speed and turning down to 75% at no sail points). Nothing ever lowered
++        them, only the repair code raised them, so the sail bar stayed full and
++        a ship with every sail torn sailed at full speed. Take the same share of
++        the ship's sail points as this sail lost of all the ship's sail hp, so
++        every sail down means no sail points; the repair spots and the
++        shipwright already give them back.
++        """
++        ship = self.ship
++        if hpLost <= 0 or ship is None:
++            return
++
++        maxSp = ship.getMaxSp()
++        totalSailHp = sum(sail.maxHp for sail in ship.sails if sail.maxHp > 0)
++        if maxSp <= 0 or totalSailHp <= 0:
++            return
++
++        spLost = int(round(float(maxSp) * hpLost / totalSailHp))
++        if spLost > 0 and ship.getSp() > 0:
++            ship.b_setSp(max(0, ship.getSp() - spLost))
++
+     def setMaxSp(self, maxSp):
+         self.maxSp = maxSp
+ 
+@@ -104,7 +129,9 @@ class DistributedSailAI(DistributedShippartAI, DistributedDestructibleArrayAI, D
+             return
+ 
+         sailDamage = self.air.battleMgr.getModifiedSailDamage(attacker, self.ship, skillId, ammoSkillId)
+-        self.b_setHp(self.getHp() + sailDamage)
++        oldHp = self.getHp()
++        self.b_setHp(oldHp + sailDamage)
++        self._loseShipSailPoints(oldHp - self.getHp())
+ 
+         shipDamage = sailDamage - (ShipBalance.ArmorAbsorb.getValue() * sailDamage)
+         self.ship.b_setHp(self.ship.getHp() + shipDamage)
+-- 
+2.53.0
+

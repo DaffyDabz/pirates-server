@@ -1,0 +1,35 @@
+From 90147ac6dac2b910fd2bf3b5a38601ead585cc6e Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 15:22:18 -0800
+Subject: [PATCH 017/371] Quest beam: switch off the foot glow and take the
+ beam off its old target when it is cleaned up
+
+EffectController.cleanUpEffect only disabled f (the beam). f2, the glow at the beam's foot, kept emitting under
+the particle dummy, and the dummy stayed parented to the old target: the NPC or door for a near beam, the island
+for a far beam (scaled up for the distance). Each finished quest step left a big glow behind (stray light bulbs).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/effects/QuestIndicatorEffect.py | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/pirates/effects/QuestIndicatorEffect.py b/pirates/effects/QuestIndicatorEffect.py
+index f3023d3..3aa28ad 100644
+--- a/pirates/effects/QuestIndicatorEffect.py
++++ b/pirates/effects/QuestIndicatorEffect.py
+@@ -171,6 +171,12 @@ class QuestIndicatorEffect(PooledEffect, EffectController):
+ 
+     def cleanUpEffect(self):
+         EffectController.cleanUpEffect(self)
++        # EffectController only switches off f (the beam): f2, the glow at the beam's foot, kept emitting under the
++        # dummy, and the dummy stayed on the old target (an NPC, a door, the island for a far beam, scaled up for the
++        # distance). Every finished quest step left a big glow behind - the stray "light bulbs".
++        if self.f2:
++            self.f2.disable()
++        self.particleDummy.detachNode()
+         self.stopAdjustTask()
+         if self.pool and self.pool.isUsed(self):
+             self.pool.checkin(self)
+-- 
+2.53.0
+

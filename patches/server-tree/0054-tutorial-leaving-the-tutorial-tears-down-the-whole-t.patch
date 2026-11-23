@@ -1,0 +1,148 @@
+From 265f21b88d94f1ae7db37d737d3762a8ccf7992e Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 23:17:52 -0800
+Subject: [PATCH 054/371] tutorial: leaving the tutorial tears down the whole
+ tutorial world, frees its uids and points the world creator back at the main
+ world
+
+TutorialFSM.enterStop deleted the island, the world and the jail, but left the jail's
+own container instance (GameAreaBuilderAI builds it at the district root, outside the
+world), every tutorial world uid (Dan, Nell, Stumpy's boat, the doors, the jail) pointing
+at deleted objects, and air.worldCreator.world on a deleted world. Each new pirate left
+that behind on the AI.
+
+Now enterStart records the doIds the (synchronous) scene-file load built; enterStop
+takes those plus everything parented under them since, frees their uids (uid2doId and
+uid2obj, with any pending uidCallback task), points the world creator back at the main
+world if it was following one of them, and requestDeletes only the tops (the world and
+the jail's container): Astron deletes the children. Same pattern as the Black Pearl
+teardown (patch 0034). enterStop also ignores the avatar delete event, so a later
+logout does not run Stop again. Runs on the client's allDone (sent when the teleport to
+the main world finishes) or on the pirate's logout, as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/tutorial/PiratesTutorialManagerAI.py | 71 +++++++++++++++++---
+ 1 file changed, 61 insertions(+), 10 deletions(-)
+
+diff --git a/pirates/tutorial/PiratesTutorialManagerAI.py b/pirates/tutorial/PiratesTutorialManagerAI.py
+index 69c2a85..b7b23a9 100644
+--- a/pirates/tutorial/PiratesTutorialManagerAI.py
++++ b/pirates/tutorial/PiratesTutorialManagerAI.py
+@@ -2,6 +2,8 @@ from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from direct.directnotify import DirectNotifyGlobal
+ from direct.fsm.FSM import FSM
+ 
++from pirates.instance.DistributedInstanceBaseAI import DistributedInstanceBaseAI
++from pirates.piratesbase import PiratesGlobals
+ from pirates.world.WorldCreatorAI import WorldCreatorAI
+ from pirates.world import WorldGlobals
+ from pirates.tutorial import TutorialGlobals
+@@ -13,6 +15,7 @@ RAMBLESHACK_REGION_UID = '1115838788a.58jubutler'
+ 
+ class TutorialFSM(FSM):
+     notify = DirectNotifyGlobal.directNotify.newCategory('TutorialFSM')
++    notify.setInfo(True)
+ 
+     def __init__(self, air, avatar):
+         FSM.__init__(self, 'TutorialFSM')
+@@ -26,6 +29,8 @@ class TutorialFSM(FSM):
+         self.exteriorDoor = None
+         self.tutorialHandler = None
+         self.tutorialHandlerZoneId = None
++        # everything the scene file load built, for the teardown in enterStop
++        self.loadedDoIds = set()
+ 
+     def enterStart(self):
+         self.acceptOnce(self.avatar.getDeleteEvent(), self.cleanup)
+@@ -33,9 +38,11 @@ class TutorialFSM(FSM):
+ 
+         # Register callback for the Region UID (world) first so we have it when interior arrives
+         self.air.uidMgr.addUidCallback(RAMBLESHACK_REGION_UID, self.__instanceArrived)
+-        
+-        # Now load our world
++
++        # Now load our world (the load is synchronous, so the new doIds are this tutorial's)
++        before = set(self.air.doId2do.keys())
+         self.air.worldCreator.loadObjectsFromFile(WorldGlobals.PiratesTutorialSceneFile)
++        self.loadedDoIds = set(self.air.doId2do.keys()) - before
+ 
+     def exitStart(self):
+         pass
+@@ -110,14 +117,8 @@ class TutorialFSM(FSM):
+         self.air.tutorialManager.d_enterTutorial(self.avatar.doId, self.island.zoneId)
+ 
+     def enterStop(self):
+-        if self.island:
+-            self.island.requestDelete()
+-
+-        if self.instance:
+-            self.instance.requestDelete()
+-
+-        if self.interior:
+-            self.interior.requestDelete()
++        self.ignoreAll()
++        self.__teardownWorld()
+ 
+         if self.tutorialHandler:
+             self.air.deallocateZone(self.tutorialHandlerZoneId)
+@@ -139,6 +140,56 @@ class TutorialFSM(FSM):
+     def exitStop(self):
+         pass
+ 
++    # family server (11-16): Stop deleted the island, the world and the jail but left the jail's own container
++    # instance (GameAreaBuilderAI builds it at the district root, outside the world), every world uid (Dan, Nell,
++    # Stumpy's boat, the doors, the jail) pointing at deleted objects, and the world creator following a deleted
++    # world. Tear down everything this tutorial's load built, the way the Black Pearl teardown (patch 0034) does.
++    def __teardownWorld(self):
++        found = set(self.loadedDoIds)
++        if self.instance:
++            found.add(self.instance.doId)
++
++        self.loadedDoIds = set()
++        if not found:
++            return
++
++        # and everything spawned under it since (Stumpy's boat, scene props), found before the delete empties the tables
++        objects = list(self.air.doId2do.values())
++        grew = True
++        while grew:
++            grew = False
++            for obj in objects:
++                if obj.doId not in found and getattr(obj, 'parentId', None) in found:
++                    found.add(obj.doId)
++                    grew = True
++
++        # its world uids stay taken until freed: they would hand later lookups this tutorial's deleted objects
++        uidMgr = self.air.uidMgr
++        for uid, doId in list(uidMgr.uid2doId.items()):
++            if doId in found:
++                taskMgr.remove('uidCallback-' + uid)
++                uidMgr.removeUid(uid)
++
++        for uid, obj in list(uidMgr.uid2obj.items()):
++            if getattr(obj, 'doId', None) in found:
++                uidMgr.removeUidObj(uid)
++
++        # the world creator follows the newest world it built: point it back at the main world
++        world = self.air.worldCreator.world
++        if world is not None and world.doId in found:
++            for obj in objects:
++                if isinstance(obj, DistributedInstanceBaseAI) and obj.doId not in found \
++                        and obj.getType() == PiratesGlobals.INSTANCE_MAIN:
++                    self.air.worldCreator.world = obj
++                    break
++
++        # delete the tops only (the world and the jail's container); Astron deletes their children and tells this AI
++        tops = [obj for obj in objects if obj.doId in found and getattr(obj, 'parentId', None) not in found]
++        self.notify.info('Tearing down the tutorial world of avatar %s: %d objects, %d top' % (
++            self.avatar.doId, len(found), len(tops)))
++        for obj in tops:
++            obj.requestDelete()
++
+     def cleanup(self):
+         self.demand('Stop')
+ 
+-- 
+2.53.0
+

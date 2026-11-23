@@ -1,0 +1,37 @@
+From 5ec5d6f08a6c65401d37c8bc22668573c27f1f05 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 18:41:54 -0800
+Subject: [PATCH 116/371] pirates: a story scene whose giver is not placed yet
+ (Barbossa right after the cave tunnel) no longer closes the game
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/cutscene/Cutscene.py | 11 ++++++++---
+ 1 file changed, 8 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/cutscene/Cutscene.py b/pirates/cutscene/Cutscene.py
+index 4300f0e..db9a3d3 100644
+--- a/pirates/cutscene/Cutscene.py
++++ b/pirates/cutscene/Cutscene.py
+@@ -50,10 +50,15 @@ class Cutscene(NodePath, DirectObject):
+         else:
+             giverObject = None
+             if giverId:
+-                giverObject = self.cr.doId2do[giverId]
++                giverObject = self.cr.doId2do.get(giverId)
+             
+-            if giverObject and giverObject.getParent().getParent().getName() == 'GameArea':
+-                self.reparentTo(giverObject.getParent().getParent())
++            # the giver can be off the scene graph when the scene starts (Barbossa right after the cave tunnel):
++            # getParent() of an empty path asserted and closed the game, so only use a giver that is placed
++            giverArea = None
++            if giverObject and not giverObject.isEmpty() and not giverObject.getParent().isEmpty():
++                giverArea = giverObject.getParent().getParent()
++            if giverArea is not None and not giverArea.isEmpty() and giverArea.getName() == 'GameArea':
++                self.reparentTo(giverArea)
+             elif 'localAvatar' in __builtins__:
+                 if localAvatar.ship:
+                     self.reparentTo(render)
+-- 
+2.53.0
+

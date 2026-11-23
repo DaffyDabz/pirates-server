@@ -1,0 +1,51 @@
+From b75c48bb59049e57f736d4cfcaf6524e31f565b8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 308/371] family server (11-20): a spark playing while the
+ connection drops, and enemy ships going away on the way back to the pirate
+ list, no longer close the game (0392)
+
+Game: SparkBurst.createTrack ran after cleanup (Player1 11-19 17:50); NPCShip.disable -> cleanupAggroCollisions called
+removeCollider on an int (Player2 11-19 18:58). Lane: crashes. Test: test_teardown_crashes.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/effects/SparkBurst.py   | 4 ++++
+ pirates/ship/DistributedShip.py | 6 +++++-
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/effects/SparkBurst.py b/pirates/effects/SparkBurst.py
+index 3873902..ffeca7e 100644
+--- a/pirates/effects/SparkBurst.py
++++ b/pirates/effects/SparkBurst.py
+@@ -91,6 +91,10 @@ class SparkBurst(PooledEffect, EffectController):
+         self.track = Sequence(self.startEffect, Wait(0.2), self.endEffect)
+ 
+     def play(self, color = 'Yellow'):
++        # family server, 11-19: a spark that was already cleaned up (zone change, logout, lost connection)
++        # still had a play queued and closed the game. A cleaned-up spark just does nothing.
++        if self.p0 is None:
++            return
+         self.createTrack(color)
+         self.track.start()
+     
+diff --git a/pirates/ship/DistributedShip.py b/pirates/ship/DistributedShip.py
+index a15cb00..facaadb 100644
+--- a/pirates/ship/DistributedShip.py
++++ b/pirates/ship/DistributedShip.py
+@@ -2131,7 +2131,11 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+ 
+     def cleanupAggroCollisions(self):
+         if self.cAggroNodePath:
+-            base.cTrav.removeCollider(self.cAggroNodePath)
++            # family server, 11-19: an enemy ship that goes away after the pirate has left (back to
++            # pick-a-pirate, or the connection dropped) found base.cTrav already 0 and closed the game.
++            # The aggro sphere is never added as a collider, so there is nothing to remove then.
++            if base.cTrav:
++                base.cTrav.removeCollider(self.cAggroNodePath)
+             self.cAggroNodePath.removeNode()
+             self.cAggroNodePath = None
+ 
+-- 
+2.53.0
+

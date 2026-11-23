@@ -1,0 +1,133 @@
+From 19e89a88ec19930e211fd43f27bbbfcbb17fac00 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:54:30 -0800
+Subject: [PATCH 095/371] pirates: crew chat reaches the crew and crew members
+ see each other's health, as server-tree patch 0109 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../band/DistributedPirateBandManagerAI.py    | 41 +++++++++++++++++++
+ pirates/pirate/DistributedPlayerPirateAI.py   | 13 ++++++
+ 2 files changed, 54 insertions(+)
+
+diff --git a/pirates/band/DistributedPirateBandManagerAI.py b/pirates/band/DistributedPirateBandManagerAI.py
+index 67ecc77..ac9b15f 100644
+--- a/pirates/band/DistributedPirateBandManagerAI.py
++++ b/pirates/band/DistributedPirateBandManagerAI.py
+@@ -22,6 +22,7 @@ class DistributedPirateBandManagerAI(DistributedObjectAI):
+         self.pending = {}      # inviterId -> inviteeId
+         self.bands = {}        # bandId -> {'manager': avatarId, 'members': {avatarId: DistributedBandMemberAI}}
+         self.avatar2band = {}  # avatarId -> bandId
++        self.channels = {}     # avatarId -> client channel (accountId << 32 | avatarId), seen on its messages
+         self.nextBandId = 1
+ 
+     # --- helpers ---------------------------------------------------------
+@@ -63,6 +64,18 @@ class DistributedPirateBandManagerAI(DistributedObjectAI):
+ 
+         return value
+ 
++    def getOwnerChannel(self, avatar):
++        # the channel the client agent gave this pirate's connection (CSM: accountId << 32 | avatarId)
++        channel = self.channels.get(avatar.doId)
++        if channel:
++            return channel
++
++        dislId = avatar.getDISLid()
++        if dislId:
++            return dislId << 32 | avatar.doId
++
++        return 0
++
+     def d_requestOutCome(self, avatarId, targetId, outcome):
+         self.sendUpdateToAvatarId(avatarId, 'requestOutCome', [targetId, outcome])
+ 
+@@ -74,6 +87,8 @@ class DistributedPirateBandManagerAI(DistributedObjectAI):
+         if not inviter:
+             return
+ 
++        self.channels[inviterId] = self.air.getMsgSender()
++
+         target = self.getPlayer(avatarId)
+         if not target or avatarId == inviterId:
+             self.d_requestOutCome(inviterId, avatarId, BandConstance.outcome_not_online)
+@@ -107,6 +122,7 @@ class DistributedPirateBandManagerAI(DistributedObjectAI):
+     def invitationResponce(self, avatarId, responce):
+         inviteeId = self.air.getAvatarIdFromSender()
+         inviterId = avatarId
++        self.channels[inviteeId] = self.air.getMsgSender()
+         if self.pending.get(inviterId) != inviteeId:
+             return
+ 
+@@ -174,6 +190,15 @@ class DistributedPirateBandManagerAI(DistributedObjectAI):
+         member.isManager = isManager
+         member.generateWithRequired(OTP_ZONE_ID_MANAGEMENT)
+ 
++        # the pirate owns his own member object: that is what gives his client the owner
++        # view (localAvatar.bandMember) the crew chat is sent through, and lets it send
++        # the object's ownsend / clsend ownrecv fields (setChat, setSpeedChat, teleportQuery...)
++        ownerChannel = self.getOwnerChannel(avatar)
++        if ownerChannel:
++            self.air.setOwner(member.doId, ownerChannel)
++        else:
++            self.notify.warning('crew %d: no client channel for %d, crew chat will not work for him' % (bandId, avatar.doId))
++
+         band['members'][avatar.doId] = member
+         self.avatar2band[avatar.doId] = bandId
+         avatar.sendUpdate('setBandId', [self.doId, bandId])
+@@ -210,6 +235,7 @@ class DistributedPirateBandManagerAI(DistributedObjectAI):
+             del self.bands[bandId]
+ 
+     def avatarOffline(self, avatarId):
++        self.channels.pop(avatarId, None)
+         self.pending.pop(avatarId, None)
+         for inviterId, inviteeId in list(self.pending.items()):
+             if inviteeId == avatarId:
+@@ -218,6 +244,21 @@ class DistributedPirateBandManagerAI(DistributedObjectAI):
+         if avatarId in self.avatar2band:
+             self.removeMember(avatarId)
+ 
++    def updateHp(self, avatarId):
++        # keep the crew HUD's health bars in step with the pirate's own health
++        member = self.getMember(avatarId)
++        avatar = self.getPlayer(avatarId)
++        if not member or not avatar:
++            return
++
++        hp = max(0, self.asNumber(avatar.getHp()))
++        maxHp = max(0, self.asNumber(avatar.getMaxHp()))
++        if maxHp != member.maxHp:
++            member.b_setMaxHp(maxHp)
++
++        if hp != member.hp:
++            member.b_setHp(hp)
++
+     # --- ship info for the dinghy's crew list ------------------------------
+ 
+     def getDeployedShip(self, avatarId):
+diff --git a/pirates/pirate/DistributedPlayerPirateAI.py b/pirates/pirate/DistributedPlayerPirateAI.py
+index dcbb304..858c7bf 100644
+--- a/pirates/pirate/DistributedPlayerPirateAI.py
++++ b/pirates/pirate/DistributedPlayerPirateAI.py
+@@ -736,6 +736,19 @@ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI,
+         DistributedPlayerAI.disable(self)
+         DistributedBattleAvatarAI.disable(self)
+ 
++    def d_setHp(self, hp, quietly=False):
++        DistributedBattleAvatarAI.d_setHp(self, hp, quietly)
++        # crewmates' HUD health bars follow the member object, not the pirate
++        bandManager = getattr(self.air, 'bandManager', None)
++        if bandManager:
++            bandManager.updateHp(self.doId)
++
++    def d_setMaxHp(self, maxHp):
++        DistributedBattleAvatarAI.d_setMaxHp(self, maxHp)
++        bandManager = getattr(self.air, 'bandManager', None)
++        if bandManager:
++            bandManager.updateHp(self.doId)
++
+     def delete(self):
+         # family server (2026-09-16): leave the crew on logout
+         self.air.bandManager.avatarOffline(self.doId)
+-- 
+2.53.0
+

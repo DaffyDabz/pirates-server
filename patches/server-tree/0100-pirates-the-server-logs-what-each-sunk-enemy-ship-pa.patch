@@ -1,0 +1,87 @@
+From ff0fce38dae1b2d95f607345966dfda149fec82d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:12:28 -0800
+Subject: [PATCH 100/371] pirates: the server logs what each sunk enemy ship
+ pays, for testing, as server-tree patch 0114 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/GameFSMShipAI.py |  1 +
+ pirates/ship/NPCShipAI.py     | 18 +++++++++++++++---
+ 2 files changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index d3aee85..f34621f 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -2774,6 +2774,7 @@ class GameFSMShipAI(FSM.FSM):
+             aboard = self.ship.getPiratesAboard()
+             if not aboard:
+                 if getattr(self.ship, 'npcShip', True):
++                    self.notify.warning('TEMP-DIAG npc ship %s sunk: deleted' % self.ship.doId)
+                     self.ship.requestDelete()
+                 else:
+                     # a pirate's own ship is put away sunk, not deleted: deleting it
+diff --git a/pirates/ship/NPCShipAI.py b/pirates/ship/NPCShipAI.py
+index 189656c..d74b1bf 100644
+--- a/pirates/ship/NPCShipAI.py
++++ b/pirates/ship/NPCShipAI.py
+@@ -182,6 +182,9 @@ class NPCShipAI(DistributedShipAI):
+ 
+     def setGameState(self, stateName, avId, timeStamp=0):
+         DistributedShipAI.setGameState(self, stateName, avId, timeStamp)
++        if stateName == 'Sinking':
++            self.notify.warning('TEMP-DIAG npc ship %d (class %s, flagship %s) Sinking at hp %s, %d pirates credited, already paid %s' % (
++                self.doId, self.getShipClass(), getattr(self, 'isFlagship', 0), self.hp, len(self._sinkCredit), self._sinkRewarded))
+         if stateName == 'Sinking' and not self._sinkRewarded:
+             self._sinkRewarded = True
+             self.rewardSinkers()
+@@ -196,6 +199,7 @@ class NPCShipAI(DistributedShipAI):
+         """
+         credit, self._sinkCredit = self._sinkCredit, {}
+         if not credit:
++            self.notify.warning('TEMP-DIAG npc ship %d sank with no pirate credited: nobody paid' % self.doId)
+             return
+ 
+         try:
+@@ -252,17 +256,24 @@ class NPCShipAI(DistributedShipAI):
+ 
+             ships[ship.doId] = ship
+ 
++        if not ships:
++            self.notify.warning('TEMP-DIAG npc ship %d: no pirate ship to take plunder (credited %s)' % (self.doId, list(credit)))
++
+         for ship in ships.values():
+-            ship.addPlunder(rollPlunder(level))
++            plunder = rollPlunder(level)
++            ship.addPlunder(plunder)
++            self.notify.warning('TEMP-DIAG npc ship %d: plunder %s into ship %d' % (self.doId, plunder, ship.doId))
+ 
+     def _rewardSinker(self, avatar, categories, exp, avatarType, goldLevel):
+         inventory = avatar.getInventory()
+         if inventory is None:
++            self.notify.warning('TEMP-DIAG npc ship %d: pirate %d has no inventory, not paid' % (self.doId, avatar.doId))
+             return
+ 
+         # the level cap the land enemies' reward (BattleManagerAI.rewardAttacker) keeps
+         if hasattr(avatar, 'getGameAccess'):
+             if not avatar.getGameAccess() and avatar.getLevel() >= Freebooter.FreeOverallLevelCap:
++                self.notify.warning('TEMP-DIAG npc ship %d: pirate %d at the free level cap, not paid' % (self.doId, avatar.doId))
+                 return
+ 
+         for category in categories:
+@@ -276,8 +287,9 @@ class NPCShipAI(DistributedShipAI):
+         if hasattr(avatar, 'd_sendReputationMessage'):
+             avatar.d_sendReputationMessage(self.doId, categories, [exp] * len(categories), 0, 0, 0, 0)
+ 
+-        self.notify.info('pirate %d sank ship %d (class %s, level %d): reputation %s +%d, gold +%d' % (
+-            avatar.doId, self.doId, self.getShipClass(), goldLevel, categories, exp, gold))
++        self.notify.warning('TEMP-DIAG pirate %d sank ship %d (class %s, level %d): reputation %s +%d, overall +%d, gold +%d (pocket now %s)' % (
++            avatar.doId, self.doId, self.getShipClass(), goldLevel, categories, exp, exp, gold,
++            getattr(inventory, 'getGoldInPocket', lambda: '?')()))
+ 
+     def handleCannonHit(self, attackerDoId, damage, hitPos):
+         """
+-- 
+2.53.0
+

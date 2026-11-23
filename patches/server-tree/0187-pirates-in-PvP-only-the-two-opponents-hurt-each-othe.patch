@@ -1,0 +1,43 @@
+From 2dfdceeefbf69f0a2bedcd50112dd7b5cd67a6d6 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:57:29 -0800
+Subject: [PATCH 187/371] pirates: in PvP only the two opponents hurt each
+ other (0245)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/BattleManagerAI.py | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/battle/BattleManagerAI.py b/pirates/battle/BattleManagerAI.py
+index 035af7e..5edd196 100644
+--- a/pirates/battle/BattleManagerAI.py
++++ b/pirates/battle/BattleManagerAI.py
+@@ -152,9 +152,23 @@ class BattleManagerAI(BattleManagerBase):
+                 self.notify.warning('Freebooter (%d) attempted to use paid weapon (%d)' % (avatar.doId, currentWeaponId))
+                 return None
+ 
++        # family server (11-18): one pirate hurts another only in a Skirmish they both said yes to, and
++        # only someone on the other side. Helping skills (a heal) still work on anyone, and zombie events
++        # keep their own rules. Opponents may use pistols and muskets on each other, like the old PvP.
++        pirateFight = isinstance(avatar, DistributedPlayerPirateAI) and isinstance(target, DistributedPlayerPirateAI) \
++            and avatar is not target and not WeaponGlobals.isFriendlyFire(skillId, ammoSkillId) \
++            and not getattr(avatar, 'zombie', 0) and not getattr(target, 'zombie', 0)
++        if pirateFight:
++            pvpManager = getattr(self.air, 'pvpManager', None)
++            if not pvpManager or not pvpManager.allowHit(avatar, target):
++                self.notify.debug('Cannot get skill result for avatar %d, '
++                    'pirate %d is not his Skirmish opponent!' % (avatar.doId, target.doId))
++
++                return None
++
+         # ensure the avatar that has sent this skill request obeys
+         # the pirate code and can use the weapon on the target...
+-        obeysPirateCode = self.obeysPirateCode(avatar, target)
++        obeysPirateCode = pirateFight or self.obeysPirateCode(avatar, target)
+         if not obeysPirateCode:
+             self.notify.debug('Cannot get skill result for avatar %d, '
+                 'does not obey pirate code!' % (avatar.doId))
+-- 
+2.53.0
+

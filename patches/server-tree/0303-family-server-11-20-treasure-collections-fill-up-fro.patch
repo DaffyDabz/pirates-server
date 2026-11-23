@@ -1,0 +1,145 @@
+From 24cee1baf872de44d2d5c30fcd6344bd4e949a5a Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 303/371] family server (11-20): treasure collections fill up
+ from enemy drops, and treasure part 2 can be played (0387)
+
+Server: once a treasure quest opens a collection (Tia Dalma's Menagerie, Rudyard's Teeth...), the right kind of enemy
+drops its pieces about every other kill with a "NEW!" pop-up; a full set starts "bring the set back", and the
+hand-in pays and marks the set complete. Before, nothing ever granted a collection piece.
+Lane: loot. Tests: test_loot_ai.py, test_loot_client.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/BattleManagerAI.py    |  6 +++
+ pirates/quest/QuestManagerAI.py      |  6 +++
+ pirates/uberdog/PirateInventoryAI.py | 61 ++++++++++++++++++++++++++++
+ 3 files changed, 73 insertions(+)
+
+diff --git a/pirates/battle/BattleManagerAI.py b/pirates/battle/BattleManagerAI.py
+index a783f55..a051dd4 100644
+--- a/pirates/battle/BattleManagerAI.py
++++ b/pirates/battle/BattleManagerAI.py
+@@ -567,6 +567,12 @@ class BattleManagerAI(BattleManagerBase):
+             cardId = random.randint(InventoryType.begin_Cards, InventoryType.end_Cards - 1)
+             inventory.giveCards(cardId, 1)
+ 
++        # family server (11-20): treasure collection parts (PirateInventoryAI.rollCollectionLoot)
++        try:
++            inventory.rollCollectionLoot(attacker, target.getAvatarType())
++        except Exception as e:
++            self.notify.warning('collection loot for %d failed: %r' % (attacker.doId, e))
++
+         # attempt to update the avatar's active task progress...
+         # the weapon (reputation category) that did the most work decides the weapon-quest match
+         weaponType = max(usedReps, key=usedReps.get) if usedReps else None
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 2cdc61b..c0fc3c9 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -556,6 +556,12 @@ class QuestManagerAI(DirectObject):
+ 
+         self._giveRewards(avatar, rewards)
+ 
++        # family server (11-20): treasure part 2 ("return with the Nine Rogues") hands in a full collection; the
++        # journal then shows the set as complete (PirateInventoryAI.collectionHandedIn)
++        inventory = avatar.getInventory()
++        if inventory is not None and hasattr(inventory, 'collectionHandedIn'):
++            inventory.collectionHandedIn(avatar, questDNA.getQuestId())
++
+         # family server: Chapter 3's last quest ("visit Jack Sparrow" in the Tortuga tavern) is the end of the story
+         # in this build. The game's "Chapter 3 complete, stay tuned" panel was sent only when a finished quest handed
+         # the pirate his next one, and the end of the story hands out none, so the story just stopped in silence.
+diff --git a/pirates/uberdog/PirateInventoryAI.py b/pirates/uberdog/PirateInventoryAI.py
+index a9711a3..b114adc 100644
+--- a/pirates/uberdog/PirateInventoryAI.py
++++ b/pirates/uberdog/PirateInventoryAI.py
+@@ -1,3 +1,5 @@
++import random
++
+ from pirates.uberdog.DistributedInventoryAI import DistributedInventoryAI
+ from direct.directnotify import DirectNotifyGlobal
+ from pirates.uberdog.UberDogGlobals import InventoryId, InventoryType, InventoryCategory
+@@ -6,6 +8,7 @@ from pirates.reputation import ReputationGlobals
+ from pirates.battle import WeaponGlobals
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.ship import ShipGlobals
++from pirates.piratesbase import CollectionMap
+ 
+ CHAPTER2_LADDER_INT = 2100  # QuestLadderDB MainStory 'Chapter 2'
+ 
+@@ -166,6 +169,7 @@ class PirateInventoryAI(DistributedInventoryAI):
+             avatar.b_setMojo(mojoGoal)
+         if changes:
+             self.notify.info('LEVEL-CATCHUP avatar %d: %s' % (avatar.doId, ', '.join(changes)))
++        quests.extend(self.getFullCollectionQuests())
+         if quests:
+             # after the login quest jobs (saved quests, the Chapter 2 opener), which would drop a quest given at once
+             taskMgr.doMethodLater(5.0, lambda task: self.giveLevelUpQuests(avatar, quests),
+@@ -226,6 +230,63 @@ class PirateInventoryAI(DistributedInventoryAI):
+         avatar.giveCardMessage(stackType)
+         self.b_setStackQuantity(stackType, self.getStackQuantity(stackType) + amount)
+ 
++    # family server (11-20): treasure collections. The treasure quests (tr, tt, tm, trr, tc, tf) open a set in the
++    # journal (set stack 1, CollectReward), and the journal page, the loot pop-up and the part 2 quests ("return with
++    # the Nine Rogues to Elizabeth") were all there, but no enemy ever dropped a collection item, so no set ever
++    # filled and part 2 never started. The parts are inventory stacks (saved with the rest of his inventory).
++    # Each enemy of the set's kind (CollectionMap.Collection_Found: Navy, undead, water undead, EITC, creatures)
++    # now drops a part he still needs, half the time, for every open set; the parts he needs most come up most, so a
++    # set takes as many drops as it has items (32 at most) and fills in an evening. The last part starts the set's
++    # part 2 quest; handing it in marks the set complete (set stack 2).
++    CollectionDropChance = 0.5
++    CollectionQuests = {
++        InventoryType.Collection_Set3: 'tr2.1deliverPaintings',
++        InventoryType.Collection_Set4: 'tm2.1deliverMedals',
++        InventoryType.Collection_Set5: 'tt2.1deliverTeeth',
++        InventoryType.Collection_Set6: 'trr2.1deliverRings',
++        InventoryType.Collection_Set7: 'tc2.1deliverChess',
++        InventoryType.Collection_Set8: 'tf2.1deliverFigurines'}
++
++    def getCollectionNeeds(self, setId):
++        # {part: how many more of it he needs}
++        needs = {}
++        for part in range(setId + 1, setId + 1 + CollectionMap.Collection_Set_Sizes[setId]):
++            more = CollectionMap.Collection_Needed.get(part, 1) - self.getStackQuantity(part)
++            if more > 0:
++                needs[part] = more
++
++        return needs
++
++    def rollCollectionLoot(self, avatar, avatarType):
++        for setId, found in sorted(CollectionMap.Collection_Found.items()):
++            # 1 = open (part 1 done), 2 = handed in
++            if self.getStackQuantity(setId) != 1 or not avatarType.isA(found):
++                continue
++
++            needs = self.getCollectionNeeds(setId)
++            if not needs or random.random() >= self.CollectionDropChance:
++                continue
++
++            parts = sorted(needs)
++            part = random.choices(parts, weights=[needs[p] for p in parts])[0]
++            # the pop-up says NEW! while his count is still below what the set needs, so it goes out first
++            avatar.d_sendLootMessage(part)
++            self.b_setStackQuantity(part, self.getStackQuantity(part) + 1)
++            if not self.getCollectionNeeds(setId):
++                self.notify.info('COLLECTION-FULL set %d for avatar %d' % (setId, avatar.doId))
++                self.giveLevelUpQuests(avatar, [self.CollectionQuests[setId]])
++
++    def getFullCollectionQuests(self):
++        # the part 2 quest of every open set that is full (given at login if he lost it or dropped it)
++        return [questId for setId, questId in sorted(self.CollectionQuests.items())
++                if self.getStackQuantity(setId) == 1 and not self.getCollectionNeeds(setId)]
++
++    def collectionHandedIn(self, avatar, questId):
++        for setId, setQuestId in self.CollectionQuests.items():
++            if setQuestId == questId and self.getStackQuantity(setId) == 1 and not self.getCollectionNeeds(setId):
++                self.notify.info('COLLECTION-HANDED-IN set %d for avatar %d' % (setId, avatar.doId))
++                self.b_setStackQuantity(setId, 2)
++
+     def setShipDoIdList(self, shipList):
+         return self.b_setDoIdListCategory(InventoryCategory.SHIPS, shipList)
+ 
+-- 
+2.53.0
+

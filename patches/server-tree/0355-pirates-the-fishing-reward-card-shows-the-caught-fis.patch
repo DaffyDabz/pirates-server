@@ -1,0 +1,130 @@
+From 34d89495d6a2867a08be38f6178b1de8a6b8caa8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 17:16:02 -0800
+Subject: [PATCH 355/371] pirates: the fishing reward card shows the caught
+ fish's own picture instead of an empty circle (the 20 fish ids join the
+ collection constants and picture map; the pictures ship as a small new art
+ file) (client patch 53, art + code, no DC change, no restart)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/FishingResults.py   | 18 +++++++++++++++---
+ pirates/piratesbase/CollectionMap.py | 23 ++++++++++++++++++++++-
+ pirates/uberdog/UberDogGlobals.py    | 20 ++++++++++++++++++++
+ 3 files changed, 57 insertions(+), 4 deletions(-)
+
+diff --git a/pirates/minigame/FishingResults.py b/pirates/minigame/FishingResults.py
+index 50c8134..03f1135 100644
+--- a/pirates/minigame/FishingResults.py
++++ b/pirates/minigame/FishingResults.py
+@@ -1,6 +1,7 @@
+ from pirates.piratesgui.GuiPanel import *
+ from pirates.piratesgui.RequestButton import RequestButton
+ from pirates.piratesbase import PLocalizer
++from pirates.piratesbase import CollectionMap
+ from pirates.minigame import FishingGlobals
+ 
+ class FishingResults(NodePath):
+@@ -24,6 +25,8 @@ class FishingResults(NodePath):
+         self.fishName = None
+         self.fishWeight = None
+         self.fishGold = None
++        self.fishIcon = None
++        self.fishPictures = loader.loadModel('models/gui/fish_collection_gui', okMissing=True)
+ 
+     def makeLabel(self, text, scale, pos, fg=None, font=None):
+         extra = {}
+@@ -35,13 +38,22 @@ class FishingResults(NodePath):
+         self.bAgain.destroy()
+ 
+     def showAll(self):
++        if self.fishIcon is not None:
++            self.fishIcon.destroy()
++            self.fishIcon = None
+         for label in (self.fishName, self.fishWeight, self.fishGold):
+             if label is not None:
+                 label.removeNode()
+         fish = self.gameObject.fishManager.activeFish
+-        self.fishName = self.makeLabel(fish.myData['name'], PiratesGuiGlobals.TextScaleTitleMed, (0.64, 0, 0.95))
+-        self.fishWeight = self.makeLabel(str(fish.weight) + ' ' + PLocalizer.FishingGui['WeightLabel'], PiratesGuiGlobals.TextScaleTitleLarge, (0.64, 0, 0.7))
+-        self.fishGold = self.makeLabel('+ ' + str(FishingGlobals.getFishGold(fish.myData, fish.weight)) + ' ' + PLocalizer.FishingGui['GoldText'], PiratesGuiGlobals.TextScaleTitleSmall, (0.64, 0, 0.5))
++        self.fishName = self.makeLabel(fish.myData['name'], PiratesGuiGlobals.TextScaleTitleMed, (0.64, 0, 1.04))
++        self.fishWeight = self.makeLabel(str(fish.weight) + ' ' + PLocalizer.FishingGui['WeightLabel'], PiratesGuiGlobals.TextScaleTitleLarge, (0.4, 0, 0.6))
++        self.fishGold = self.makeLabel('+ ' + str(FishingGlobals.getFishGold(fish.myData, fish.weight)) + ' ' + PLocalizer.FishingGui['GoldText'], PiratesGuiGlobals.TextScaleTitleSmall, (0.9, 0, 0.58))
++        picName = CollectionMap.Assets.get(fish.myData['id'])
++        picture = None
++        if picName and self.fishPictures:
++            picture = self.fishPictures.find('**/%s*' % picName)
++        if picture and not picture.isEmpty():
++            self.fishIcon = DirectFrame(parent=self, relief=None, geom=picture, geom_scale=1.0, pos=(0.64, 0, 0.85))
+         self.setScale(0.75, 0.75, 0.75)
+         self.show()
+ 
+diff --git a/pirates/piratesbase/CollectionMap.py b/pirates/piratesbase/CollectionMap.py
+index bdc1aca..cb86496 100644
+--- a/pirates/piratesbase/CollectionMap.py
++++ b/pirates/piratesbase/CollectionMap.py
+@@ -130,7 +130,28 @@ Assets = {
+     InventoryType.Collection_Set9_Part9: 'set9_recoil_rope',
+     InventoryType.Collection_Set9_Part10: 'set9_sighting_scope',
+     InventoryType.Collection_Set9_Part11: 'set9_silk_swab',
+-    InventoryType.Collection_Set9_Part12: 'set9_silver_ramrod'}
++    InventoryType.Collection_Set9_Part12: 'set9_silver_ramrod',
++    InventoryType.Collection_Set10: 'set10_tuna',
++    InventoryType.Collection_Set10_Part1: 'set10_tang',
++    InventoryType.Collection_Set10_Part2: 'set10_chub',
++    InventoryType.Collection_Set10_Part3: 'set10_chromis',
++    InventoryType.Collection_Set10_Part4: 'set10_anthias',
++    InventoryType.Collection_Set10_Part5: 'set10_tuna',
++    InventoryType.Collection_Set10_Part6: 'set10_parrot',
++    InventoryType.Collection_Set10_Part7: 'set10_barracuda',
++    InventoryType.Collection_Set10_Part8: 'set10_marlin',
++    InventoryType.Collection_Set10_Part9: 'set10_tshark',
++    InventoryType.Collection_Set10_Part10: 'set10_grouper',
++    InventoryType.Collection_Set10_Part11: 'set10_coelacanth',
++    InventoryType.Collection_Set10_Part12: 'set10_hatchet',
++    InventoryType.Collection_Set10_Part13: 'set10_lion',
++    InventoryType.Collection_Set10_Part14: 'set10_wolf',
++    InventoryType.Collection_Set10_Part15: 'set10_chimera',
++    InventoryType.Collection_Set10_Part16: 'set10_dragon',
++    InventoryType.Collection_Set10_Part17: 'set10_goblin',
++    InventoryType.Collection_Set10_Part18: 'set10_angler',
++    InventoryType.Collection_Set10_Part19: 'set10_lump',
++    InventoryType.Collection_Set10_Part20: 'set10_mega'}
+ Collection_Set_Sizes = {
+     InventoryType.Collection_Set1: 20,
+     InventoryType.Collection_Set2: 20,
+diff --git a/pirates/uberdog/UberDogGlobals.py b/pirates/uberdog/UberDogGlobals.py
+index 5aac3a2..837cc0a 100644
+--- a/pirates/uberdog/UberDogGlobals.py
++++ b/pirates/uberdog/UberDogGlobals.py
+@@ -684,6 +684,26 @@ class InventoryType:
+     Collection_Set9_Part11 = 15241
+     Collection_Set9_Part12 = 15242
+     Collection_Set10 = 15243
++    Collection_Set10_Part1 = 15244
++    Collection_Set10_Part2 = 15245
++    Collection_Set10_Part3 = 15246
++    Collection_Set10_Part4 = 15247
++    Collection_Set10_Part5 = 15248
++    Collection_Set10_Part6 = 15249
++    Collection_Set10_Part7 = 15250
++    Collection_Set10_Part8 = 15251
++    Collection_Set10_Part9 = 15252
++    Collection_Set10_Part10 = 15253
++    Collection_Set10_Part11 = 15254
++    Collection_Set10_Part12 = 15255
++    Collection_Set10_Part13 = 15256
++    Collection_Set10_Part14 = 15257
++    Collection_Set10_Part15 = 15258
++    Collection_Set10_Part16 = 15259
++    Collection_Set10_Part17 = 15260
++    Collection_Set10_Part18 = 15261
++    Collection_Set10_Part19 = 15262
++    Collection_Set10_Part20 = 15263
+     end_Collections = Collection_Set10 + 1
+     Collection_Sets = (Collection_Set1, Collection_Set2, Collection_Set3, Collection_Set4, Collection_Set5, Collection_Set6, Collection_Set7, Collection_Set8, Collection_Set9)
+     UberDogRev = 15999
+-- 
+2.53.0
+

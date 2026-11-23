@@ -1,0 +1,43 @@
+From 1013db707b7526124ef6932e19e46c6e25efa1ae Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 11:59:26 -0800
+Subject: [PATCH 347/371] family server: a quest that was already handed in no
+ longer takes every talk with its NPC
+
+completeTaskState gave a talk to the first finished quest in the list that its NPC answers. A quest already in the
+pirate's quest history can come back in the list (a ladder re-gave c3r2.5.5visitOrinda, int 3350, after its later
+quests were done). completeQuest refuses it ('was already completed!'), yet it took every talk with Orinda first:
+the talk counted as handled, hung two minutes, and the visit the pirate came for (c3r3r1.1visitOrinda) never
+counted (11-21 MAIN10, 100000596, 11:43-11:49).
+
+A held finished quest whose int is already in avatar.getQuestHistory() is now skipped. Offline sim with the real
+completeTaskState / getReturnNpcUids / waitsForHandIn / _getSearchState on stub quests (places'
+sim_stale_handin.py): HEAD FAIL (2: stale + visit, stale only), patched PASS (4 cases; a real hand-in and another
+NPC unchanged). AI only.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 5a69bac..a308c0a 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -671,6 +671,13 @@ class QuestManagerAI(DirectObject):
+             # check to see if the quest event has been completed,
+             # if so then handle the callback we set...
+             if quest.isComplete():
++                if wasComplete and quest.getQuestDNA().getQuestInt() in avatar.getQuestHistory():
++                    # family server: a quest that was handed in already but came back in the quest list (a ladder
++                    # re-gave c3r2.5.5visitOrinda after its later quests were done) can never be handed in again
++                    # (completeQuest refuses it), yet it took every talk with its NPC first: Orinda hung for two
++                    # minutes and the visit the pirate came for ("visit Orinda" for the Gunner) never counted.
++                    continue
++
+                 if wasComplete:
+                     # family server: a quest choice keeps its finished quest until the other quests are done.
+                     # That held quest took every later kill, sinking, chest, bribe and talk for itself (the loop
+-- 
+2.53.0
+

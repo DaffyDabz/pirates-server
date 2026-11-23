@@ -1,0 +1,59 @@
+From 3e0d9379c6fba64b8578a66f2caa53bf721affbd Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:54:29 -0800
+Subject: [PATCH 086/371] pirates: a finished quest waits until the pirate
+ talks to its return NPC, as server-tree patch 0100 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 03e36b7..7d222d4 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -546,6 +546,19 @@ class QuestManagerAI(DirectObject):
+         uids.append(quest.getGiverId())
+         return [uid for uid in uids if isinstance(uid, str) and uid not in ('', '0')]
+ 
++    def waitsForHandIn(self, quest):
++        # the quest must be brought back to an NPC who is in the world; a quest with no known NPC is still
++        # handed in at once, as before, so it can never get stuck
++        dna = quest.getQuestDNA()
++        if not dna or not dna.getCompleteRequiresVisit():
++            return False
++
++        for uid in self.getReturnNpcUids(quest):
++            if self.air.uidMgr.justGetMeMeObject(uid) is not None:
++                return True
++
++        return False
++
+     def completeTaskState(self, avatar, questEvent, callback=None, npc=None):
+         questObjects = list(self.quests.get(avatar.doId, {}).values())
+         if not questObjects:
+@@ -569,6 +582,20 @@ class QuestManagerAI(DirectObject):
+                     if owners and npc.getUniqueId() not in owners:
+                         continue
+ 
++                if npc is None and self.waitsForHandIn(quest):
++                    # family server: a quest marked completeRequiresVisit with a return NPC ("return to Will
++                    # Turner") was handed in and paid the moment its last kill / pickup / sinking landed, so the
++                    # quest log never said where to go back and the NPC's hand-in was skipped. It now waits, done,
++                    # for that NPC (the beam points there); talking to him hands it in. It must not swallow
++                    # other quests' events while it waits.
++                    if wasComplete:
++                        continue
++
++                    if callback is not None:
++                        callback(quest)
++
++                    return True
++
+                 if callback is not None:
+                     callback(quest)
+                 else:
+-- 
+2.53.0
+

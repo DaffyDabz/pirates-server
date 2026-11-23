@@ -1,0 +1,110 @@
+From 1e04a3dcc035d5f5c4c0e6b588e83ce758c17178 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:54:30 -0800
+Subject: [PATCH 087/371] pirates: gold, items, ammo and reputation are still
+ there at the next login, as server-tree patch 0101 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/DistributedInventoryAI.py | 57 +++++++++++++++++++++++
+ 1 file changed, 57 insertions(+)
+
+diff --git a/pirates/uberdog/DistributedInventoryAI.py b/pirates/uberdog/DistributedInventoryAI.py
+index f8d6cb9..77a9ef6 100644
+--- a/pirates/uberdog/DistributedInventoryAI.py
++++ b/pirates/uberdog/DistributedInventoryAI.py
+@@ -4,6 +4,14 @@ from pirates.uberdog.DistributedInventoryBase import DistributedInventoryBase
+ from pirates.uberdog.UberDogGlobals import (InventoryCategory, InventoryId,
+     InventoryType, getSkillCategory)
+ 
++# family server: the single-item updates (stack, accumulator, stackLimit) are not database fields in the dc, so a
++# change to gold, an item, ammo, a stack limit or reputation was only sent to the client and was gone at the next
++# login. Every such change now also schedules one save of the full lists (setStacks, setAccumulators,
++# setStackLimits are 'ram db' fields, so the state server writes them to the database).
++INVENTORY_SAVE_DELAY = 1.0  # seconds; many changes in a row (a fight, a shop cart) make one save
++UINT16_MAX = 65535
++UINT32_MAX = 4294967295
++
+ 
+ class DistributedInventoryAI(DistributedObjectAI, DistributedInventoryBase):
+     """
+@@ -93,6 +101,7 @@ class DistributedInventoryAI(DistributedObjectAI, DistributedInventoryBase):
+     def b_setAccumulator(self, accumulatorType, quantity):
+         self.setAccumulator(accumulatorType, quantity)
+         self.d_setAccumulator(accumulatorType, quantity)
++        self.scheduleSave()
+ 
+     def setStackLimit(self, stackType, limit):
+         # Local state update only.  The targeted network send is done by
+@@ -105,6 +114,7 @@ class DistributedInventoryAI(DistributedObjectAI, DistributedInventoryBase):
+     def b_setStackLimit(self, stackType, limit):
+         self.setStackLimit(stackType, limit)
+         self.d_setStackLimit(stackType, limit)
++        self.scheduleSave()
+ 
+     def setStackQuantity(self, stackType, quantity):
+         # Apply the stack cap only when a positive limit exists.  A missing
+@@ -126,6 +136,51 @@ class DistributedInventoryAI(DistributedObjectAI, DistributedInventoryBase):
+     def b_setStackQuantity(self, stackType, quantity):
+         self.setStackQuantity(stackType, quantity)
+         self.d_setStackQuantity(stackType, quantity)
++        self.scheduleSave()
++
++    # family server: see INVENTORY_SAVE_DELAY at the top of this file
++    def _saveTaskName(self):
++        return 'inventorySave-%s' % self.doId
++
++    def scheduleSave(self):
++        if not self.doId:
++            return
++        self._savePending = True
++        name = self._saveTaskName()
++        if not taskMgr.hasTaskNamed(name):
++            taskMgr.doMethodLater(INVENTORY_SAVE_DELAY, self._saveTask, name)
++
++    def _saveTask(self, task):
++        self.saveNow()
++        return task.done
++
++    def _saveFields(self):
++        def clamp(value, top):
++            return int(max(0, min(int(value), top)))
++        stacks = [[t, clamp(q, UINT16_MAX)] for t, q in list(self.stacks.items())]
++        accumulators = [[t, clamp(q, UINT32_MAX)] for t, q in list(self.accumulators.items())]
++        stackLimits = [[t, clamp(q, UINT16_MAX)] for t, q in list(self.stackLimits.items())]
++        return stacks, accumulators, stackLimits
++
++    def saveNow(self, direct=False):
++        if not getattr(self, '_savePending', False):
++            return
++        self._savePending = False
++        taskMgr.remove(self._saveTaskName())
++        try:
++            stacks, accumulators, stackLimits = self._saveFields()
++            if direct:
++                # the object is leaving the state server: write straight to the database
++                self.air.dbInterface.updateObject(self.air.dbId, self.doId, self.dclass, {
++                    'setStacks': (stacks,),
++                    'setAccumulators': (accumulators,),
++                    'setStackLimits': (stackLimits,)})
++            else:
++                self.sendUpdate('setStacks', [stacks])
++                self.sendUpdate('setAccumulators', [accumulators])
++                self.sendUpdate('setStackLimits', [stackLimits])
++        except Exception:
++            self.notify.exception('Failed to save inventory %s' % self.doId)
+ 
+     def setStacksInCategory(self, stackType, quantity):
+         category = InventoryId.getCategory(stackType)
+@@ -213,6 +268,8 @@ class DistributedInventoryAI(DistributedObjectAI, DistributedInventoryBase):
+         self.notify.warning('No valid callback for a callback response! What was the purpose of that?')
+ 
+     def delete(self):
++        # family server: a change made in the last second before logout is written now
++        self.saveNow(direct=True)
+         try:
+             self.air.inventoryManager.removeInventory(self)
+         except Exception:
+-- 
+2.53.0
+

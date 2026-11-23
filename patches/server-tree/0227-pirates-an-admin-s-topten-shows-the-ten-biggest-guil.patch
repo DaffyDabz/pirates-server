@@ -1,0 +1,35 @@
+From ac54dcb2aed737c1838ef5603bc4a6036ae087d5 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:55:57 -0800
+Subject: [PATCH 227/371] pirates: an admin's ~topten shows the ten biggest
+ guilds (0286)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/friends/PCGuildManagerUD.py | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/friends/PCGuildManagerUD.py b/pirates/friends/PCGuildManagerUD.py
+index 53b2406..2879d8a 100644
+--- a/pirates/friends/PCGuildManagerUD.py
++++ b/pirates/friends/PCGuildManagerUD.py
+@@ -716,7 +716,15 @@ class PCGuildManagerUD(DistributedObjectGlobalUD):
+         pass
+ 
+     def requestLeaderboardTopTen(self):
+-        pass
++        # family server (patch 0286): the ten biggest guilds, most members first (ties: the older guild), as
++        # leaderBoardRecord [id, text, value]; the client lists them for 15 s (GuiManager.handleTopTen)
++        avId = self.getSender()
++        if not avId:
++            return
++        guilds = sorted(self.store.guilds.values(), key=lambda g: (-len(g['members']), g['id']))[:10]
++        records = [[g['id'], self.displayName(g)[:64], len(g['members'])] for g in guilds if g['members']]
++        self.sendToAv(avId, 'leaderboardTopTen', [records])
++        self.event('guild-top-ten', avId=avId, count=len(records))
+ 
+     def sameGuildOnline(self, avId, otherId):
+         # a pirate reaches only his own guildmates, and only while they play
+-- 
+2.53.0
+

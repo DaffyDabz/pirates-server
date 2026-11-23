@@ -1,0 +1,33 @@
+From ea669ebf7569a850087e524df7febd7ad7e660d4 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:27:11 -0800
+Subject: [PATCH 172/371] pirates: poker all-in keeps his hand (0214)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/DistributedPokerTableAI.py | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/minigame/DistributedPokerTableAI.py b/pirates/minigame/DistributedPokerTableAI.py
+index 201a31c..84908c8 100644
+--- a/pirates/minigame/DistributedPokerTableAI.py
++++ b/pirates/minigame/DistributedPokerTableAI.py
+@@ -379,7 +379,14 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+ 
+     def _startBettingRound(self, round):
+         self._round = round
+-        self._bettingOrder = list(self._activeBettors)
++        # A seat with no chips left is all in: it stays in the hand to the showdown
++        # but is not asked to bet. When fewer than two seats can still bet, only a
++        # seat that still owes a call is asked.
++        canBet = [s for s in self._activeBettors if self._chipsCount[s] > 0]
++        if len(canBet) >= 2:
++            self._bettingOrder = canBet
++        else:
++            self._bettingOrder = [s for s in canBet if self._maxBet > self._playerActions[s][1]]
+ 
+         # Community card dealing for Holdem
+         if self.gameType == PlayingCardGlobals.Holdem:
+-- 
+2.53.0
+

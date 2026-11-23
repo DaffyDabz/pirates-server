@@ -1,0 +1,97 @@
+From 3fe826510b2e91fb03ee33d3742a0c1b83ca5230 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 307/371] family server (11-20): a grenade uses up one grenade
+ per throw, even when it hits a crowd (0391)
+
+Server: one grenade was taken per target hit (getTargetedSkillResult runs once per areaId); area pistol shots too.
+Lane: combat. Test: test_one_ammo_per_throw.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/BattleManagerAI.py |  7 ++++---
+ pirates/battle/WeaponBaseAI.py    | 12 ++++++------
+ 2 files changed, 10 insertions(+), 9 deletions(-)
+
+diff --git a/pirates/battle/BattleManagerAI.py b/pirates/battle/BattleManagerAI.py
+index 2d32f3f..c89bbaa 100644
+--- a/pirates/battle/BattleManagerAI.py
++++ b/pirates/battle/BattleManagerAI.py
+@@ -87,7 +87,7 @@ class BattleManagerAI(BattleManagerBase):
+ 
+         return False
+ 
+-    def getTargetedSkillResult(self, avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos, charge=0):
++    def getTargetedSkillResult(self, avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos, charge=0, payAmmo=True):
+         if not avatar:
+             return None
+ 
+@@ -123,8 +123,9 @@ class BattleManagerAI(BattleManagerBase):
+ 
+             return None
+ 
+-        # Subtract ammo
+-        if isinstance(avatar, DistributedPlayerPirateAI):
++        # Subtract ammo, once per throw or shot: the extra targets in its area
++        # come in with payAmmo off (one grenade used to cost one per enemy hit)
++        if payAmmo and isinstance(avatar, DistributedPlayerPirateAI):
+             inventory = avatar.getInventory()
+             if ammoSkillId and not WeaponGlobals.isInfiniteAmmo(ammoSkillId):
+                 ammoId = WeaponGlobals.getSkillAmmoInventoryId(ammoSkillId)
+diff --git a/pirates/battle/WeaponBaseAI.py b/pirates/battle/WeaponBaseAI.py
+index ef2b105..29cfef1 100644
+--- a/pirates/battle/WeaponBaseAI.py
++++ b/pirates/battle/WeaponBaseAI.py
+@@ -46,7 +46,7 @@ class WeaponBaseAI(WeaponBaseBase):
+ 
+                 continue
+ 
+-            self.useTargetedSkill(avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos, charge)
++            self.useTargetedSkill(avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos, charge, payAmmo=False)
+ 
+     def requestProjectileSkill(self, skillId, ammoSkillId, posHpr, timestamp, power):
+         avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
+@@ -136,7 +136,7 @@ class WeaponBaseAI(WeaponBaseBase):
+ 
+                     continue
+ 
+-                self.useProjectileSkill(avatar, target, skillId, ammoSkillId, result, targetId, areaIdList, pos, normal, codes, timestamp)
++                self.useProjectileSkill(avatar, target, skillId, ammoSkillId, result, targetId, areaIdList, pos, normal, codes, timestamp, payAmmo=False)
+         else:
+             # handle projectile skill results for ships and shipparts:
+             cannonCode, hullCode, sailCode = codes
+@@ -223,12 +223,12 @@ class WeaponBaseAI(WeaponBaseBase):
+         return [skillId, ammoSkillId, skillResult, target.doId, areaIdList, attackerEffects, targetEffects,
+             [attackerEffects, targetEffects], globalClockDelta.getRealNetworkTime(bits=32), pos, charge]
+ 
+-    def useTargetedSkill(self, avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos, charge):
++    def useTargetedSkill(self, avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos, charge, payAmmo=True):
+         if getattr(target, 'takeKrakenHit', None) is not None:
+             self.sendUpdate('useTargetedSkill', self._krakenHit(avatar, target, skillId, ammoSkillId, areaIdList, pos, charge))
+             return
+ 
+-        targetResult = self.air.battleMgr.getTargetedSkillResult(avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos, charge)
++        targetResult = self.air.battleMgr.getTargetedSkillResult(avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos, charge, payAmmo)
+         if not targetResult:
+             self.notify.debug('Cannot get targeted skill, no valid result was given; '
+                 'avatarId=%d, skillId=%d!' % (avatar.doId, skillId))
+@@ -237,14 +237,14 @@ class WeaponBaseAI(WeaponBaseBase):
+ 
+         self.sendUpdate('useTargetedSkill', targetResult)
+ 
+-    def useProjectileSkill(self, avatar, target, skillId, ammoSkillId, result, targetId, areaIdList, pos, normal, codes, timestamp):
++    def useProjectileSkill(self, avatar, target, skillId, ammoSkillId, result, targetId, areaIdList, pos, normal, codes, timestamp, payAmmo=True):
+         if getattr(target, 'takeKrakenHit', None) is not None:
+             targetResult = self._krakenHit(avatar, target, skillId, ammoSkillId, areaIdList, pos, 0)
+         else:
+             # the client's suggested result is not an argument here: passing it
+             # moved every later one along (the hit list got a number, the hit
+             # position landed in charge) and the hit broadcast below could not be sent
+-            targetResult = self.air.battleMgr.getTargetedSkillResult(avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos)
++            targetResult = self.air.battleMgr.getTargetedSkillResult(avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos, payAmmo=payAmmo)
+         if not targetResult:
+             self.notify.debug('Cannot get projectile targeted skill, '
+                 'no valid result was given; avatarId=%d, skillId=%d!' % (avatar.doId, skillId))
+-- 
+2.53.0
+

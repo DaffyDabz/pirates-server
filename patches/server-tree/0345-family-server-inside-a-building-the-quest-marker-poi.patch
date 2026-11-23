@@ -1,0 +1,68 @@
+From ce38017a9b4af0452bc35f7fd5d4492cca5d3f19 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 10:29:53 -0800
+Subject: [PATCH 345/371] family server: inside a building the quest marker
+ points at the room's door when the next goal is outside
+
+QuestManagerAI.getQuestStepObject walked the parents of the avatar and the goal in lockstep. Interiors hang off
+their own instance world, so from inside a building that walk never met a goal outdoors (11-21 MAIN7 in the
+Tortuga tavern on c3r2.5.5visitOrinda, Orinda on the pier): every requestQuestStep answered an empty step, no beam
+and no arrow, until he happened to walk out.
+
+Now, when the avatar stands in a GA interior and the goal is not inside one, the step is the room's own generated
+inside door that has an outside partner (front, then back), as the original game did, and getQuestStepType maps a
+DistributedInteriorDoorAI to STInteriorDoor (the client's QuestIndicatorNodeIntDoor already handles it). A room
+with no usable door gives no step, as before. Offline sim with the real getQuestStepType / getQuestStepObject /
+getQuestStep on a stub world (places' sim_indoor_step.py): HEAD FAIL (2), patched PASS, the four unchanged cases
+(same tavern, both outdoors, outdoors into the tavern, another island) still the same. AI only.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index c0fc3c9..0f848ca 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -1069,6 +1069,8 @@ class QuestManagerAI(DirectObject):
+             stepType = QuestStep.STNPC
+         elif isinstance(goalObject, DistributedGAInteriorAI):
+             stepType = QuestStep.STInteriorDoor
++        elif isinstance(goalObject, DistributedInteriorDoorAI):
++            stepType = QuestStep.STInteriorDoor
+         elif isinstance(goalObject, DistributedBuildingDoorAI):
+             stepType = QuestStep.STExteriorDoor
+         elif isinstance(goalObject, DistributedDinghyAI):
+@@ -1117,6 +1119,13 @@ class QuestManagerAI(DirectObject):
+             if otherObject is None:
+                 otherObject = avatar
+         else:
++            # family server (11-21): a goal outside the building the avatar stands in (Orinda on the Tortuga pier
++            # from the tavern) met the same dead end, so inside a building the beam showed nothing and the quest
++            # pointed nowhere until he happened to walk out. Point at the room's own way out, as the original did.
++            avatarInterior = findAncestor(avatar, DistributedGAInteriorAI)
++            if avatarInterior is not None and goalInterior is None:
++                return self._getInteriorExitDoor(avatarInterior)
++
+             # recurse through the scenegraph and find the target goal object...
+             goalObject, otherObject = findObject(goalObject, avatar)
+ 
+@@ -1142,6 +1151,14 @@ class QuestManagerAI(DirectObject):
+ 
+         return goalObject
+ 
++    def _getInteriorExitDoor(self, interior):
++        # the room's inside door that really leads out (generated, with its outside partner): front, then back
++        for door in (interior.getInteriorFrontDoor(), interior.getInteriorBackDoor()):
++            if door is not None and self.air.doId2do.get(getattr(door, 'doId', None)) is door and door.getOtherDoor():
++                return door
++
++        return None
++
+     def getQuestStep(self, avatar, goalUid):
+         rawObj = self.air.uidMgr.justGetMeMeObject(goalUid)
+         goalObject = self.getQuestStepObject(avatar, rawObj)
+-- 
+2.53.0
+

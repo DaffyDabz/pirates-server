@@ -1,0 +1,37 @@
+From f808aa26e1f34e44a84944af3c3bac66cf3baa67 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 07:31:25 -0800
+Subject: [PATCH 254/371] pirates: a crew invite box closes when the other
+ pirate leaves (0341)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/band/DistributedPirateBandManagerAI.py | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/band/DistributedPirateBandManagerAI.py b/pirates/band/DistributedPirateBandManagerAI.py
+index 6214aba..31be899 100644
+--- a/pirates/band/DistributedPirateBandManagerAI.py
++++ b/pirates/band/DistributedPirateBandManagerAI.py
+@@ -244,10 +244,17 @@ class DistributedPirateBandManagerAI(DistributedObjectAI):
+ 
+     def avatarOffline(self, avatarId):
+         self.channels.pop(avatarId, None)
+-        self.pending.pop(avatarId, None)
++        # family server (11-19, 0341): an invite ends on the other pirate's screen too. The invitee's Yes/No box
++        # stayed up after the inviter logged off (Yes then did nothing), and the inviter's "waiting for an answer"
++        # box stayed up after the invitee logged off.
++        inviteeId = self.pending.pop(avatarId, None)
++        if inviteeId is not None:
++            self.sendUpdateToAvatarId(inviteeId, 'invitationCancel', [avatarId])
++
+         for inviterId, inviteeId in list(self.pending.items()):
+             if inviteeId == avatarId:
+                 del self.pending[inviterId]
++                self.d_requestOutCome(inviterId, avatarId, BandConstance.outcome_not_online)
+ 
+         if avatarId in self.avatar2band:
+             self.removeMember(avatarId)
+-- 
+2.53.0
+

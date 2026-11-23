@@ -1,0 +1,38 @@
+From dad6d5f55665348e1aad83d0ce91d5fe8c256d10 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:53:20 -0800
+Subject: [PATCH 109/371] pirates: a voodoo enemy's attune icon clears when it
+ lets go, as server-tree patch 0123 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/BattleNPCGameFSMAI.py | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/pirate/BattleNPCGameFSMAI.py b/pirates/pirate/BattleNPCGameFSMAI.py
+index 3476c36..22d14ec 100644
+--- a/pirates/pirate/BattleNPCGameFSMAI.py
++++ b/pirates/pirate/BattleNPCGameFSMAI.py
+@@ -363,8 +363,18 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+             self.__mojoRegenTask = None
+ 
+         # remove attune if we have a voodoo weapon
++        # family server: this passed the npc's doId as the effect id, so the attune never came off the pirate
++        # (the doll icon stayed on him until he logged out), and with no target left (the target logged out or
++        # died, see __updateBattleState) it raised AttributeError inside a task, which ends the district.
++        # Take off this npc's own attune only.
+         if WeaponGlobals.isVoodooWeapon(self.avatar.currentWeaponId):
+-            self.avatar.currentTarget.removeSkillEffect(self.avatar.doId)
++            target = self.avatar.currentTarget
++            if target is not None and not target.isDeleted():
++                for skillEffect in list(target.getSkillEffects()):
++                    if skillEffect[0] == WeaponGlobals.C_ATTUNE and skillEffect[3] == self.avatar.doId:
++                        target.skillEffects.remove(skillEffect)
++                        target.d_setSkillEffects(target.skillEffects)
++                        break
+ 
+         self.avatar.stopLookAt()
+ 
+-- 
+2.53.0
+

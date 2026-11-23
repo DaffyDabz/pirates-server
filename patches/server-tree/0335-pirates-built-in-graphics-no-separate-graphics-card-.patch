@@ -1,0 +1,142 @@
+From e9dffca07cc323f9808ad2fd06880dcb9f249edd Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 23:39:34 -0800
+Subject: [PATCH 335/371] pirates: built-in graphics (no separate graphics
+ card) now picks the original game's low-end settings; the game logs which
+ chip it draws with (fps-0001 part B, client only)
+
+The boys get 14-30 FPS outdoors in Pirates (Toontown runs at 60-120 on the same laptops), with every setting at max.
+Our Panda build cannot read the graphics card (DisplayInformation is not DSSuccess under pandagl), so
+Options.recommendedOptions took its else branch, which only set texture compression; the original game's Intel
+"low-end card" settings never ran.
+
+- GameOptions.py: familyDisplayAdapters() reads the display adapter names from the registry (DriverDesc under the
+  display class key, virtual adapters skipped) and familyBuiltInGraphicsOnly() says whether none of them is a
+  separate card (NVIDIA / GeForce / Quadro / Radeon RX, Pro, R7, R9, HD 5-9xxx / Arc). In the else branch, with no
+  separate card, it uses the original low-end settings: shader 0, effects Low, character and terrain detail Low,
+  memory 1, texture scale medium (0.5; the original's 0.25 is very blurry). Reflection and avatar shadows stay as
+  they were, as in the original low-end path. A `low-end-card 0|1` prc line still decides, as in the original.
+- PiratesBase.py: once the window is open, it logs `graphics <vendor> / <renderer> / <version>, low-end settings N,
+  window WxH`, so the next crash report shows the chip in use.
+
+Client only; no restart (the AI does not load these files). It applies while the game folder has no
+game_options.txt (written only when a boy saves the Options menu or dismisses the CPU warning). Test: test_lowend.py
+runs the real Options.recommendedOptions with fake registry adapters: live FAIL 3/7 (Intel only and AMD built-in only
+stay at max), patched PASS 7/7 (built-in only -> low; Intel + RTX 3050 Ti, RTX 4070 Ti and unreadable kept; prc
+override both ways).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/piratesbase/PiratesBase.py |  8 ++++
+ pirates/piratesgui/GameOptions.py  | 62 ++++++++++++++++++++++++++++++
+ 2 files changed, 70 insertions(+)
+
+diff --git a/pirates/piratesbase/PiratesBase.py b/pirates/piratesbase/PiratesBase.py
+index 1234181..dba7f77 100644
+--- a/pirates/piratesbase/PiratesBase.py
++++ b/pirates/piratesbase/PiratesBase.py
+@@ -156,6 +156,14 @@ class PiratesBase(OTPBase):
+ 
+             sys.exit(1)
+         
++        try:
++            # family client (11-20, fps-0001): the graphics chip the game really draws with, for crash reports
++            gsg = self.win.getGsg()
++            self.notify.info('graphics %s / %s / %s, low-end settings %s, window %dx%d' % (
++                gsg.getDriverVendor(), gsg.getDriverRenderer(), gsg.getDriverVersion(),
++                getattr(options, 'familyLowEndCard', 0), self.win.getXSize(), self.win.getYSize()))
++        except Exception:
++            pass
+         options.options_to_config()
+         options.setRuntimeOptions()
+         base.cam.node().setCameraMask(OTPRender.MainCameraBitmask)
+diff --git a/pirates/piratesgui/GameOptions.py b/pirates/piratesgui/GameOptions.py
+index d1748aa..53ad359 100644
+--- a/pirates/piratesgui/GameOptions.py
++++ b/pirates/piratesgui/GameOptions.py
+@@ -94,6 +94,51 @@ class OptionSpace:
+ 
+ 
+ 
++def familyDisplayAdapters():
++    # family client (11-20, fps-0001): this PC's display adapter names from the registry (read only), the same
++    # read as the launcher's familyhub/rocketleague.gpus(); [] when not on Windows or nothing can be read
++    try:
++        import winreg
++    except ImportError:
++        return []
++    import re
++    skip = re.compile('basic (render|display)|remote|virtual|parsec|citrix|idd|meta |mirage|'
++                      'displaylink|spacedesk|luminon|sunshine', re.I)
++    names = []
++    try:
++        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
++                             'SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}')
++    except OSError:
++        return names
++    i = 0
++    while True:
++        try:
++            sub = winreg.EnumKey(key, i)
++        except OSError:
++            break
++        i += 1
++        if not sub.isdigit():
++            continue
++        try:
++            with winreg.OpenKey(key, sub) as s:
++                name = str(winreg.QueryValueEx(s, 'DriverDesc')[0])
++        except OSError:
++            continue
++        if name and not skip.search(name):
++            names.append(name)
++    return names
++
++
++def familyBuiltInGraphicsOnly():
++    # 1 when Windows lists display adapters and none is a dedicated card (NVIDIA, Radeon RX/Pro, Arc A/B);
++    # 0 when one is, or when nothing can be read (keep today's settings)
++    import re
++    discrete = re.compile(r'nvidia|geforce|quadro|radeon\s*(\(tm\)\s*)?(rx|pro|r9|r7|hd\s*[5-9]\d{3})'
++                          r'|arc\(tm\)\s*[ab]\d|\barc\s+[ab]\d', re.I)
++    names = familyDisplayAdapters()
++    return int(bool(names) and not any(discrete.search(n) for n in names))
++
++
+ class Options(OptionSpace):
+     notify = DirectNotifyGlobal.directNotify.newCategory('Options')
+     debug = False
+@@ -798,6 +843,7 @@ class Options(OptionSpace):
+ 
+     def recommendedOptions(self, pipe, realtime):
+         di = pipe.getDisplayInformation()
++        self.familyLowEndCard = 0
+         if di.getDisplayState() == DisplayInformation.DSSuccess:
+             vendor_id = di.getVendorId()
+             device_id = di.getDeviceId()
+@@ -3177,6 +3223,22 @@ class Options(OptionSpace):
+         else:
+             self.textureCompression = 1
+             self.texture = Options.texture_medium
++            # family client (11-20, fps-0001): our Panda build cannot read the card, so the original low-end
++            # downgrade above never ran and built-in graphics (the boys' Intel laptops) got every setting at max,
++            # 14-30 fps outdoors. Ask Windows for the display adapters instead; no dedicated card = the original
++            # low-end settings (texture scale medium, not low: today's built-in chips have the memory for it).
++            # 'low-end-card' 0 or 1 in a prc page still decides, as above.
++            low_end_card = base.config.GetInt('low-end-card', familyBuiltInGraphicsOnly())
++            self.output('info ', 'display adapters %s' % (familyDisplayAdapters() or 'not read'))
++            if low_end_card:
++                self.output('info ', 'built-in graphics only: low-end settings')
++                self.familyLowEndCard = 1
++                self.shader = 0
++                self.texture_scale = Options.texture_scale_medium
++                self.special_effects = Options.SpecialEffectsLow
++                self.character_detail_level = Options.option_low
++                self.terrain_detail_level = Options.option_low
++                self.memory = 1
+         if not realtime:
+             self.runtime()
+ 
+-- 
+2.53.0
+

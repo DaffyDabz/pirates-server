@@ -1,0 +1,318 @@
+From 953ef1a3cd63d2b34256492cdfb12897df46fcdc Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 20:57:26 -0800
+Subject: [PATCH 123/371] pirates: the captain and crew swing onto the
+ flagship's deck, as server-tree patch 0137 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShipAI.py |  48 ++++++++++-
+ pirates/ship/GameFSMShipAI.py     |  40 ++++++++-
+ pirates/ship/NPCShipAI.py         | 134 +++++++++++++++++++++++++++++-
+ 3 files changed, 218 insertions(+), 4 deletions(-)
+
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index 87c659e..8a24477 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -92,6 +92,10 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         # targets, ropes and "Board?" panel all key off it
+         self.boardableShipId = 0
+         self.sinkTimer = [0, 0]
++        # boarding step 3: crewmen swinging across to the flagship this ship
++        # boards, {avId: (flagshipId, time)}. Leaving this ship for it keeps them
++        # in its crew, so the ship is not put away under them
++        self._swingingToFlagship = {}
+         self.wishName = ''
+         self.wishNameState = ''
+         self.clientControllerDoId = 0
+@@ -571,11 +575,53 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+ 
+     def handleChildLeave(self, childObj, zoneId):
+         if isinstance(childObj, DistributedPlayerPirateAI):
+-            self._playerDeparted(childObj)
++            # boarding step 3 (2026-11-17): a crewman swinging across to the flagship
++            # stays in this ship's crew (his ship ids, the world interest, and the
++            # ship itself, which was put away once its last crewman left). He leaves
++            # it for real when he logs out (the delete event) or leaves the flagship
++            # for anywhere but this ship
++            if not self._isSwingingToFlagship(childObj.doId):
++                self._playerDeparted(childObj)
+ 
+         DistributedMovingObjectAI.handleChildLeave(self, childObj, zoneId)
+         DistributedCharterableObjectAI.handleChildLeave(self, childObj, zoneId)
+ 
++    def requestBoardFlagship(self, flagshipId):
++        # boarding step 3 (2026-11-17): the captain said Yes on the "Board?" panel
++        avId = self.air.getAvatarIdFromSender()
++        flagship = self.air.doId2do.get(flagshipId)
++        if avId != self.captainId or avId not in self.crew:
++            self.notify.warning('TEMP-DIAG ship %d: board request for flagship %s from pirate %s refused, '
++                'not its captain (%s) or not aboard' % (self.doId, flagshipId, avId, self.captainId))
++            return
++
++        if flagship is None or not hasattr(flagship, 'boardFlagship'):
++            self.notify.warning('TEMP-DIAG ship %d: board request from captain %d for %s refused, no such flagship' % (
++                self.doId, avId, flagshipId))
++            return
++
++        flagship.boardFlagship(self, avId)
++
++    def markSwingingToFlagship(self, avId, flagshipId):
++        self._swingingToFlagship[avId] = (flagshipId, globalClock.getFrameTime())
++
++    def _isSwingingToFlagship(self, avId):
++        entry = self._swingingToFlagship.pop(avId, None)
++        if entry is None:
++            return False
++
++        flagshipId, started = entry
++        flagship = self.air.doId2do.get(flagshipId)
++        if flagship is None or getattr(flagship, '_boarderShipId', 0) != self.doId:
++            return False
++
++        if globalClock.getFrameTime() - started > 30.0:
++            return False
++
++        self.notify.warning('TEMP-DIAG ship %d kept: pirate %d swings to flagship %d and stays in its crew %s' % (
++            self.doId, avId, flagshipId, list(self.crew)))
++        return True
++
+     def setLocation(self, parentId, zoneId):
+         parentObj = self.air.doId2do.get(parentId)
+         if type(self).__name__ == 'PlayerShipAI':  # TEMP-DIAG-0922
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index 2c51e99..09f5de5 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -246,7 +246,7 @@ class GameFSMShipAI(FSM.FSM):
+         # The delayed state tasks (sinking, flagship timeouts) are only removed when their state is exited, and a ship
+         # deleted while in the state (the Black Pearl instance torn down after the Goliath sank) never exits it: the
+         # task then fired on a ship that was gone and crashed the district (2026-11-16)
+-        for name in ('_sinkingTask', '_crippledTimeoutTask', '_defeatSinkTask', '_parleySinkTask'):
++        for name in ('_sinkingTask', '_crippledTimeoutTask', '_defeatSinkTask', '_parleySinkTask', '_boardedTask'):
+             task = getattr(self, name, None)
+             if task is not None:
+                 taskMgr.remove(task)
+@@ -3006,8 +3006,44 @@ class GameFSMShipAI(FSM.FSM):
+         self._flagshipWaveCount = FlagshipGlobals.FLAGSHIP_WAVE_COUNT
+         self._currentWave = 0
+ 
++        # family server (2026-11-17, boarding step 3): it stays beside the pirate
++        # ship while its crew is on our deck, on a deck clock of its own (the
++        # client's target panel counts it down). When the clock runs out the
++        # pirates swing back to their ship and it sinks, paid
++        ship = self.ship
++        if ship is None or not hasattr(ship, 'getBoardedTimeout'):
++            return
++
++        self._holdTask = taskMgr.add(self._holdAlongside, ship.uniqueName('hold-alongside'))
++        timeout = ship.getBoardedTimeout()
++        ship.b_setSinkTimer(int(timeout))
++        self._boardedDeadline = globalClock.getFrameTime() + timeout
++
++        def _boardedCheck(task):
++            ship = self.ship
++            if ship is None:
++                return Task.done
++
++            if globalClock.getFrameTime() >= self._boardedDeadline:
++                ship.endBoarding('the %d s deck clock ran out' % timeout)
++                return Task.done
++
++            if ship.getBoarderShip() is None:
++                ship.sinkFlagship('pirate ship %s gone, sunk or empty' % ship._boarderShipId)
++                return Task.done
++
++            return Task.again
++
++        self._boardedTask = taskMgr.doMethodLater(5.0, _boardedCheck, ship.uniqueName('boarded-timeout'))
++
+     def exitBoarded(self):
+-        pass
++        if getattr(self, '_holdTask', None):
++            taskMgr.remove(self._holdTask)
++            self._holdTask = None
++
++        if getattr(self, '_boardedTask', None):
++            taskMgr.remove(self._boardedTask)
++            self._boardedTask = None
+ 
+     def enterDefeated(self):
+         """
+diff --git a/pirates/ship/NPCShipAI.py b/pirates/ship/NPCShipAI.py
+index 3b5036b..8937f02 100644
+--- a/pirates/ship/NPCShipAI.py
++++ b/pirates/ship/NPCShipAI.py
+@@ -75,6 +75,11 @@ class NPCShipAI(DistributedShipAI):
+         self._alongsideSide = 1
+         self._alongsideFlip = False
+         self._alongsideGap = 0.0
++        # boarding step 3: pirates standing on our deck (they stay in their own
++        # ship's crew, never ours), and whether setBoardingSuccess went out
++        self._deckPirates = set()
++        self._boardingSent = False
++        self._endingBoarding = False
+ 
+     @property
+     def isNpc(self):
+@@ -91,6 +96,7 @@ class NPCShipAI(DistributedShipAI):
+         except Exception as e:
+             self.notify.warning('flagship %s: could not clear its boarder: %s' % (self.doId, e))
+ 
++        taskMgr.remove(self.uniqueName('boarding-over'))
+         self.air.shipManager.removeShip(self)
+         self.air.shipManager.removeFlagship(self)
+         DistributedShipAI.delete(self)
+@@ -261,7 +267,9 @@ class NPCShipAI(DistributedShipAI):
+ 
+     def sinkFlagship(self, reason):
+         """Sink a crippled flagship on purpose, through the normal (paying) sink."""
+-        self.notify.warning('TEMP-DIAG flagship %d not boarded: sinking (%s)' % (self.doId, reason))
++        state = self.gameFSM.getCurrentOrNextState() if getattr(self, 'gameFSM', None) else None
++        self.notify.warning('TEMP-DIAG flagship %d %s: sinking (%s)' % (
++            self.doId, 'boarding over' if state == 'Boarded' else 'not boarded', reason))
+         self._clearBoarder()
+         self._forceSink = True
+         self.b_setGameState('Sinking', 0)
+@@ -384,13 +392,137 @@ class NPCShipAI(DistributedShipAI):
+         if getattr(self, 'isInBoardingPosition', 0) and self.air and self.air.doId2do.get(self.doId) is self:
+             self.b_setIsInBoardingPosition(0)
+ 
++        if boarder is not None:
++            swinging = getattr(boarder, '_swingingToFlagship', None) or {}
++            for avId in [a for a, entry in swinging.items() if entry[0] == self.doId]:
++                del swinging[avId]
++
+         if boarder is not None and getattr(boarder, 'boardableShipId', 0) == self.doId:
+             # the client clears its "fighting a flagship" teleport flag on 0
+             boarder.b_setBoardableShipId(0)
+ 
++        if boarder is not None and getattr(self, '_boardingSent', False):
++            # setBoardingSuccess is a ram field: send a blank one, so a game that sees
++            # the pirate ship again later does not swing its pirate to a ship gone
++            self._boardingSent = False
++            boarder.sendUpdate('setBoardingSuccess', [0, 0])
++
+         if self.air and self.air.doId2do.get(self.doId) is self:
+             self.b_setBoardableShipId(0)
+ 
++    # Boarding (step 3). The captain says Yes on his "Board?" panel: the pirate
++    # ship asks us (requestBoardFlagship), we go Boarded and tell the pirate ship
++    # (setBoardingSuccess); every crewman's game then asks to come aboard
++    # (requestBoard) and we send the rope swing (setMovie). fromShipId stays 0: the
++    # client's ship-to-ship movie unpacks its avatar wrong and stops, the plain one
++    # swings him from where he stands to our nearest boarding spot. When he lands
++    # (handleChildArrive) he is on our deck but still in his own ship's crew.
++    def getBoardedTimeout(self):
++        return config.GetFloat('flagship-boarded-timeout', 600.0)
++
++    def boardFlagship(self, boarder, captainId):
++        state = self.gameFSM.getCurrentOrNextState() if getattr(self, 'gameFSM', None) else None
++        if not self.isFlagship or state != 'InPosition' or boarder.doId != self._boarderShipId:
++            self.notify.warning('TEMP-DIAG flagship %d: board request from captain %d of ship %d refused '
++                '(state %s, boarder %s)' % (self.doId, captainId, boarder.doId, state, self._boarderShipId))
++            return False
++
++        if self.getBoarderShip() is not boarder:
++            return False
++
++        self.notify.warning('TEMP-DIAG flagship %d boarded: captain %d of ship %d sends crew %s across, deck clock %d s' % (
++            self.doId, captainId, boarder.doId, list(boarder.crew), int(self.getBoardedTimeout())))
++        DistributedShipAI.b_setGameState(self, 'Boarded', captainId)
++        self._boardingSent = True
++        boarder.sendUpdate('setBoardingSuccess', [self.doId, globalClockDelta.getRealNetworkTime(bits=16)])
++        return True
++
++    def requestBoard(self, avId):
++        sender = self.air.getAvatarIdFromSender()
++        state = self.gameFSM.getCurrentOrNextState() if getattr(self, 'gameFSM', None) else None
++        boarder = self.getBoarderShip()
++        avatar = self.air.doId2do.get(avId)
++        if sender != avId or avatar is None or state != 'Boarded' or self._endingBoarding or boarder is None \
++                or avId not in boarder.crew:
++            self.notify.warning('TEMP-DIAG flagship %d: swing request from pirate %s (for %s) refused, state %s, '
++                'boarder %s' % (self.doId, sender, avId, state, self._boarderShipId))
++            return
++
++        boarder.markSwingingToFlagship(avId, self.doId)
++        self.d_setMovie(0, avId, 0, 0)
++        self.notify.warning('TEMP-DIAG flagship %d: pirate %d swings across from ship %d' % (self.doId, avId, boarder.doId))
++
++    def _playerBoarded(self, avatar):
++        if not self.isFlagship:
++            DistributedShipAI._playerBoarded(self, avatar)
++            return
++
++        self._deckPirates.add(avatar.doId)
++        self.notify.warning('TEMP-DIAG flagship %d: pirate %d landed on the deck (state %s), on deck %s' % (
++            self.doId, avatar.doId, self.gameFSM.getCurrentOrNextState() if getattr(self, 'gameFSM', None) else None,
++            sorted(self._deckPirates)))
++
++    def _playerDeparted(self, avatar):
++        if not self.isFlagship:
++            DistributedShipAI._playerDeparted(self, avatar)
++            return
++
++        self.ignore(avatar.getDeleteEvent())
++        if avatar.doId not in self._deckPirates:
++            return
++
++        self._deckPirates.discard(avatar.doId)
++        self.notify.warning('TEMP-DIAG flagship %d: pirate %d left the deck, on deck %s' % (
++            self.doId, avatar.doId, sorted(self._deckPirates)))
++        if self._boarderShipId:
++            # where he went is only known once his move is stored, after this call
++            taskMgr.doMethodLater(0.1, self._checkLeftDeck, self.uniqueName('left-deck-%d' % avatar.doId),
++                extraArgs=[avatar.doId, self._boarderShipId])
++
++    def _checkLeftDeck(self, avId, boarderId):
++        avatar = self.air.doId2do.get(avId) if self.air else None
++        boarder = self.air.doId2do.get(boarderId) if self.air else None
++        if avatar is None or boarder is None or avId not in getattr(boarder, 'crew', ()):
++            return
++
++        if avatar.parentId in (boarderId, self.doId):
++            return
++
++        # he swam off or went somewhere else: he leaves his ship's crew like a
++        # pirate stepping off his own ship
++        self.notify.warning('TEMP-DIAG flagship %d: pirate %d left the deck for %s, not ship %d: he leaves its crew' % (
++            self.doId, avId, avatar.parentId, boarderId))
++        boarder._playerDeparted(avatar)
++
++    def getDeckPirates(self):
++        return [avId for avId in sorted(self._deckPirates) if avId in self.air.doId2do]
++
++    def endBoarding(self, reason):
++        """Swing every pirate on our deck back to his ship, then sink."""
++        if self._endingBoarding:
++            return
++
++        self._endingBoarding = True
++        boarder = self.air.doId2do.get(self._boarderShipId) if self._boarderShipId else None
++        onDeck = self.getDeckPirates()
++        back = []
++        if boarder is not None:
++            for avId in onDeck:
++                if avId in getattr(boarder, 'crew', ()):
++                    boarder.d_setMovie(0, avId, 0, 0)
++                    back.append(avId)
++
++        self.notify.warning('TEMP-DIAG flagship %d boarding over (%s): pirates %s swing back to ship %s, sinking in %d s' % (
++            self.doId, reason, back, self._boarderShipId, int(config.GetFloat('flagship-return-time', 8.0))))
++
++        def _sinkAfterReturn(task):
++            if self.air is not None and self.air.doId2do.get(self.doId) is self:
++                self.sinkFlagship(reason)
++            return task.done
++
++        taskMgr.doMethodLater(config.GetFloat('flagship-return-time', 8.0), _sinkAfterReturn,
++            self.uniqueName('boarding-over'))
++
+     def setGameState(self, stateName, avId, timeStamp=0):
+         DistributedShipAI.setGameState(self, stateName, avId, timeStamp)
+         if stateName == 'Sinking':
+-- 
+2.53.0
+

@@ -1,0 +1,76 @@
+From 8fa4c559a0d445367bad5fb06343624d5ebfbe14 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 23:29:09 -0800
+Subject: [PATCH 055/371] client: the map teleport works again, on land and
+ from a ship's wheel at sea
+
+Picking an island on the map always failed, on land and at sea. At sea
+the bot read "Sorry, you can't teleport while captaining a privateer
+ship." on a normal ship; on land the game said he had no teleport
+token for an island he had one for.
+
+The pirate's teleport flags each carry a check: the map sets "no
+island token" with the island check, boarding a ship sets "on ship",
+"not same crew" and "siege captain" with the ship's checks. A flag
+blocks only when its check says no. setTeleportFlags stored each check
+under its loop key and then shifted that key in place (b >>= 1 changes
+a BitMask32 itself), so the stored key changed under the dict and the
+next unset bit popped it. No check ever survived, and every such flag
+blocked outright. The loop now makes a new key each step.
+
+The two "next flag to check" helpers also masked the pirate's own flags
+in place (flags &= ...), dropping "on ship", "not same crew", "ignore"
+and "in welcome world" from them on every check, so a pirate who had
+checked once looked like he was on land to a friend teleporting to
+him. They now work on a copy.
+
+Offline replay of the real methods (8 cases: own ship, land with and
+without a token, privateer captain, in battle, teleport to him on his
+ship, leaving the ship): the old code fails 5, the new code passes all.
+
+Client file only (pirates/pirate/DistributedPlayerPirate.py), no server
+restart. An old client still cannot use the map teleport.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/DistributedPlayerPirate.py | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/pirates/pirate/DistributedPlayerPirate.py b/pirates/pirate/DistributedPlayerPirate.py
+index ef92b2f..cf8ebac 100644
+--- a/pirates/pirate/DistributedPlayerPirate.py
++++ b/pirates/pirate/DistributedPlayerPirate.py
+@@ -1016,14 +1016,14 @@ class DistributedPlayerPirate(DistributedPirateBase, DistributedPlayer, Distribu
+ 
+     def getNextTeleportConfirmFlag(self, currentFlag=None, flags=None):
+         currentFlag = currentFlag or BitMask32()
+-        flags = flags or self.teleportFlags
+-        flags &= PiratesGlobals.TFNoTeleportOut
++        # family server (11-16): & makes a new mask; &= changed the pirate's own flags in place, stripping TFOnShip,
++        # TFNotSameCrew, TFIgnore and TFInWelcomeWorld from them on every check
++        flags = (flags or self.teleportFlags) & PiratesGlobals.TFNoTeleportOut
+         return flags.keepNextHighestBit(currentFlag)
+ 
+     def getNextTeleportToConfirmFlag(self, currentFlag=None, flags=None):
+         currentFlag = currentFlag or BitMask32()
+-        flags = flags or self.teleportFlags
+-        flags &= PiratesGlobals.TFNoTeleportTo
++        flags = (flags or self.teleportFlags) & PiratesGlobals.TFNoTeleportTo
+         return flags.keepNextHighestBit(currentFlag)
+ 
+     def getNoTeleportString(self, flag=None):
+@@ -1101,7 +1101,10 @@ class DistributedPlayerPirate(DistributedPirateBase, DistributedPlayer, Distribu
+             elif b in confirmDict:
+                 self.teleportConfirmCallbacks[b] = confirmDict[b]
+ 
+-            b >>= 1
++            # family server (11-16): a new mask each step. b >>= 1 shifted the key just stored in place, so the
++            # next unset bit popped it and no flag's check survived: every flag that should ask first (an island
++            # teleport token, being on a ship, captaining a privateer) blocked the teleport outright
++            b = b >> 1
+ 
+     def getTeleportFlags(self):
+         return self.teleportFlags
+-- 
+2.53.0
+

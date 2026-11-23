@@ -1,0 +1,47 @@
+From 59c953880d876dd55c98cb78fb9dbdde5ed3efce Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 23:40:49 -0800
+Subject: [PATCH 134/371] pirates: a new pirate shows its new look and name at
+ once after the pirate maker, as server-tree patch 0149 (pir-boat np-02, UD
+ only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/ClientServicesManagerUD.py | 14 ++++++++------
+ 1 file changed, 8 insertions(+), 6 deletions(-)
+
+diff --git a/pirates/uberdog/ClientServicesManagerUD.py b/pirates/uberdog/ClientServicesManagerUD.py
+index a2f31cc..86dd789 100644
+--- a/pirates/uberdog/ClientServicesManagerUD.py
++++ b/pirates/uberdog/ClientServicesManagerUD.py
+@@ -1111,6 +1111,10 @@ class PopulateAvatarFSM(AvatarOperationFSM):
+             if not field.asAtomicField():
+                 continue
+ 
++            if field.getName() == 'setTutorial':
++                # The tutorial step belongs to the AI; the look must not move it.
++                continue
++
+             fieldValue = getattr(humanDNA, field.getName().replace('set', 'get'))()
+             if isinstance(fieldValue, list):
+                 updateFields[field.getName()] = fieldValue
+@@ -1160,12 +1164,10 @@ class PopulateAvatarFSM(AvatarOperationFSM):
+                 updateFields['WishName'] = ('',)
+                 updateFields['setName'] = (name,)
+ 
+-        # Update the avatar in the database
+-        self.csm.air.dbInterface.updateObject(
+-            self.csm.air.dbId,
+-            self.avId,
+-            self.csm.air.dclassesByName['DistributedPlayerPirateUD'],
+-            updateFields)
++        # The pirate is in the tutorial right now: send the look and name to
++        # the live pirate (others and the AI see them at once) and the
++        # database together.
++        sendLiveFields(self.csm.air, self.avId, updateFields)
+ 
+         self.csm.air.writeServerEvent('avatarPopulated', avId=self.avId, target=self.target)
+         self.csm.sendUpdateToAccountId(self.target, 'populateAvatarResp', [True])
+-- 
+2.53.0
+

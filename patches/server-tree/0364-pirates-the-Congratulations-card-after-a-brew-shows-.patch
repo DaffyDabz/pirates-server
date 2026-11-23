@@ -1,0 +1,80 @@
+From 2e814cccc016ce954b5eea2e9546fb43387d3445 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 23:25:51 -0800
+Subject: [PATCH 364/371] pirates: the Congratulations card after a brew shows
+ that potion's own bottle picture instead of an empty black circle (the
+ original game's 23 potion icons on a new potionIcons card, looked up by the
+ potion's effect; no icon = the plain bottle), as server-tree patch 0448
+ (client patch 61 = v504, client code + 1 art file, no DC change, no restart)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/PotionResults.py | 36 ++++++++++++++++++++++++++++---
+ 1 file changed, 33 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/minigame/PotionResults.py b/pirates/minigame/PotionResults.py
+index e023edb..11fd0d3 100755
+--- a/pirates/minigame/PotionResults.py
++++ b/pirates/minigame/PotionResults.py
+@@ -2,8 +2,32 @@ from pirates.piratesgui.GuiPanel import *
+ from pirates.piratesgui.RequestButton import RequestButton
+ from pirates.piratesbase import PLocalizer
+ from pirates.minigame import PotionGlobals
++from pirates.battle import PotionBuffs
++from pirates.battle import WeaponConstants as W
+ import math
+ 
++# the picture on the brew's results card: the original game's item icon for that potion (its own card,
++# textureCards/potionIcons, off the original skillIcons card); a potion with no buff of ours shows the plain bottle
++potionIcons = {}
++for _ids, _icon in (
++        (PotionBuffs.CANNON_DAMAGE, 'cannonDmgUp'), (PotionBuffs.PISTOL_DAMAGE, 'gunDmgUp'),
++        (PotionBuffs.CUTLASS_DAMAGE, 'swordDmgUp'), (PotionBuffs.DOLL_DAMAGE, 'voodooDmgUp'),
++        (PotionBuffs.HASTEN, 'haste'), (PotionBuffs.REP, 'repBoost'), (PotionBuffs.GOLD, 'gold'),
++        (PotionBuffs.INVISIBILITY, 'invisibility'), (PotionBuffs.REGEN, 'healthRegeneration'),
++        (PotionBuffs.ACCURACY, 'targeted'), ((W.C_BURP,), 'burp'), ((W.C_FART,), 'fart'), ((W.C_VOMIT,), 'puke'),
++        ((W.C_HEAD_GROW,), 'headIncrease'), ((W.C_CRAZY_SKIN_COLOR,), 'faceColor'),
++        ((W.C_SIZE_REDUCE,), 'avatarDecrease'), ((W.C_SIZE_INCREASE,), 'avatarIncrease'),
++        ((W.C_HEAD_FIRE,), 'headOnFire'), ((W.C_REMOVE_GROGGY,), 'removeGroggy')):
++    for _id in _ids:
++        potionIcons[_id] = 'pir_t_gui_pot_' + _icon
++
++POTION_BOTTLE = 'pir_t_gui_pot_base'
++
++
++def getPotionIcon(potionID):
++    return potionIcons.get(PotionBuffs.getEffectId(potionID), POTION_BOTTLE)
++
++
+ class PotionResults(GuiPanel):
+ 
+     def __init__(self, potionGame):
+@@ -61,8 +85,14 @@ class PotionResults(GuiPanel):
+         self.potionXp = DirectLabel(parent=self, relief=None, text=labelTxt, text_scale=PiratesGuiGlobals.TextScaleTitleSmall, text_align=TextNode.ACenter, text_fg=PiratesGuiGlobals.TextFG2, text_shadow=PiratesGuiGlobals.TextShadow, text_wordwrap=17, pos=(0.75,
+                                                                                                                                                                                                                                                                 0,
+                                                                                                                                                                                                                                                                 0.29), textMayChange=0)
+-        skillIcons = loader.loadModel('models/textureCards/skillIcons')
+-        geom = skillIcons.find('**/base')
++        iconCard = loader.loadModel('models/textureCards/potionIcons', okMissing=True)
++        if iconCard is None:
++            iconCard = loader.loadModel('models/textureCards/skillIcons')
++            geom = iconCard.find('**/base')
++        else:
++            geom = iconCard.find('**/' + getPotionIcon(self.potionGame.currentRecipe.potionID))
++            if geom.isEmpty():
++                geom = iconCard.find('**/' + POTION_BOTTLE)
+         geom_scale = 0.24
+         self.potionImg = DirectFrame(parent=self, geom=geom, geom_scale=geom_scale, pos=(0.75,
+                                                                                          0,
+@@ -70,7 +100,7 @@ class PotionResults(GuiPanel):
+         self.unstash()
+         self.potionGame.closeCurrentDialog = self.cleanUp
+         self.potionGame.disableButtons()
+-        skillIcons.removeNode()
++        iconCard.removeNode()
+         return
+ 
+     def cleanUp(self):
+-- 
+2.53.0
+

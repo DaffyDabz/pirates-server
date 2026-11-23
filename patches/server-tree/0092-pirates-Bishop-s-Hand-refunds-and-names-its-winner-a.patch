@@ -1,0 +1,165 @@
+From 0fcc6b1be821c3c57aebdb35aac7a50b2a97be26 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:54:30 -0800
+Subject: [PATCH 092/371] pirates: Bishop's Hand refunds and names its winner,
+ as server-tree patch 0106 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../minigame/DistributedBishopsHandTableAI.py | 76 ++++++++++++++-----
+ 1 file changed, 58 insertions(+), 18 deletions(-)
+
+diff --git a/pirates/minigame/DistributedBishopsHandTableAI.py b/pirates/minigame/DistributedBishopsHandTableAI.py
+index b1fc02a..f54f7eb 100644
+--- a/pirates/minigame/DistributedBishopsHandTableAI.py
++++ b/pirates/minigame/DistributedBishopsHandTableAI.py
+@@ -25,6 +25,7 @@ class DistributedBishopsHandTableAI(DistributedGameTableAI):
+         self._joinedSeats = set()      # seats that paid and joined the current round
+         self._progressReport = []      # [(seat, percent), ...]
+         self._roundSequence = []
++        self._roundEntrants = {}       # seatIndex -> avId of everybody in the running round
+ 
+     def delete(self):
+         taskMgr.remove(self.uniqueName('bh-start'))
+@@ -125,11 +126,33 @@ class DistributedBishopsHandTableAI(DistributedGameTableAI):
+         self.d_setTableState()
+ 
+     def avatarStand(self, avatar, seatIndex):
++        wasSeated = self.seats[seatIndex] == avatar
+         DistributedGameTableAI.avatarStand(self, avatar, seatIndex)
++        if wasSeated:
++            self._refundIfIdle(avatar, seatIndex)
+         self._joinedSeats.discard(seatIndex)
+         self._rebuildSeatStatus()
+         self.d_setTableState()
+ 
++    def _avatarUnexpectedExit(self, avatar):
++        seatIndex = self.getAvatarSeatIndex(avatar)
++        DistributedGameTableAI._avatarUnexpectedExit(self, avatar)
++        if seatIndex is not None:
++            self._refundIfIdle(avatar, seatIndex)
++            self._joinedSeats.discard(seatIndex)
++            self._rebuildSeatStatus()
++            self.d_setTableState()
++
++    def _refundIfIdle(self, avatar, seatIndex):
++        # Joined for the next round but the round has not started: give the entry fee
++        # back. (Leaving a running round forfeits it, as resigning should.)
++        if seatIndex not in self._joinedSeats or seatIndex in self._roundEntrants:
++            return
++        inv = self.air.inventoryManager.getInventory(avatar.doId)
++        if inv:
++            inv.setGoldInPocket(inv.getGoldInPocket() + self.EntryFee)
++        self.b_setPendingStakes(max(0, self._pendingStakes - self.EntryFee))
++
+     def _rebuildSeatStatus(self):
+         self._seatStatus = []
+         for i in range(self._availableSeats):
+@@ -180,6 +203,11 @@ class DistributedBishopsHandTableAI(DistributedGameTableAI):
+         if seatIndex is None:
+             return
+ 
++        # Only a player in the running round may report progress (a spectator could
++        # otherwise win the pot)
++        if self._tableState != 1 or self._roundEntrants.get(seatIndex) != avatar.doId:
++            return
++
+         percent = int((step / max(len(self._roundSequence), 1)) * 100)
+         percent = min(percent, 100)
+ 
+@@ -197,7 +225,7 @@ class DistributedBishopsHandTableAI(DistributedGameTableAI):
+ 
+         # If a player finishes, notify them
+         if percent >= 100:
+-            action = {'action': BishopsHandGlobals.GAME_ACTIONS.NotifyOfWin, 'data': 0}
++            action = [BishopsHandGlobals.GAME_ACTIONS.NotifyOfWin, 0]
+             self.sendUpdate('askForClientAction', [action, 0, 0])
+ 
+     def leftGame(self):
+@@ -230,20 +258,21 @@ class DistributedBishopsHandTableAI(DistributedGameTableAI):
+         self._checkStartRound()
+ 
+     def _playerUnjoin(self, avatar, seatIndex):
+-        if seatIndex not in self._joinedSeats:
+-            return
++        if seatIndex not in self._joinedSeats or seatIndex in self._roundEntrants:
++            return  # not joined, or the round he is in already started
+ 
+         self._joinedSeats.discard(seatIndex)
+         inv = self.air.inventoryManager.getInventory(avatar.doId)
+         if inv:
+-            inv.addGoldInPocket(self.EntryFee)
++            # setGoldInPocket, not addGoldInPocket (which doubles on a gold holiday)
++            inv.setGoldInPocket(inv.getGoldInPocket() + self.EntryFee)
+ 
+         self.b_setPendingStakes(max(0, self._pendingStakes - self.EntryFee))
+         self._rebuildSeatStatus()
+         self.d_setTableState()
+ 
+     def _playerLeave(self, avatar, seatIndex):
+-        self._joinedSeats.discard(seatIndex)
++        # avatarStand refunds the entry fee when the round has not started
+         self.handleRequestExit(avatar)
+ 
+     def _checkStartRound(self):
+@@ -263,6 +292,12 @@ class DistributedBishopsHandTableAI(DistributedGameTableAI):
+         return Task.done
+ 
+     def _startRound(self):
++        if not self._joinedSeats or self._tableState == 1:
++            return
++        self._roundEntrants = {}
++        for i in self._joinedSeats:
++            seat = self.seats[i]
++            self._roundEntrants[i] = seat.doId if seat not in (None, 0, 1) else 0
+         self._tableState = 1
+         self._progressReport = [[i, 0] for i in self._joinedSeats]
+         self.b_setActiveStakes(self._pendingStakes)
+@@ -299,25 +334,30 @@ class DistributedBishopsHandTableAI(DistributedGameTableAI):
+ 
+     def _endRound(self):
+         self._tableState = 0
++        entrants = self._roundEntrants
++        self._roundEntrants = {}
++        # Players who joined during the round stay joined for the next one
++        self._joinedSeats.difference_update(entrants)
+         self._rebuildSeatStatus()
+         self.d_setTableState()
+ 
+-        # Pay out running stakes to whoever finished with the highest progress
+-        if not self._progressReport:
+-            self.b_setRunningStakes(0)
+-            self._joinedSeats.clear()
+-            return
+-
+-        best = max(self._progressReport, key=lambda x: x[1])
+-        bestSeat = best[0]
+-        seat = self.seats[bestSeat]
+-        if seat and seat not in (0, 1):
++        # Pay out running stakes to whoever made the most progress and is still
++        # sitting in the seat he started in (a leaver forfeits)
++        candidates = []
++        for entry in self._progressReport:
++            seat = self.seats[entry[0]] if entry[0] < len(self.seats) else None
++            if seat and seat not in (0, 1) and entrants.get(entry[0]) == seat.doId:
++                candidates.append(entry)
++
++        if candidates:
++            best = max(candidates, key=lambda x: x[1])
++            seat = self.seats[best[0]]
+             inv = self.air.inventoryManager.getInventory(seat.doId)
+             if inv:
+-                inv.addGoldInPocket(self._runningStakes)
++                inv.setGoldInPocket(inv.getGoldInPocket() + self._runningStakes)
+ 
+         action = [BishopsHandGlobals.GAME_ACTIONS.NotifyOfWin, 0]
+         self.sendUpdate('askForClientAction', [action, 0, 0])
+         self.b_setRunningStakes(0)
+-        self._joinedSeats.clear()
+-        self._progressReport = []
+\ No newline at end of file
++        if self._joinedSeats:
++            self._checkStartRound()
+-- 
+2.53.0
+

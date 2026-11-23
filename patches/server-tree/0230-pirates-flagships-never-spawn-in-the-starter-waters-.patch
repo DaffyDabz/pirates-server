@@ -1,0 +1,174 @@
+From 9f75e5b8085d4b6ff40ac3238ea911430fbf5186 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:55:57 -0800
+Subject: [PATCH 230/371] pirates: flagships never spawn in the starter waters,
+ and the Goliath sails now and then (0267)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/ShipManagerAI.py | 91 ++++++++++++++++++++++++++++++++---
+ 1 file changed, 83 insertions(+), 8 deletions(-)
+
+diff --git a/pirates/ship/ShipManagerAI.py b/pirates/ship/ShipManagerAI.py
+index b27a9a2..5380fe3 100644
+--- a/pirates/ship/ShipManagerAI.py
++++ b/pirates/ship/ShipManagerAI.py
+@@ -19,6 +19,14 @@ NPCSHIP_POP_UPKEEP_DELAY = config.GetFloat('npcship-pop-upkeep-delay', 10.0)
+ NPCSHIP_POP_MAX = config.GetInt('npcship-pop-max', 96)
+ FLAGSHIP_POP_MAX = config.GetInt('flagship-pop-max', 24)
+ FLAGSHIP_SPAWN_DELAY = config.GetFloat('flagship-spawn-delay', 120.0)
++# patch 0267 (2026-11-19): the legendary flagship (the Goliath, FlagshipGlobals.
++# LEGENDARY_FLAGSHIPS). At most legendary-flagship-max sail at once, on top of
++# the regular flagships; each flagship upkeep (every 2-2.5 minutes) has a
++# legendary-flagship-chance of sending one out, and never sooner than
++# legendary-flagship-cooldown seconds after the last one did. 0 max = none.
++LEGENDARY_FLAGSHIP_MAX = config.GetInt('legendary-flagship-max', 1)
++LEGENDARY_FLAGSHIP_CHANCE = config.GetFloat('legendary-flagship-chance', 0.1)
++LEGENDARY_FLAGSHIP_COOLDOWN = config.GetFloat('legendary-flagship-cooldown', 1800.0)
+ 
+ 
+ # Regular NPC ship classes (non-flagship)
+@@ -72,6 +80,7 @@ class ShipManagerAI:
+ 
+         self.NPCShipUpkeepTask = None
+         self.FlagshipUpkeepTask = None
++        self._lastLegendaryAt = None  # frame time the last legendary flagship spawned (patch 0267)
+ 
+     def hasPlayerShip(self, ship):
+         assert(ship is not None)
+@@ -322,6 +331,9 @@ class ShipManagerAI:
+         startPos, starterHome = None, False
+         if spawnNearIsland is None:
+             shipClass, startPos, starterHome = self._pickStarterSafe(shipClass, isFlagship)
++            if shipClass is None:
++                # patch 0267: a flagship found no point outside the starter waters
++                return None
+             shipConfig = ShipGlobals.getShipConfig(shipClass)
+             hullConfig = ShipGlobals.getHullConfig(shipClass)
+ 
+@@ -384,6 +396,12 @@ class ShipManagerAI:
+             sx, sy = 0, 0
+             zoneId = oceanGrid.getZoneFromXYZ((sx, sy, 0))
+ 
++        # patch 0267: a flagship never starts in the starter waters, whichever
++        # way its point was found (a test spawn near an island excepted)
++        if isFlagship and spawnNearIsland is None and not self._flagshipPointOk(sx, sy):
++            self.notify.info('flagship class %s not spawned: (%d, %d) is in the starter waters' % (shipClass, sx, sy))
++            return None
++
+         oceanGrid.generateChildWithRequired(ship, zoneId)
+         ship.setPos(oceanGrid, sx, sy, 0)
+         oceanGrid.addObjectToOceanGrid(ship)
+@@ -408,6 +426,9 @@ class ShipManagerAI:
+         (shipClass, (x, y) or None, starterHome). A regular ship whose point is
+         in starter waters is drawn from the starter-level classes (and patrols
+         there); a flagship redraws its point until it is outside them.
++        Patch 0267: a flagship that finds no point outside them in 21 draws, or
++        whose check fails, returns shipClass None and is not spawned this time
++        (it used to keep its last point, inside the waters, or spawn anywhere).
+         """
+         if not StarterWaters.enabled():
+             return shipClass, None, False
+@@ -415,14 +436,14 @@ class ShipManagerAI:
+             oceanGrid = self.world.oceanGrid
+             world = oceanGrid.getParentObj()
+             pos = self._getValidSpawnPosition(oceanGrid, world)
++            if isFlagship:
++                for _ in range(21):
++                    if pos is not None and self._flagshipPointOk(pos[0], pos[1]):
++                        return shipClass, pos, False
++                    pos = self._getValidSpawnPosition(oceanGrid, world)
++                return None, None, False
+             if pos is None:
+                 return shipClass, None, False
+-            if isFlagship:
+-                for _ in range(20):
+-                    if not StarterWaters.inStarterWaters(self.air, pos[0], pos[1]):
+-                        break
+-                    pos = self._getValidSpawnPosition(oceanGrid, world) or pos
+-                return shipClass, pos, False
+             if not StarterWaters.inStarterWaters(self.air, pos[0], pos[1]):
+                 return shipClass, pos, False
+             # patch 0166: about 21 of the 96 ships drew a point here (the spawn
+@@ -440,9 +461,27 @@ class ShipManagerAI:
+                 shipClass = random.choice(low)
+             return shipClass, pos, True
+         except Exception as e:
++            if isFlagship:
++                self.notify.warning('starter waters: flagship spawn check failed (%s), not spawned' % e)
++                return None, None, False
+             self.notify.warning('starter waters: spawn check failed (%s), spawning as before' % e)
+             return shipClass, None, False
+ 
++    def _flagshipPointOk(self, x, y):
++        """
++        Patch 0267: may a flagship start at (x, y)? Only outside the starter
++        waters, and only once every starter island is found (until then the
++        waters cannot be told apart, so no). Yes when the rule is off.
++        """
++        if not StarterWaters.enabled():
++            return True
++        try:
++            if len(StarterWaters.centers(self.air)) < len(StarterWaters.ISLANDS):
++                return False
++            return not StarterWaters.inStarterWaters(self.air, x, y)
++        except Exception:
++            return False
++
+     def _starterHomeCount(self):
+         """Ships alive that spawned in starter waters (and patrol there); 0 if it
+         cannot count, so the cap never turns the rest of the starter rule off."""
+@@ -514,12 +553,48 @@ class ShipManagerAI:
+         # Clean up deleted flagships
+         self.flagships = {s for s in self.flagships if not s.isEmpty()}
+ 
+-        # Spawn new flagships if below max
+-        for _ in range(FLAGSHIP_POP_MAX - len(self.flagships)):
++        # Spawn new flagships if below max (the legendary ones count apart, patch 0267)
++        legendary = sum(1 for s in self.flagships if self._isLegendaryShip(s))
++        for _ in range(FLAGSHIP_POP_MAX - (len(self.flagships) - legendary)):
+             self._spawnFlagship()
+ 
++        self._upkeepLegendary(legendary)
+         return task.again
+ 
++    @staticmethod
++    def _isLegendaryShip(ship):
++        try:
++            return FlagshipGlobals.isLegendary(ship.getShipClass())
++        except Exception:
++            return False
++
++    def _upkeepLegendary(self, alive):
++        """
++        Patch 0267: now and then the Goliath sails. Below legendary-flagship-max
++        afloat and past the cooldown since the last one, each flagship upkeep
++        has a legendary-flagship-chance of spawning one, as a flagship (cripple
++        and board it), outside the starter waters like every flagship; it keeps
++        its own level (40), so the starter-waters level rules keep it out of
++        there afterwards. Returns the ship spawned, or None.
++        """
++        classes = FlagshipGlobals.LEGENDARY_FLAGSHIPS
++        if not classes or LEGENDARY_FLAGSHIP_MAX <= 0 or alive >= LEGENDARY_FLAGSHIP_MAX:
++            return None
++
++        now = globalClock.getFrameTime()
++        if self._lastLegendaryAt is not None and now - self._lastLegendaryAt < LEGENDARY_FLAGSHIP_COOLDOWN:
++            return None
++
++        if random.random() >= LEGENDARY_FLAGSHIP_CHANCE:
++            return None
++
++        ship = self._spawnFlagship(random.choice(classes))
++        if ship is not None:
++            self._lastLegendaryAt = now
++            self.notify.info('legendary flagship %s (doId %d) sails at (%d, %d)' % (
++                ShipClassNames.get(ship.getShipClass(), 'Unknown'), ship.doId, ship.getX(), ship.getY()))
++        return ship
++
+     def startSpawnEnemyShips(self, world):
+         self.world = world
+         assert(world is not None)
+-- 
+2.53.0
+

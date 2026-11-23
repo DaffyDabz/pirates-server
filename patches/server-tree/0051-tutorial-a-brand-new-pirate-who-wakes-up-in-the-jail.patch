@@ -1,0 +1,55 @@
+From e54ae71c120dcd28b36bceb26251fb6489817aa7 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 22:59:58 -0800
+Subject: [PATCH 051/371] tutorial: a brand-new pirate who wakes up in the jail
+ with Jack no longer crashes the client (interior data file sent with the
+ teleport)
+
+The tutorial teleports the pirate straight into the Rambleshack jail interior (1156204132.41sdnaik). The client was
+only given the world file (RambleshackWorld), which does not hold the interior: its data lives in RambleshackJailInt,
+which the client only loads after walking in through the island's door. DistributedGAInterior.announceGenerate then
+found no data and WorldCreator.loadObjectsByUid crashed (TUT2, 11-16 22:52).
+
+The builder now remembers each interior's data file, and the teleport handler sends it as the instance file; the client
+loads it next to the world file, which still gives the ocean data. No client change.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedTeleportHandlerAI.py | 7 ++++++-
+ pirates/world/GameAreaBuilderAI.py               | 1 +
+ 2 files changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/instance/DistributedTeleportHandlerAI.py b/pirates/instance/DistributedTeleportHandlerAI.py
+index 1cf8804..954e817 100644
+--- a/pirates/instance/DistributedTeleportHandlerAI.py
++++ b/pirates/instance/DistributedTeleportHandlerAI.py
+@@ -23,8 +23,13 @@ class DistributedTeleportHandlerAI(DistributedObjectAI):
+         world = self.teleportFsm.world
+         gameArea = self.teleportFsm.gameArea
+ 
++        # family server (11-16): a pirate who spawns straight into an interior (the tutorial's jail with Jack) has only
++        # the world file on the client, and the interior's data lives in its own file (RambleshackJailInt), so the client
++        # crashed on 'Data file not found for area'. Send that file as the instance file: the client loads it next to the
++        # world file (which still gives the ocean data), as it would have after walking in through the island's door
++        instanceFileName = getattr(gameArea, 'interiorFile', None) or world.getFileName()
+         self.sendUpdateToAvatarId(self.avatar.doId, 'continueTeleportToInstance', [world.doId,
+-            gameArea.zoneId, world.doId, world.getFileName(), gameArea.parentId, gameArea.zoneId,
++            gameArea.zoneId, world.doId, instanceFileName, gameArea.parentId, gameArea.zoneId,
+             gameArea.parentId, world.getFileName(), world.oceanGrid.doId])
+ 
+     def readyToFinishTeleport(self, instanceDoId):
+diff --git a/pirates/world/GameAreaBuilderAI.py b/pirates/world/GameAreaBuilderAI.py
+index 84bc120..729bbc3 100644
+--- a/pirates/world/GameAreaBuilderAI.py
++++ b/pirates/world/GameAreaBuilderAI.py
+@@ -118,6 +118,7 @@ class GameAreaBuilderAI(ClientAreaBuilderAI):
+ 
+         interior.setUniqueId(exteriorUid)
+         interior.setName(interiorFile)
++        interior.interiorFile = interiorFile  # the teleport handler sends it to a pirate who spawns inside (11-16)
+         interior.setModelPath(modelPath)
+         interior.setScale(objectData.get('Scale', (1, 1, 1)))
+         parent.generateChildWithRequired(interior, self.air.allocateZone())
+-- 
+2.53.0
+

@@ -1,0 +1,96 @@
+From 414543b13e66220daa1a33ae9b3f392803bccdd3 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 14:24:18 -0800
+Subject: [PATCH 071/371] pirates: Bo Beck boat carries only its tutorial
+ cannon (the empty second slot stays empty), so the tutorial always switches
+ on the right cannon, as server-tree patch 0085 (AI only)
+
+From the pir-boat lane (01-tutorial-cannon.diff), replacing the cannonClass switch from 0084.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedTutorialShipCannonAI.py |  5 +++--
+ pirates/ship/DistributedShipAI.py                 | 12 +++++++++---
+ pirates/ship/TutorialShipAI.py                    | 13 ++++++++++++-
+ 3 files changed, 24 insertions(+), 6 deletions(-)
+
+diff --git a/pirates/battle/DistributedTutorialShipCannonAI.py b/pirates/battle/DistributedTutorialShipCannonAI.py
+index 25e1893..d236667 100644
+--- a/pirates/battle/DistributedTutorialShipCannonAI.py
++++ b/pirates/battle/DistributedTutorialShipCannonAI.py
+@@ -4,6 +4,7 @@ from pirates.battle.DistributedShipCannonAI import DistributedShipCannonAI
+ 
+ 
+ class DistributedTutorialShipCannonAI(DistributedShipCannonAI):
+-    """Bo Beck's boat cannon. A real ship cannon on the server; on the client the tutorial version sends
+-    'usedCannon' when the new pirate takes it, which puts the target wreck in the water."""
++    # Stumpy's cannon in the new-pirate tutorial. The client class (DistributedTutorialShipCannon) is the one
++    # that sends 'usedCannon' when the pirate first fires, which starts the sail to the wreck; a plain
++    # DistributedShipCannon never does, so the tutorial waited at the cannon forever.
+     notify = DirectNotifyGlobal.directNotify.newCategory('DistributedTutorialShipCannonAI')
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index 62d32a5..4716a29 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -56,8 +56,6 @@ RAM_BACKLASH = 0.25
+ 
+ 
+ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectAI, Teamable):
+-    # family server: the tutorial boat swaps in its own cannon class (TutorialShipAI)
+-    cannonClass = DistributedShipCannonAI
+     notify = DirectNotifyGlobal.directNotify.newCategory('DistributedShipAI')
+ 
+     def __init__(self, air):
+@@ -424,7 +422,10 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         cannonIndex = -1
+         for cannonType in shipConfig['setCannonConfig']:
+             cannonIndex += 1
+-            cannon = self.cannonClass(self.air)
++            cannon = self._makeCannon(cannonType)
++            if cannon is None:
++                # this slot has no cannon on this ship (the index still counts)
++                continue
+ 
+             # DistributedShippart:
+             cannon.setOwnerId(0)
+@@ -1461,6 +1462,11 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+             except Exception as e:
+                 self.notify.warning('Could not credit ship defeat for ram: %s' % str(e))
+ 
++    def _makeCannon(self, cannonType):
++        # one cannon for a slot of the ship's cannon config; a subclass may return another cannon class,
++        # or None for a slot that stays empty
++        return DistributedShipCannonAI(self.air)
++
+     def generateChildWithRequired(self, do, zoneId, optionalFields=[]):
+         self.generateChildWithRequiredAndId(do, self.air.allocateChannel(), self.doId, zoneId, optionalFields)
+ 
+diff --git a/pirates/ship/TutorialShipAI.py b/pirates/ship/TutorialShipAI.py
+index 768415f..074f7c8 100644
+--- a/pirates/ship/TutorialShipAI.py
++++ b/pirates/ship/TutorialShipAI.py
+@@ -1,9 +1,20 @@
+ from direct.directnotify import DirectNotifyGlobal
+ 
+ from pirates.ship.DistributedShipAI import DistributedShipAI
++from pirates.ship import ShipGlobals
+ from pirates.battle.DistributedTutorialShipCannonAI import DistributedTutorialShipCannonAI
+ 
+ 
+ class TutorialShipAI(DistributedShipAI):
+     notify = DirectNotifyGlobal.directNotify.newCategory('TutorialShipAI')
+-    cannonClass = DistributedTutorialShipCannonAI
++
++    def _makeCannon(self, cannonType):
++        # Stumpy's boat: cannon config [TUTORIAL_CANNON, 0]. The client tutorial takes the FIRST cannon in
++        # its ship.cannons dict and switches it on, so the boat carries the tutorial cannon only: an extra
++        # plain cannon for the empty slot could arrive first (the client plays generates back by class)
++        # and the tutorial would switch on the wrong one.
++        if cannonType == ShipGlobals.TUTORIAL_CANNON:
++            return DistributedTutorialShipCannonAI(self.air)
++        if not cannonType:
++            return None
++        return DistributedShipAI._makeCannon(self, cannonType)
+-- 
+2.53.0
+

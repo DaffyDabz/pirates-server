@@ -1,0 +1,6 @@
+[Unit]
+Description=Pirates Online watcher: restart a crashed server unless it was stopped on purpose (run/held)
+
+[Service]
+Type=oneshot
+ExecStart=/opt/pirates-online/server-ctl.sh watch

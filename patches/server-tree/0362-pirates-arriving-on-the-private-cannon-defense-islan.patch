@@ -1,0 +1,50 @@
+From 52a5c3ecfe4c909e56d4d20acdd0e174aba9aec6 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 23:00:11 -0800
+Subject: [PATCH 362/371] pirates: arriving on the private cannon defense
+ island no longer closes the game (the island asked the sea chart for a chart
+ icon the art does not have, and the shore wave loader raised for missing wave
+ art), as server-tree patch 0446 (client patch 59 = v502, client code only, no
+ DC change, no restart)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedIsland.py | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/world/DistributedIsland.py b/pirates/world/DistributedIsland.py
+index 496398d..b60836a 100644
+--- a/pirates/world/DistributedIsland.py
++++ b/pirates/world/DistributedIsland.py
+@@ -495,6 +495,12 @@ class DistributedIsland(DistributedGameArea.DistributedGameArea, DistributedCart
+     def placeOnMap(self):
+         self.loadIslandMapModel()
+         if not self.mapName and self.islandMapModelPath:
++            # family server (11-21): the private cannon defense island has no sea chart icon in the art; asking the chart
++            # to load it raised IOError out of announceGenerate and closed the game, so an island without one stays off the chart
++            chartIcon = loader.loadModel(self.islandMapModelPath, okMissing = True)
++            if not chartIcon or chartIcon.isEmpty():
++                return
++
+             mapPage = localAvatar.guiMgr.mapPage
+             self.mapName = mapPage.addIsland(self.name, self.uniqueId, self.islandMapModelPath, self.getPos(), self.getH())
+ 
+@@ -516,10 +522,13 @@ class DistributedIsland(DistributedGameArea.DistributedGameArea, DistributedCart
+             lowend = '_lowend'
+ 
+         islandBaseName = self.modelPath.split('_zero')[0]
+-        waveModel = loader.loadModelCopy(islandBaseName + lowend + '_wave_none')
++        # family server (11-21): search-only options, so an island with no shore wave art (the private cannon defense island)
++        # gets None back, like loadIslandParts below, instead of an IOError that closed the game as the pirate arrived
++        loaderOptions = LoaderOptions(LoaderOptions.LFSearch)
++        waveModel = loader.loadModelCopy(islandBaseName + lowend + '_wave_none', loaderOptions)
+         if lowend != '' and not waveModel:
+             lowend = ''
+-            waveModel = loader.loadModelCopy(islandBaseName + lowend + '_wave_none')
++            waveModel = loader.loadModelCopy(islandBaseName + lowend + '_wave_none', loaderOptions)
+ 
+         if waveModel:
+             self.islandShoreWave = Actor.Actor(waveModel)
+-- 
+2.53.0
+

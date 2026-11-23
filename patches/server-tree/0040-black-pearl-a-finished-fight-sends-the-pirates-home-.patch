@@ -1,0 +1,83 @@
+From c89a4affaadf99f2df9100dfa0eabe03ee647e7a Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 21:55:35 -0800
+Subject: [PATCH 040/371] black pearl: a finished fight sends the pirates home,
+ and a third barricade falling during the stage four cutscene no longer
+ restarts it
+
+Nothing sent a pirate home once the fight reached Completed (the client shows its loading screen for the return
+location and the reward panel is off), so a winner sat there for good. Completed now sends every pirate still inside
+home after 4 s. _moveToStageFour ran again for every barricade that fell during its 20 s cutscene, which started the
+cutscene twice and asked for stage four twice; it now returns while the cutscene is pending.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ .../treasuremap/TreasureMapBlackPearlAI.py    | 29 +++++++++++++++++--
+ 1 file changed, 27 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/treasuremap/TreasureMapBlackPearlAI.py b/pirates/treasuremap/TreasureMapBlackPearlAI.py
+index 2780875..093ef52 100644
+--- a/pirates/treasuremap/TreasureMapBlackPearlAI.py
++++ b/pirates/treasuremap/TreasureMapBlackPearlAI.py
+@@ -185,6 +185,7 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+         taskMgr.remove(self.uniqueName('waitClientsTimeout'))
+         taskMgr.remove(self.uniqueName('moveToCompleted'))
+         taskMgr.remove(self.uniqueName('monitorPlayers'))
++        taskMgr.remove(self.uniqueName('sendEveryoneHome'))
+         self.pendingTeleportCallbacks = []
+ 
+         # Clean up Navy guards
+@@ -287,6 +288,7 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+         self.tornDown = True
+         self.notify.info('Tearing down Black Pearl instance %d (state %s)' % (self.doId, self.state))
+         taskMgr.remove(self.uniqueName('monitorPlayers'))
++        taskMgr.remove(self.uniqueName('sendEveryoneHome'))
+ 
+         # everything under the instance, found before the delete empties the tables
+         found = set([self.doId])
+@@ -898,6 +900,11 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+ 
+     def _moveToStageFour(self):
+         """Move to stage four - final battle"""
++        if taskMgr.hasTaskNamed(self.uniqueName('stageFourCutscene')):
++            # another barricade fell during the cutscene: starting it again ran the cutscene twice on the clients and
++            # asked for stage four twice (2026-11-16)
++            return
++
+         self.notify.info('Moving to Stage Four - Final Battle!')
+         self.d_startStageFourCutscene()
+         taskMgr.doMethodLater(20.0, self._startStageFour, self.uniqueName('stageFourCutscene'))
+@@ -1083,10 +1090,28 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+     def exitNotCompleted(self):
+         pass
+ 
++    SEND_HOME_DELAY = 4.0
++
+     def enterCompleted(self):
+-        """Instance is completely done"""
++        """Instance is completely done: the client shows its loading screen for the return location, and nothing else
++        sends the pirates home (the reward panel is off), so a pirate who won sat there for good (2026-11-16)"""
+         DistributedTreasureMapInstanceAI.enterCompleted(self)
+         self.notify.info('Instance completed, cleaning up...')
++        taskMgr.doMethodLater(self.SEND_HOME_DELAY, self._sendEveryoneHome, self.uniqueName('sendEveryoneHome'))
++
++    def _sendEveryoneHome(self, task):
++        """Send every pirate still inside back to the main world; the monitor then tears the empty instance down"""
++        from pirates.pirate.DistributedPlayerPirateAI import DistributedPlayerPirateAI
++        if self.tornDown:
++            return Task.done
++
++        for obj in list(self.air.doId2do.values()):
++            if isinstance(obj, DistributedPlayerPirateAI) and self._isInside(obj):
++                self.notify.info('Black Pearl %d is completed, sending avatar %d home' % (self.doId, obj.doId))
++                self.removeParticipant(obj.doId)
++                self._sendAvatarToMainWorld(obj)
++
++        return Task.done
+ 
+     def exitCompleted(self):
+-        pass
++        taskMgr.remove(self.uniqueName('sendEveryoneHome'))
+-- 
+2.53.0
+

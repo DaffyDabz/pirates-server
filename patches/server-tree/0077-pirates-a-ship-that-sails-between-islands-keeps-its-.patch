@@ -1,0 +1,152 @@
+From b79676f9d825590a99bc471c31da2e336e738078 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 15:28:42 -0800
+Subject: [PATCH 077/371] pirates: a ship that sails between islands keeps its
+ grid cells instead of losing them at sea, as server-tree patch 0091 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedIslandAI.py | 10 +++--
+ pirates/world/WorldGridManagerAI.py  | 63 +++++++++++++++++++++++++---
+ 2 files changed, 65 insertions(+), 8 deletions(-)
+
+diff --git a/pirates/world/DistributedIslandAI.py b/pirates/world/DistributedIslandAI.py
+index cff7369..aec7b64 100644
+--- a/pirates/world/DistributedIslandAI.py
++++ b/pirates/world/DistributedIslandAI.py
+@@ -48,14 +48,18 @@ class DistributedIslandAI(DistributedCartesianGridAI, DistributedGameAreaAI, Tea
+     def handleChildArrive(self, childObj, zoneId):
+         if isinstance(childObj, DistributedMovingObjectAI):
+             self.addObjectToIslandGrid(childObj)
+-    
+-        DistributedCartesianGridAI.handleChildArrive(self, childObj, zoneId)
++
++        # through DistributedGameAreaAI (it ends in DistributedNodeAI, the same call as
++        # before): DistributedCartesianGridAI has no handleChildArrive/Leave of its own,
++        # so a pirate's island grid interests were opened on every zone move
++        # (handleChildArriveZone) but never closed when he left the island
++        DistributedGameAreaAI.handleChildArrive(self, childObj, zoneId)
+ 
+     def handleChildLeave(self, childObj, zoneId):
+         if isinstance(childObj, DistributedMovingObjectAI):
+             self.removeObjectFromIslandGrid(childObj)
+ 
+-        DistributedCartesianGridAI.handleChildLeave(self, childObj, zoneId)
++        DistributedGameAreaAI.handleChildLeave(self, childObj, zoneId)
+ 
+     def generate(self):
+         DistributedCartesianGridAI.generate(self)
+diff --git a/pirates/world/WorldGridManagerAI.py b/pirates/world/WorldGridManagerAI.py
+index 1e6d6bd..2904903 100644
+--- a/pirates/world/WorldGridManagerAI.py
++++ b/pirates/world/WorldGridManagerAI.py
+@@ -53,7 +53,13 @@ class GridInterestHandler(object):
+         if self.hasInterestHandleByZoneId(newZoneId):
+             return
+ 
+-        interestHandle = GridInterestHandle(newZoneId, newZoneId)
++        # the interest id must be unique for this client. It used to be the zone number,
++        # so two grids (an island and the ocean) or a client-side interest with the
++        # same number silently altered or killed each other inside the client agent,
++        # and a ship sailing into a ring zone that was no longer really open was
++        # deleted from its captain's screen (lost at sea at x=6000, STORY19/STORY27)
++        interestId = self.air.worldGridManager.allocInterestId(self.avatar.doId)
++        interestHandle = GridInterestHandle(interestId, newZoneId)
+         self.interestHandles.add(interestHandle)
+ 
+         clientChannel = self.avatar.GetPuppetConnectionChannel(self.avatar.doId)
+@@ -70,6 +76,7 @@ class GridInterestHandler(object):
+         clientChannel = self.avatar.GetPuppetConnectionChannel(self.avatar.doId)
+         self.air.clientRemoveInterest(clientChannel, interestHandle.context, False)
+         self.interestHandles.remove(interestHandle)
++        self.air.worldGridManager.freeInterestId(self.avatar.doId, interestHandle.context)
+ 
+     def removeInterestHandleByZoneId(self, zoneId):
+         """
+@@ -149,11 +156,21 @@ class GridInterestHandler(object):
+             self.removeInterestHandle(interestHandle)
+ 
+         newConcentricZones = newZones.difference(previousZones)
+-        if callback is not None:
+-            self._setInterestContextDoneCallback(newConcentricZones, callback)
+-
++        newContexts = set()
+         for newZoneId in newConcentricZones:
+             self.addInterestHandle(newZoneId)
++            interestHandle = self.getInterestHandleFromZoneId(newZoneId)
++            if interestHandle is not None:
++                newContexts.add(interestHandle.context)
++
++        # the client agent answers each add with its interest id, so the callback
++        # waits on the ids just opened (they used to be the zone numbers). Nothing new
++        # to open means nothing to wait for: finish now instead of tripping the assert
++        if callback is not None:
++            if newContexts:
++                self._setInterestContextDoneCallback(newContexts, callback)
++            else:
++                PythonUtil.FrameDelayedCall('interest-context-callback-%d' % self.avatar.doId, callback)
+ 
+         previousZones.clear()
+         newZones.clear()
+@@ -191,9 +208,43 @@ class GridInterestHandler(object):
+ class WorldGridManagerAI(object):
+     notify = DirectNotifyGlobal.directNotify.newCategory('WorldGridManagerAI')
+ 
++    # server-opened interest ids live in the top half of the 16-bit id space; the
++    # game client numbers its own interests from 0 and keeps the high bit free
++    # ("high bit is reserved for server interests", DoInterestManager)
++    INTEREST_ID_MIN = 0x8000
++    INTEREST_ID_MAX = 0xFFFF
++
+     def __init__(self, air):
+         self.air = air
+         self.gridInterestHandlers = {}
++        self.usedInterestIds = {}
++        self.nextInterestId = {}
++
++    def allocInterestId(self, avatarId):
++        """
++        Returns an interest id no other open grid interest of this avatar uses
++        """
++
++        used = self.usedInterestIds.setdefault(avatarId, set())
++        span = self.INTEREST_ID_MAX - self.INTEREST_ID_MIN + 1
++        interestId = self.nextInterestId.get(avatarId, self.INTEREST_ID_MIN)
++        for _ in range(span):
++            if interestId > self.INTEREST_ID_MAX:
++                interestId = self.INTEREST_ID_MIN
++
++            if interestId not in used:
++                used.add(interestId)
++                self.nextInterestId[avatarId] = interestId + 1
++                return interestId
++
++            interestId += 1
++
++        raise RuntimeError('avatar %d has no free grid interest id' % avatarId)
++
++    def freeInterestId(self, avatarId, interestId):
++        used = self.usedInterestIds.get(avatarId)
++        if used is not None:
++            used.discard(interestId)
+ 
+     def handleInterestContextDone(self, avatarId, context):
+         """
+@@ -250,7 +301,7 @@ class WorldGridManagerAI(object):
+         if not gridInterestHandler:
+             return
+ 
+-        gridInterestHandler.addInterestHandle(newZones)
++        gridInterestHandler.addInterestHandle(newZoneId)
+ 
+     def removeInterestHandle(self, parentObj, avatar, interestHandle):
+         """
+@@ -356,3 +407,5 @@ class WorldGridManagerAI(object):
+ 
+         assert(avatar.doId in self.gridInterestHandlers)
+         del self.gridInterestHandlers[avatar.doId]
++        self.usedInterestIds.pop(avatar.doId, None)
++        self.nextInterestId.pop(avatar.doId, None)
+-- 
+2.53.0
+

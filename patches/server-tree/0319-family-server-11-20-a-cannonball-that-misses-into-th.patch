@@ -1,0 +1,80 @@
+From 2247f96f56274caa991eb8aae6dc2bb3e6cb70ad Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 18:25:14 -0800
+Subject: [PATCH 319/371] family server (11-20): a cannonball that misses into
+ the sea no longer blocks the next shot (0403)
+
+Server: a ball that missed used to block the next shot for 10 s (other boys never saw it, special ammo wasn't used
+up); WeaponBaseAI.requestProjectileSkill and TargetManagerAI.getProjectileAge now let every reloaded shot go out.
+Lane: sea (sea-0005). Test: test_sea_cannons.py (15/17 -> 17/17).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/WeaponBaseAI.py         | 25 ++++++++++++++++++++++---
+ pirates/distributed/TargetManagerAI.py |  6 ++++++
+ 2 files changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/battle/WeaponBaseAI.py b/pirates/battle/WeaponBaseAI.py
+index 408af5f..c0ee082 100644
+--- a/pirates/battle/WeaponBaseAI.py
++++ b/pirates/battle/WeaponBaseAI.py
+@@ -56,10 +56,18 @@ class WeaponBaseAI(WeaponBaseBase):
+         print(("requestProjectileSkill", skillId, ammoSkillId, posHpr, timestamp, power))
+ 
+         if self.air.targetMgr.hasProjectile(avatar.doId, skillId, ammoSkillId):
+-            self.notify.debug('Avatar %d tried to request projectile skill for already used skill; '
+-                'skillId=%d ammoSkillId=%d!' % (avatar.doId, skillId, ammoSkillId))
++            # family server (sea-0005): a ball that misses into the sea never reports back, so its
++            # entry blocked the next shot for 10 s while round shot reloads in 3 s: the shot went
++            # unseen by everyone else and limited ammo was not paid. Once the ball is older than a
++            # floor below the fastest reload (Rapid Reload + Leadership), let the new shot replace it.
++            age = self.air.targetMgr.getProjectileAge(avatar.doId, skillId, ammoSkillId)
++            if age is None or age < self._projectileFloor(skillId, ammoSkillId):
++                self.notify.debug('Avatar %d tried to request projectile skill for already used skill; '
++                    'skillId=%d ammoSkillId=%d!' % (avatar.doId, skillId, ammoSkillId))
+ 
+-            return
++                return
++
++            self.air.targetMgr.removeProjectile(avatar.doId, skillId, ammoSkillId)
+ 
+         # TODO FIXME: calculate the air time of the projectile and store the current,
+         # timestamp so we know when the projectile request expires...
+@@ -71,6 +79,17 @@ class WeaponBaseAI(WeaponBaseBase):
+         # will see the projectile...
+         self.sendUpdate('useProjectileSkill', [skillId, ammoSkillId, posHpr, timestamp, power])
+ 
++    @staticmethod
++    def _projectileFloor(skillId, ammoSkillId):
++        reload = 0.0
++        for args in ((skillId,), (0, ammoSkillId)):
++            try:
++                reload = max(reload, WeaponGlobals.getAttackRechargeTime(*args) or 0.0)
++            except (KeyError, IndexError, TypeError):
++                pass
++
++        return max(0.5, 0.4 * reload)
++
+     @staticmethod
+     def isCannonAmmo(ammoId):
+         return bool(ammoId) and InventoryType.begin_WeaponCannonAmmo <= ammoId <= InventoryType.end_WeaponCannonAmmo
+diff --git a/pirates/distributed/TargetManagerAI.py b/pirates/distributed/TargetManagerAI.py
+index 0ce6844..c8b96ab 100644
+--- a/pirates/distributed/TargetManagerAI.py
++++ b/pirates/distributed/TargetManagerAI.py
+@@ -242,6 +242,12 @@ class TargetManagerAI(DistributedObjectAI, TargetManagerBase):
+ 
+         return False
+ 
++    def getProjectileAge(self, avatarId, skillId, ammoSkillId):
++        # seconds since the newest ball of this skill and ammo was fired, or None
++        ages = [time.time() - p[3] for p in self.projectiles.get(avatarId, [])
++                if p[0] == skillId and p[1] == ammoSkillId]
++        return min(ages) if ages else None
++
+     def addProjectile(self, avatarId, skillId, ammoSkillId, timestamp):
+         #assert(WeaponGlobals.isProjectileSkill(skillId, ammoSkillId))
+         if self.hasProjectile(avatarId, skillId, ammoSkillId):
+-- 
+2.53.0
+

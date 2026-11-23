@@ -1,0 +1,29 @@
+From ebbdda824ea6b58e4becce9ebb52605185860a25 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 01:28:02 -0800
+Subject: [PATCH 207/371] pirates: the Lookout's match maker is started with
+ the district (0273)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ai/PiratesAIRepository.py | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/pirates/ai/PiratesAIRepository.py b/pirates/ai/PiratesAIRepository.py
+index 2979e80..8abb2b9 100644
+--- a/pirates/ai/PiratesAIRepository.py
++++ b/pirates/ai/PiratesAIRepository.py
+@@ -165,6 +165,10 @@ class PiratesAIRepository(PiratesInternalRepository):
+         self.pvpManager = PVPManagerAI(self)
+         self.pvpManager.generateWithRequired(OTP_ZONE_ID_MANAGEMENT)
+ 
++        # family server (11-19, 0273): the Lookout's match maker, a global object (doId 4700, astrond.yml's uberdog
++        # list) so the client's requestJoin / skipJoin / cancelRequest reach it
++        self.matchMaker = self.generateGlobalObject(OTP_DO_ID_PIRATES_MATCH_MAKER, 'DistributedMatchMaker')
++
+         self.tutorialManager = PiratesTutorialManagerAI(self)
+         self.tutorialManager.generateWithRequired(OTP_ZONE_ID_MANAGEMENT)
+ 
+-- 
+2.53.0
+

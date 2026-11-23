@@ -1,0 +1,103 @@
+From 291f3b4ad4a228cb6fd9f121a3bc2e489c51f1bb Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 18:33:06 -0800
+Subject: [PATCH 290/371] pirates: typing in crew chat no longer closes the
+ game; the chat flags are imported where they are used (0374, patch 30)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ otp/chat/ChatInputTyped.py               | 1 +
+ otp/chat/ChatInputWhiteList.py           | 1 +
+ otp/chat/ChatManager.py                  | 1 +
+ pirates/chat/PChatAssistant.py           | 1 +
+ pirates/chat/PChatInputTyped.py          | 1 +
+ pirates/minigame/DistributedGameTable.py | 1 +
+ pirates/minigame/DistributedLiarsDice.py | 1 +
+ 7 files changed, 7 insertions(+)
+
+diff --git a/otp/chat/ChatInputTyped.py b/otp/chat/ChatInputTyped.py
+index a1afac7..c93e5e7 100644
+--- a/otp/chat/ChatInputTyped.py
++++ b/otp/chat/ChatInputTyped.py
+@@ -3,6 +3,7 @@ from otp.otpbase import OTPGlobals
+ import sys
+ from direct.gui.DirectGui import *
+ from panda3d.core import *
++from libotp.NametagConstants import *  # family server (11-19, 0374): the chat flags CFSpeech, CFTimeout, CFThought
+ from otp.otpbase import OTPLocalizer
+ 
+ class ChatInputTyped(DirectObject.DirectObject):
+diff --git a/otp/chat/ChatInputWhiteList.py b/otp/chat/ChatInputWhiteList.py
+index ae2c3eb..9f16a75 100644
+--- a/otp/chat/ChatInputWhiteList.py
++++ b/otp/chat/ChatInputWhiteList.py
+@@ -4,6 +4,7 @@ import sys
+ from direct.directnotify import DirectNotifyGlobal
+ from direct.gui.DirectGui import *
+ from panda3d.core import *
++from libotp.NametagConstants import *  # family server (11-19, 0374): the chat flags CFSpeech, CFTimeout, CFThought
+ from otp.otpbase import OTPLocalizer
+ from direct.task import Task
+ from otp.chat.ChatInputTyped import ChatInputTyped
+diff --git a/otp/chat/ChatManager.py b/otp/chat/ChatManager.py
+index 600267b..434a214 100644
+--- a/otp/chat/ChatManager.py
++++ b/otp/chat/ChatManager.py
+@@ -11,6 +11,7 @@ from direct.directnotify import DirectNotifyGlobal
+ from otp.login import LeaveToPayDialog
+ from direct.gui.DirectGui import *
+ from panda3d.core import *
++from libotp.NametagConstants import *  # family server (11-19, 0374): the chat flags CFSpeech, CFTimeout, CFThought
+ ChatEvent = 'ChatEvent'
+ NormalChatEvent = 'NormalChatEvent'
+ SCChatEvent = 'SCChatEvent'
+diff --git a/pirates/chat/PChatAssistant.py b/pirates/chat/PChatAssistant.py
+index 71dccbf..d35fef4 100644
+--- a/pirates/chat/PChatAssistant.py
++++ b/pirates/chat/PChatAssistant.py
+@@ -7,6 +7,7 @@ from direct.directnotify import DirectNotifyGlobal
+ from otp.otpbase import OTPGlobals
+ from otp.speedchat import SCDecoders
+ from panda3d.core import *
++from libotp.NametagConstants import *  # family server (11-19, 0374): the chat flags CFSpeech, CFTimeout, CFThought
+ from otp.chat.ChatGlobals import *
+ from otp.speedchat import SpeedChatGlobals
+ from otp.chat.ChatMessage import ChatMessage
+diff --git a/pirates/chat/PChatInputTyped.py b/pirates/chat/PChatInputTyped.py
+index 06aa125..4d4c1ce 100644
+--- a/pirates/chat/PChatInputTyped.py
++++ b/pirates/chat/PChatInputTyped.py
+@@ -4,6 +4,7 @@ import sys
+ from direct.directnotify import DirectNotifyGlobal
+ from direct.gui.DirectGui import *
+ from panda3d.core import *
++from libotp.NametagConstants import *  # family server (11-19, 0374): the chat flags CFSpeech, CFTimeout, CFThought
+ from otp.otpbase import OTPLocalizer
+ 
+ class PChatInputTyped(FSM.FSM, DirectEntry):
+diff --git a/pirates/minigame/DistributedGameTable.py b/pirates/minigame/DistributedGameTable.py
+index 9331dcd..654cfbc 100644
+--- a/pirates/minigame/DistributedGameTable.py
++++ b/pirates/minigame/DistributedGameTable.py
+@@ -1,5 +1,6 @@
+ import random
+ from panda3d.core import *
++from libotp.NametagConstants import *  # family server (11-19, 0374): the chat flags CFSpeech, CFTimeout, CFThought
+ from direct.showbase import DirectObject
+ from direct.interval.IntervalGlobal import *
+ from pirates.piratesbase import PiratesGlobals
+diff --git a/pirates/minigame/DistributedLiarsDice.py b/pirates/minigame/DistributedLiarsDice.py
+index 23ff031..fc0589d 100644
+--- a/pirates/minigame/DistributedLiarsDice.py
++++ b/pirates/minigame/DistributedLiarsDice.py
+@@ -3,6 +3,7 @@ from direct.interval.IntervalGlobal import *
+ from direct.task import Task
+ from direct.gui.DirectGui import *
+ from panda3d.core import *
++from libotp.NametagConstants import *  # family server (11-19, 0374): the chat flags CFSpeech, CFTimeout, CFThought
+ from pirates.minigame import DistributedDiceGame
+ from pirates.minigame import DiceGlobals
+ from pirates.piratesgui import GuiTray
+-- 
+2.53.0
+

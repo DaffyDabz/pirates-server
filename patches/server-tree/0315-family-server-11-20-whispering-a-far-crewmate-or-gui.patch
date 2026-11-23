@@ -1,0 +1,110 @@
+From c1b1bc4102d2ddf29375aa62b1a03bbf21c76c9e Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 18:00:23 -0800
+Subject: [PATCH 315/371] family server (11-20): whispering a far crewmate or
+ guildmate who isn't a friend says he's too far away instead of dropping you
+ (0399)
+
+Game: only pirates in view or on the friends list are whispered; anyone else gets "<name> is too far away to
+whisper. Friends can whisper each other from anywhere." and nothing is sent. Lane: social (social-0004).
+Test: test_whisper_far.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ otp/chat/ChatAssistant.py          | 44 ++++++++++++++++++++++--------
+ otp/otpbase/OTPLocalizerEnglish.py |  1 +
+ 2 files changed, 34 insertions(+), 11 deletions(-)
+
+diff --git a/otp/chat/ChatAssistant.py b/otp/chat/ChatAssistant.py
+index ee23e0f..b8a8be7 100644
+--- a/otp/chat/ChatAssistant.py
++++ b/otp/chat/ChatAssistant.py
+@@ -354,32 +354,50 @@ class ChatAssistant(DirectObject.DirectObject):
+         
+         return error
+     
++    def canWhisperAvatar(self, receiverId):
++        # family server (11-20): a whisper goes straight to the other pirate, and the server drops a pirate
++        # whose game sends to someone it cannot see. Pirates in view and friends (the server tells his game
++        # about them) can be whispered; anyone else gets a plain line instead of dropping him from the game.
++        return receiverId in base.cr.doId2do or base.cr.avatarFriendsManager.isAvatarFriend(receiverId)
++
++    def refuseWhisper(self, receiverId):
++        try:
++            name = self.findName(receiverId)
++        except Exception:
++            name = ''
++        text = OTPLocalizer.WhisperTooFar % name if name else OTPLocalizer.WhisperUnavailable
++        self.historySentWhisperAvatar[receiverId].insert(0, ChatMessage(self.chatTime(), AVATAR_UNAVAILABLE, text, None, receiverId, '', 0, 1, 1))
++        if self.logWhispers:
++            self.historyOpen.insert(0, ChatMessage(self.chatTime(), AVATAR_UNAVAILABLE, text, None, receiverId, '', 0, 1, 1))
++            messenger.send('NewOpenMessage')
++
+     def sendAvatarWhisperTypedChat(self, message, receiverId):
+         error = None
+         if not self.historySentWhisperAvatar.get(receiverId):
+             self.historySentWhisperAvatar[receiverId] = []
+-        
++
+         handle = base.cr.identifyAvatar(receiverId)
+-        if handle:
++        if handle and self.canWhisperAvatar(receiverId):
+             base.localAvatar.whisperTo(message, receiverId)
+             self.historySentWhisperAvatar[receiverId].insert(0, ChatMessage(self.chatTime(), TYPEDCHAT, message, None, receiverId, self.findName(receiverId), 0, 1, 1))
+             if self.logWhispers:
+                 self.historyOpen.insert(0, ChatMessage(self.chatTime(), TYPEDCHAT, message, None, receiverId, self.findName(receiverId), 0, 1, 1))
+                 messenger.send('NewOpenMessage')
+-            
++
+         else:
+-            self.historySentWhisperAvatar[receiverId].insert(0, ChatMessage(self.chatTime(), AVATAR_UNAVAILABLE, OTPLocalizer.WhisperUnavailable, None, receiverId, '', 0, 1, 1))
+-            if self.logWhispers:
+-                self.historyOpen.insert(0, ChatMessage(self.chatTime(), AVATAR_UNAVAILABLE, OTPLocalizer.WhisperUnavailable, None, receiverId, '', 0, 1, 1))
+-                messenger.send('NewOpenMessage')
+-            
++            self.refuseWhisper(receiverId)
++
+         return error
+-    
++
+     def sendAvatarWhisperWLChat(self, message, receiverId):
+         error = None
+         if not self.historySentWhisperAvatar.get(receiverId):
+             self.historySentWhisperAvatar[receiverId] = []
+-        
++
++        if not self.canWhisperAvatar(receiverId):
++            self.refuseWhisper(receiverId)
++            return error
++
+         base.localAvatar.whisperWLTo(message, receiverId)
+         self.historySentWhisperAvatar[receiverId].insert(0, ChatMessage(self.chatTime(), TYPEDCHAT, message, None, receiverId, self.findName(receiverId), 0, 1, 1))
+         if self.logWhispers:
+@@ -392,7 +410,11 @@ class ChatAssistant(DirectObject.DirectObject):
+         error = None
+         if not self.historySentWhisperAvatar.get(receiverId):
+             self.historySentWhisperAvatar[receiverId] = []
+-        
++
++        if not self.canWhisperAvatar(receiverId):
++            self.refuseWhisper(receiverId)
++            return error
++
+         if type == SPEEDCHAT_NORMAL:
+             base.localAvatar.whisperSCTo(messageIndex, receiverId, 0)
+         elif type == SPEEDCHAT_EMOTE:
+diff --git a/otp/otpbase/OTPLocalizerEnglish.py b/otp/otpbase/OTPLocalizerEnglish.py
+index 706ccd2..42e158d 100644
+--- a/otp/otpbase/OTPLocalizerEnglish.py
++++ b/otp/otpbase/OTPLocalizerEnglish.py
+@@ -35,6 +35,7 @@ WhisperFriendLoggedOut = '%s has logged out.'
+ WhisperPlayerOnline = '%s logged into %s'
+ WhisperPlayerOffline = '%s is offline.'
+ WhisperUnavailable = 'That player is no longer available for whispers.'
++WhisperTooFar = '%s is too far away to whisper. Friends can whisper each other from anywhere.'
+ DialogSpecial = 'ooo'
+ DialogExclamation = '!'
+ DialogQuestion = '?'
+-- 
+2.53.0
+

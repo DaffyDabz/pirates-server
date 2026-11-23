@@ -1,0 +1,36 @@
+From 2b6b404d197fbaf07c989456c5112e6ad84255b6 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:04:41 -0800
+Subject: [PATCH 236/371] pirates: firing at a Black Pearl barricade fort never
+ kicks a pirate, and ten hits bring it down (0310)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedFortAI.py | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/world/DistributedFortAI.py b/pirates/world/DistributedFortAI.py
+index 246bc8b..f132086 100644
+--- a/pirates/world/DistributedFortAI.py
++++ b/pirates/world/DistributedFortAI.py
+@@ -117,8 +117,15 @@ class DistributedFortAI(DistributedBattleAvatarAI):
+     # Combat
+     # =========================================================================
+ 
+-    def hitByProjectile(self, skillId, ammoSkillId, attackerDoId):
+-        """Called when hit by a projectile (cannonball)"""
++    def hitByProjectile(self, skillId, ammoSkillId, attackerDoId=None):
++        """Called when hit by a projectile (cannonball)
++
++        family server: the dc field is hitByProjectile(SkillId, SkillId) and DistributedFort.sendHitByProjectile
++        sends just those two, so a required third argument made every cannonball that hit a Black Pearl fort
++        raise a TypeError here (district-survived) and kick the pirate who fired it. The attacker is the sender.
++        """
++        if attackerDoId is None:
++            attackerDoId = self.air.getAvatarIdFromSender()
+         if self.destroyed:
+             return
+ 
+-- 
+2.53.0
+

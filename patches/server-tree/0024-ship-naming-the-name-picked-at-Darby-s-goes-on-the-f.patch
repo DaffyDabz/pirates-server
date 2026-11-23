@@ -1,0 +1,105 @@
+From 0b6c28d99d2da973c321b893ca2d9d2e4df8c1c2 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 17:44:38 -0800
+Subject: [PATCH 024/371] ship naming: the name picked at Darby's goes on the
+ first ship, and the ship reward no longer crashes
+
+---
+ pirates/npc/DistributedNPCTownfolkAI.py | 47 +++++++++++++++++++++++--
+ pirates/quest/QuestReward.py            | 13 ++++---
+ 2 files changed, 54 insertions(+), 6 deletions(-)
+
+diff --git a/pirates/npc/DistributedNPCTownfolkAI.py b/pirates/npc/DistributedNPCTownfolkAI.py
+index 97c370d..50ba9e6 100644
+--- a/pirates/npc/DistributedNPCTownfolkAI.py
++++ b/pirates/npc/DistributedNPCTownfolkAI.py
+@@ -159,16 +159,59 @@ class DistributedNPCTownfolkAI(DistributedBattleNPCAI, DistributedShopKeeperAI):
+     def shipTutorialPt1(self, avId, shipName):
+         # Darby's ship tutorial sends the name the player picked (dc: airecv clsend).
+         # Fire the event Darby's second line waits for (c2.9visitDarby finalize
+-        # 'waitEvent': 'tutorialShipConstructed'). The name itself is not applied yet:
+-        # the ship keeps 'Unnamed Ship'.
++        # 'waitEvent': 'tutorialShipConstructed'). The event is sent even when the name
++        # cannot be applied, so the second line never waits for the two-minute fallback.
+         senderId = self.air.getAvatarIdFromSender()
+         avatar = self.air.doId2do.get(senderId)
+         if not avatar or avId != senderId:
+             return
+ 
+         self.notify.info('shipTutorialPt1 from %s: %r' % (avId, shipName))
++        self._nameTutorialShip(avatar, shipName)
+         messenger.send(avatar.uniqueName('tutorialShipConstructed'))
+ 
++    # This server builds the first ship at login (PirateInventoryAI.populateInventory
++    # gives every ship-less pirate a light sloop named 'Unnamed Ship'), not here, so
++    # the tutorial names that ship and records it for c2.9's ShipReward. Only a name
++    # from the pick lists is taken (typed names are off on the client:
++    # NamePanelGui.PICK_A_NAME_ENABLED = 0), and only while c2.9 is held, so a client
++    # cannot rename a ship at any other time. Written like the shopkeeper's repairs:
++    # the live object first, then the db.
++    def _nameTutorialShip(self, avatar, shipName):
++        from pirates.piratesbase import PLocalizer
++        if not self.air.questMgr.hasQuest(avatar, questId='c2.9visitDarby'):
++            self.notify.warning('ship name from %d without c2.9visitDarby held' % avatar.doId)
++            return
++
++        try:
++            typedName, nameIndices = shipName
++            prefixes = dict((index, word) for word, index in list(PLocalizer.PirateShipPrefix.items()))
++            suffixes = dict((index, word) for word, index in list(PLocalizer.PirateShipSuffix.items()))
++            name = '%s %s' % (prefixes[nameIndices[0]], suffixes[nameIndices[1]])
++        except (TypeError, ValueError, IndexError, KeyError):
++            self.notify.warning('ship name %r from %d is not a pick-list name' % (shipName, avatar.doId))
++            return
++
++        inventory = self.air.inventoryManager.getInventory(avatar.doId)
++        shipIds = inventory.getShipDoIdList() if inventory else []
++        if not shipIds:
++            self.notify.warning('no ship to name for %d' % avatar.doId)
++            return
++
++        shipId = min(shipIds)  # the first ship, the one made at login
++        avatar.constructedShipDoId = shipId
++
++        def _queried(dclass, fields):
++            if not fields:
++                self.notify.warning('failed to query ship %d' % shipId)
++                return
++
++            self.air.send(dclass.aiFormatUpdate('setName', shipId, shipId, self.air.ourChannel, [name]))
++            self.air.dbInterface.updateObject(self.air.dbId, shipId, dclass, {'setName': [name]})
++            self.notify.info('ship %d of %d named %r (was %r)' % (shipId, avatar.doId, name, fields.get('setName')))
++
++        self.air.dbInterface.queryObject(self.air.dbId, shipId, _queried)
++
+     def _grantTutorialCutlassLevel(self, avId):
+         if avId != self.air.getAvatarIdFromSender():
+             return
+diff --git a/pirates/quest/QuestReward.py b/pirates/quest/QuestReward.py
+index ed85d8f..bc9fa59 100644
+--- a/pirates/quest/QuestReward.py
++++ b/pirates/quest/QuestReward.py
+@@ -228,11 +228,16 @@ class TreasureMapReward(QuestReward):
+ class ShipReward(QuestReward):
+ 
+     def applyTo(self, trade, av):
+-        if av.constructedShipDoId:
+-            trade.giveShip(av.constructedShipDoId)
+-            trade.giveNewShipToken()
+-
++        # family server: the ship already exists. PirateInventoryAI makes it at login and
++        # Darby's DistributedNPCTownfolkAI.shipTutorialPt1 names it and records it in
++        # constructedShipDoId, so giving it means making sure it is in the ship list.
++        # (trade.giveShip and giveNewShipToken do not exist on LocalTrade here, and the
++        # New Ship Token stack is already at its limit of 1.)
++        shipId = av.constructedShipDoId
+         av.constructedShipDoId = None
++        inventory = av.getInventory()
++        if shipId and inventory and shipId not in inventory.getShipDoIdList():
++            inventory.setShipDoIdList(inventory.getShipDoIdList() + [shipId])
+ 
+     def getDescriptionText(self):
+         return PLocalizer.ShipRewardDesc
+-- 
+2.53.0
+

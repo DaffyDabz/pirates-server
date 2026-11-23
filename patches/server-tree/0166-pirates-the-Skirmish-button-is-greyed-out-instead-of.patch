@@ -1,0 +1,27 @@
+From 775e83812f44bb762543411172baa8ddfe445859 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:56:11 -0800
+Subject: [PATCH 166/371] pirates: the Skirmish button is greyed out instead of
+ crashing, server-tree patch 0190
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/PirateAvatarPanel.py | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/pirates/pirate/PirateAvatarPanel.py b/pirates/pirate/PirateAvatarPanel.py
+index 34470c5..5d2cf98 100644
+--- a/pirates/pirate/PirateAvatarPanel.py
++++ b/pirates/pirate/PirateAvatarPanel.py
+@@ -212,6 +212,8 @@ class PirateAvatarPanel(IdentityPanel.IdentityPanel):
+                     self.challengeButton['state'] = DGG.DISABLED
+                 elif inPVP or inSameCrew:
+                     self.challengeButton['state'] = DGG.DISABLED
++                if not getattr(base.cr, 'pvpManager', None):
++                    self.challengeButton['state'] = DGG.DISABLED
+                 
+             else:
+                 self.crewButton['state'] = DGG.DISABLED
+-- 
+2.53.0
+

@@ -1,0 +1,58 @@
+From 5211a086051e5df123046108d1b046d5f6872e11 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 20:36:00 -0800
+Subject: [PATCH 327/371] family server (11-20): his ships show at the rowboat
+ again after he goes back to the pirate chooser and picks his pirate again
+ (sea-0002, patch 0411)
+
+Back at the chooser the game drops its ship owner views, but the ship stays up on the server, owned by the same channel.
+Picking the same pirate again set the same owner, which Astron ignores, so the game never got the ship back and the
+rowboat's Own tab was empty. ActivateShipFSM now clears the owner first (setOwner 0, then the channel) for the ship and
+each hull/mast part, so the owner entry always goes out. UberDOG code. Test: test_ship_owner_relogin.py (bb52f83 2/6,
+this 6/6); test_ship_activate 4/4 and test_ship_relogin 8/8 still pass.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/DistributedShipLoaderUD.py | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/uberdog/DistributedShipLoaderUD.py b/pirates/uberdog/DistributedShipLoaderUD.py
+index e23ff02..662e2c7 100644
+--- a/pirates/uberdog/DistributedShipLoaderUD.py
++++ b/pirates/uberdog/DistributedShipLoaderUD.py
+@@ -309,7 +309,7 @@ class ActivateShipFSM(ShipLoaderOperationFSM):
+             {'setInventoryId': (inventoryId,)})
+ 
+         channel = self.accountId << 32 | self.avatarId
+-        self.air.setOwner(self.shipId, channel)
++        self.setOwnerAgain(self.shipId, channel)
+ 
+         datagramCleanup = PyDatagram()
+         datagramCleanup.addServerHeader(
+@@ -366,7 +366,7 @@ class ActivateShipFSM(ShipLoaderOperationFSM):
+             {'setOwnerId': (self.avatarId,), 'setShipId': (self.shipId,)})
+ 
+         channel = self.accountId << 32 | self.avatarId
+-        self.air.setOwner(shippartDoId, channel)
++        self.setOwnerAgain(shippartDoId, channel)
+ 
+         datagramCleanup = PyDatagram()
+         datagramCleanup.addServerHeader(
+@@ -389,6 +389,14 @@ class ActivateShipFSM(ShipLoaderOperationFSM):
+         if not self.pendingShipparts:
+             self.cleanup(True)
+ 
++    def setOwnerAgain(self, doId, channel):
++        # family server (11-20): a pirate who goes back to the pirate chooser and picks the same pirate again comes
++        # back on the same owner channel, and his ships are still up from the last login. The state server ignores
++        # a setOwner to the owner it already has, so his game never got back the ships it dropped at the chooser,
++        # and the rowboat said he had none. Clear the owner first so the owner entry always goes out.
++        self.air.setOwner(doId, 0)
++        self.air.setOwner(doId, channel)
++
+     def exitStart(self):
+         pass
+ 
+-- 
+2.53.0
+

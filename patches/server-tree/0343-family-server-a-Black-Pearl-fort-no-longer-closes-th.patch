@@ -1,0 +1,42 @@
+From 27422044111fdc208e6f03f52fbcb466cdd3c575 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 05:09:16 -0800
+Subject: [PATCH 343/371] family server: a Black Pearl fort no longer closes
+ the game when it reaches the client
+
+Since 0426 the Black Pearl barricade forts really reach the clients near them. The AI sends every fort with
+AvatarTypes.AnyAvatar (DistributedBattleAvatarAI's default; DistributedFortAI never changes it), and the client's
+DistributedBattleAvatar.setAvatarType looks the height up in EnemyGlobals: AnyAvatar has no stats, getHeight is
+None, and max(10.0, None) raised a TypeError that closed the game 4 s after a fresh Black Pearl instance was made
+(boats' BPFORT6, two identical tracebacks).
+
+DistributedFort now has its own setAvatarType that keeps the type only. The fort already sets its own battle
+tube (50 x 100) in announceGenerate; its height stays the battle avatar's default 5.0. Client only; the AI is
+unchanged. Offline sim with the real client DistributedFort class and the type the AI sends (boats'
+sim_fortavtype.py): HEAD FAIL with the same TypeError, patched PASS (no exception, type kept, height 5.0).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedFort.py | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/pirates/world/DistributedFort.py b/pirates/world/DistributedFort.py
+index c10cdb4..64c13f0 100644
+--- a/pirates/world/DistributedFort.py
++++ b/pirates/world/DistributedFort.py
+@@ -56,6 +56,12 @@ class DistributedFort(DistributedBattleAvatar.DistributedBattleAvatar):
+         if self.islandRequest:
+             self.cr.relatedObjectMgr.abortRequest(self.islandRequest)
+ 
++    def setAvatarType(self, avatarType):
++        # a fort is sent with AvatarTypes.AnyAvatar, which has no enemy stats (getHeight is None), and the battle
++        # avatar's max(10.0, None) closed the game for everyone near the Black Pearl once the forts reached the
++        # client (0426; boats' BPFORT6). Keep the type only: announceGenerate sets the fort's own 50 x 100 battle tube.
++        self.avatarType = avatarType
++
+     def setIslandId(self, islandId):
+         self.islandId = islandId
+ 
+-- 
+2.53.0
+

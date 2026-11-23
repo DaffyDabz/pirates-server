@@ -1,0 +1,178 @@
+From 32eea35b285aaf5c7ba0ecbd66b94ae055a37585 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:07:25 -0800
+Subject: [PATCH 152/371] pirates: a new pirate in the starter waters is fought
+ by one enemy ship at a time, not a gang of Ferrets, server-tree patch 0166
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/GameFSMShipAI.py | 11 ++++-
+ pirates/ship/ShipManagerAI.py | 16 +++++++
+ pirates/ship/StarterWaters.py | 78 ++++++++++++++++++++++++++++++++++-
+ 3 files changed, 102 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index a30f47d..cb1a7af 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -985,9 +985,16 @@ class GameFSMShipAI(FSM.FSM):
+         return True
+ 
+     def _starterTargetOk(self, target):
+-        """May this ship engage target where it is (StarterWaters.targetOkForShip)?"""
++        """May this ship engage target where it is (StarterWaters.targetOkForShip),
++        and is there room on it (patch 0166: one enemy ship at a time on a pirate
++        in starter waters, StarterWaters.attackerOk)?"""
+         try:
+-            return StarterWaters.targetOkForShip(self.air, self.ship, target.getX(), target.getY())
++            if not StarterWaters.targetOkForShip(self.air, self.ship, target.getX(), target.getY()):
++                return False
++        except Exception:
++            return True
++        try:
++            return StarterWaters.attackerOk(self.air, self, target)
+         except Exception:
+             return True
+ 
+diff --git a/pirates/ship/ShipManagerAI.py b/pirates/ship/ShipManagerAI.py
+index 1ac3d05..d450f66 100644
+--- a/pirates/ship/ShipManagerAI.py
++++ b/pirates/ship/ShipManagerAI.py
+@@ -425,6 +425,14 @@ class ShipManagerAI:
+                 return shipClass, pos, False
+             if not StarterWaters.inStarterWaters(self.air, pos[0], pos[1]):
+                 return shipClass, pos, False
++            # patch 0166: about 21 of the 96 ships drew a point here (the spawn
++            # picks an ocean area first and three lie here); once
++            # npcship-starter-pop-max ships live here, draw again elsewhere
++            if StarterWaters.POP_MAX > 0 and self._starterHomeCount() >= StarterWaters.POP_MAX:
++                for _ in range(20):
++                    pos = self._getValidSpawnPosition(oceanGrid, world) or pos
++                    if not StarterWaters.inStarterWaters(self.air, pos[0], pos[1]):
++                        return shipClass, pos, False
+             if not StarterWaters.isStarterClass(shipClass):
+                 low = StarterWaters.starterClasses(REGULAR_NPC_SHIPS)
+                 if not low:
+@@ -435,6 +443,14 @@ class ShipManagerAI:
+             self.notify.warning('starter waters: spawn check failed (%s), spawning as before' % e)
+             return shipClass, None, False
+ 
++    def _starterHomeCount(self):
++        """Ships alive that spawned in starter waters (and patrol there); 0 if it
++        cannot count, so the cap never turns the rest of the starter rule off."""
++        try:
++            return sum(1 for s in self.npcShips if getattr(s, '_starterHome', False) and not s.isEmpty())
++        except Exception:
++            return 0
++
+     def _spawnFlagship(self, shipClass=None):
+         """
+         Spawn a flagship. If shipClass is None, picks a random flagship type.
+diff --git a/pirates/ship/StarterWaters.py b/pirates/ship/StarterWaters.py
+index 5504daa..d3113cb 100644
+--- a/pirates/ship/StarterWaters.py
++++ b/pirates/ship/StarterWaters.py
+@@ -34,9 +34,27 @@ anywhere on the ocean and sent each ship to random points anywhere, so a new
+ pirate leaving Port Royal met mostly level 16-44 ships (SMOKE-shipfight
+ 2026-11-17: 12 of 13 ships seen were level 18-32).
+ 
++Patch 0166 (2026-11-18): Ferrets only was not enough. In NEWP12-NP3 nine
++level-2 Navy Ferrets took turns on a level-3 pirate leaving Port Royal, four
++at a time, and sank it from a full hull while it fled; it never got past
++x=6000. The game's own gang-up limit (AI_GANGUP_LIMIT 5) never counted
++anything (it reads a currentTarget field no ship has), and about 21 of the 96
++enemy ships spawned in these waters (the spawn picks an ocean area first, and
++the Windward Passage, Bloody Bayou and Blackheart Strait areas lie here). Now:
++
++- at most npcship-starter-attackers-max (default 1) enemy ships are on one
++  pirate ship in these waters at a time. The first to take it keeps it while
++  it still aims at it; every other ship leaves that pirate alone (no chase, no
++  shot) until it sinks, gives up or the pirate sails out of the waters;
++- at most npcship-starter-pop-max (default 6) ships live in these waters; a
++  spawn point drawn there once that many do is drawn again elsewhere.
++
+ Configs: npcship-starter-islands (island uids, space separated), npcship-
+ starter-radius (feet from each island's centre; 0 turns the rule off),
+-npcship-starter-level-max, npcship-starter-corridor (0 = circles only).
++npcship-starter-level-max, npcship-starter-corridor (0 = circles only),
++npcship-starter-attackers-max (0 = no cap), npcship-starter-attacker-hold
++(seconds a quiet attacker keeps its slot, default 30), npcship-starter-pop-max
++(0 = no cap).
+ """
+ import math
+ 
+@@ -51,6 +69,11 @@ ISLANDS = config.GetString('npcship-starter-islands',
+ RADIUS = config.GetFloat('npcship-starter-radius', 9000.0)
+ LEVEL_MAX = config.GetInt('npcship-starter-level-max', 5)
+ CORRIDOR = config.GetBool('npcship-starter-corridor', True)
++ATTACKERS_MAX = config.GetInt('npcship-starter-attackers-max', 1)
++ATTACKER_HOLD = config.GetFloat('npcship-starter-attacker-hold', 30.0)
++POP_MAX = config.GetInt('npcship-starter-pop-max', 6)
++
++_AFLOAT_NOT = ('Sinking', 'Sunk', 'Defeated', 'Off', 'PutAway')
+ 
+ _centers = None
+ 
+@@ -161,6 +184,59 @@ def targetOkForShip(air, ship, x, y):
+     return not inStarterWaters(air, x, y)
+ 
+ 
++def _aims(fsm, target):
++    """Is this ship's AI on target (its targetShip) and still afloat?"""
++    if fsm is None:
++        return False
++    t = getattr(fsm, 'targetShip', None)
++    if t is None or getattr(t, 'doId', None) != target.doId:
++        return False
++    try:
++        return fsm.getCurrentOrNextState() not in _AFLOAT_NOT
++    except Exception:
++        return True
++
++
++def attackerOk(air, fsm, target):
++    """
++    May this enemy ship (fsm is its GameFSMShipAI) engage the player ship
++    target? Patch 0166: in starter waters at most ATTACKERS_MAX enemy ships are
++    on one player ship at a time. A ship that is let on keeps its slot while it
++    still aims at the target and checks it at least every ATTACKER_HOLD
++    seconds (every chase step and shot checks); any other ship is told no.
++    No cap for a test spawn, with the rule off, for an NPC target or for a
++    target outside the waters.
++    """
++    ship = fsm.ship
++    if not enabled() or ATTACKERS_MAX <= 0 or getattr(ship, '_starterExempt', False):
++        return True
++    if not air.shipManager.hasPlayerShip(target):
++        return True
++    reg = getattr(air, '_starterAttackers', None)
++    if reg is None:
++        reg = air._starterAttackers = {}
++    tid = target.doId
++    if not inStarterWaters(air, target.getX(), target.getY()):
++        reg.pop(tid, None)
++        return True
++    if len(reg) > 64:
++        for old in [k for k in reg if k not in air.doId2do]:
++            del reg[old]
++    now = globalClock.getFrameTime()
++    on = reg.setdefault(tid, {})
++    for oid, seen in list(on.items()):
++        if oid == ship.doId:
++            continue
++        other = air.doId2do.get(oid)
++        if (other is None or now - seen > ATTACKER_HOLD
++                or not _aims(getattr(other, 'gameFSM', None), target)):
++            del on[oid]
++    if ship.doId in on or len(on) < ATTACKERS_MAX:
++        on[ship.doId] = now
++        return True
++    return False
++
++
+ def pointOkForShip(air, ship, x, y, fromXY=None, toXY=None):
+     """
+     May this ship sail to (x, y)? Always yes for a starter-level ship or a test
+-- 
+2.53.0
+

@@ -1,0 +1,175 @@
+From bea4cd1bbbc59e1859388ed60fa33e4496e75b5c Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 13:23:19 -0800
+Subject: [PATCH 010/371] quests: rewards never abort, kills credit the weapon
+ used, sunk ships count
+
+- QuestManagerAI._giveRewards: one bad reward logs a warning instead of
+  stopping the rest of the turn-in.
+- enemyDefeated takes the attacker's weapon rep (falls back to the
+  current weapon), so weapon-specific defeat quests progress.
+- New shipDefeated: fires QuestEvent.ShipDefeated with faction, hull,
+  flagship and level; DistributedHullAI calls it when a hit sinks a ship.
+- BattleManagerAI.rewardAttackers skips a gone attacker instead of asserting.
+- TradeAI LocalTrade gains giveGoldInPocket and givePlayingCard, which
+  gold and card rewards call.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/BattleManagerAI.py      | 11 ++++--
+ pirates/quest/QuestManagerAI.py        | 46 ++++++++++++++++++++++++--
+ pirates/shipparts/DistributedHullAI.py |  3 ++
+ pirates/trades/TradeAI.py              | 15 +++++++++
+ 4 files changed, 70 insertions(+), 5 deletions(-)
+
+diff --git a/pirates/battle/BattleManagerAI.py b/pirates/battle/BattleManagerAI.py
+index 62f2a3c..c7890c6 100644
+--- a/pirates/battle/BattleManagerAI.py
++++ b/pirates/battle/BattleManagerAI.py
+@@ -481,7 +481,10 @@ class BattleManagerAI(BattleManagerBase):
+         attackers = self.air.targetMgr.getAttackers(target.doId)
+         for attackerId in attackers:
+             attacker = self.air.doId2do.get(attackerId)
+-            assert(attacker is not None)
++            if attacker is None:
++                # left the game since the hit; the assert aborted the other attackers' rewards too
++                continue
++
+             self.rewardAttacker(attacker, target)
+ 
+     def rewardAttacker(self, attacker, target):
+@@ -494,11 +497,13 @@ class BattleManagerAI(BattleManagerBase):
+                 return
+ 
+         overallReputation = 0
++        usedReps = {}
+         goldReward = EnemyGlobals.getGoldDrop(target.getAvatarType(), target.getLevel())
+ 
+         for skillId in attacker.battleSkillDiary.getSkills():
+             ammoSkillId, timestamp, reputation = attacker.battleSkillDiary.getSkill(skillId)
+             reputationCategoryId = WeaponGlobals.getSkillReputationCategoryId(skillId)
++            usedReps[reputationCategoryId] = usedReps.get(reputationCategoryId, 0) + reputation
+ 
+             # update the avatar's skill reputation for each skill it used to kill the target,
+             # adding onto the overall reputation rewarded
+@@ -515,4 +520,6 @@ class BattleManagerAI(BattleManagerBase):
+             inventory.giveCards(cardId, 1)
+ 
+         # attempt to update the avatar's active task progress...
+-        self.air.questMgr.enemyDefeated(attacker, target)
++        # the weapon (reputation category) that did the most work decides the weapon-quest match
++        weaponType = max(usedReps, key=usedReps.get) if usedReps else None
++        self.air.questMgr.enemyDefeated(attacker, target, weaponType)
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 69ebd19..78fbe3c 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -466,7 +466,13 @@ class QuestManagerAI(DirectObject):
+ 
+         trade = self.air.tradeMgr.createTrade(avatar.doId)
+         for reward in rewards:
+-            reward.applyTo(trade, avatar)
++            # one reward that cannot be applied (missing trade method, missing
++            # accessories manager ...) must not abort the turn-in or the rewards after it
++            try:
++                reward.applyTo(trade, avatar)
++            except Exception:
++                import traceback
++                self.notify.warning('Failed to apply reward %s for avatar %d:\n%s' % (reward.__class__.__name__, avatar.doId, traceback.format_exc()))
+ 
+     def completeQuest(self, avatar, quest):
+         assert(avatar is not None)
+@@ -556,16 +562,50 @@ class QuestManagerAI(DirectObject):
+ 
+         return self.completeTaskState(avatar, questEvent)
+ 
+-    def enemyDefeated(self, avatar, enemy):
++    def enemyDefeated(self, avatar, enemy, weaponType=None):
+         parentObj = avatar.getParentObj()
+         if not parentObj:
+             return
+ 
++        # DefeatTaskDNA.weaponType is a weapon reputation category (CutlassRep,
++        # PistolRep, DaggerRep) of the ATTACKER; this used the enemy's own weapon id.
++        if weaponType is None:
++            from pirates.battle import WeaponGlobals
++            weaponType = WeaponGlobals.getRepId(avatar.getCurrentWeapon()[0]) or None
++
+         questEvent = QuestEvent.EnemyDefeated()
+         questEvent.setLocation(parentObj.getUniqueId())
+         questEvent.setEnemyType(enemy.getAvatarType())
+         questEvent.setLevel(enemy.getLevel())
+-        questEvent.setWeaponType(enemy.getCurrentWeapon()[0])
++        questEvent.setWeaponType(weaponType)
++
++        return self.completeTaskState(avatar, questEvent)
++
++    def shipDefeated(self, avatar, ship):
++        # No AI code ever fired QuestEvent.ShipDefeated, so every sink / capture /
++        # ship-loot quest (DefeatShip, RecoverShipItem, CaptureShipNPC) stayed at 0.
++        from pirates.pirate import AvatarTypes
++        from pirates.ship import ShipGlobals
++        parentObj = avatar.getParentObj()
++        if not parentObj:
++            return
++
++        factions = {
++            ShipGlobals.UNDEAD_TEAM: AvatarTypes.Undead,
++            ShipGlobals.FRENCH_UNDEAD_TEAM: AvatarTypes.French,
++            ShipGlobals.SPANISH_UNDEAD_TEAM: AvatarTypes.Spanish,
++            ShipGlobals.NAVY_TEAM: AvatarTypes.Navy,
++            ShipGlobals.TRADING_CO_TEAM: AvatarTypes.TradingCo}
++        faction = factions.get(ShipGlobals.getShipTeam(ship.getShipClass()))
++        if faction is None:
++            return
++
++        questEvent = QuestEvent.ShipDefeated()
++        questEvent.setLocation(parentObj.getUniqueId())
++        questEvent.setFaction(faction)
++        questEvent.setHull(ship.getShipClass())
++        questEvent.setIsFlagship(bool(ship.getIsFlagship()))
++        questEvent.setLevel(ship.getLevel())
+ 
+         return self.completeTaskState(avatar, questEvent)
+ 
+diff --git a/pirates/shipparts/DistributedHullAI.py b/pirates/shipparts/DistributedHullAI.py
+index 06a9ef3..478a835 100644
+--- a/pirates/shipparts/DistributedHullAI.py
++++ b/pirates/shipparts/DistributedHullAI.py
+@@ -102,4 +102,7 @@ class DistributedHullAI(DistributedShippartAI, DistributedDestructibleArrayAI, D
+         left, rear, right = self.getArmorStatus()
+         armorAsorb = (left + rear + right) / 3
+         armorAsorb = min(armorAsorb, ShipBalance.ArmorAbsorb.getValue())
++        wasAfloat = self.ship.getHp() > 0
+         self.ship.b_setHp(self.ship.getHp() + (hullDamage - (armorAsorb * hullDamage)))
++        if attacker and wasAfloat and self.ship.getHp() <= 0:
++            self.air.questMgr.shipDefeated(attacker, self.ship)
+diff --git a/pirates/trades/TradeAI.py b/pirates/trades/TradeAI.py
+index 5036fd3..54e2d9d 100644
+--- a/pirates/trades/TradeAI.py
++++ b/pirates/trades/TradeAI.py
+@@ -113,6 +113,21 @@ class LocalTrade(TradeBase):
+     def giveWandTraining(self):
+         self.giveStack(InventoryType.WandToken, 1)
+ 
++    def giveGoldInPocket(self, amount):
++        # quest GoldReward / GoldAmountReward call this; LocalTrade never had it
++        inventory = self.avatar.getInventory()
++        if not inventory:
++            return
++
++        inventory.setGoldInPocket(inventory.getGoldInPocket() + int(amount))
++
++    def givePlayingCard(self, card):
++        # PlayingCardTier1-3Reward; card may be a card number (0-51) or a full stack type
++        if card < InventoryType.begin_Cards:
++            card += InventoryType.begin_Cards
++
++        self.giveStack(card, 1)
++
+ 
+ class TradeAI(DistributedObjectAI, TradeBase):
+     notify = DirectNotifyGlobal.directNotify.newCategory('TradeAI')
+-- 
+2.53.0
+

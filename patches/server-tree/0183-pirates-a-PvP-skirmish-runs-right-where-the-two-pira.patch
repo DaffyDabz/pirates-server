@@ -1,0 +1,178 @@
+From 3d46c9098254265d46ba7d9725e689a8095ec65e Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:57:29 -0800
+Subject: [PATCH 183/371] pirates: a PvP skirmish runs right where the two
+ pirates stand (0241)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pvp/PVPSkirmishAI.py | 157 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 157 insertions(+)
+ create mode 100644 pirates/pvp/PVPSkirmishAI.py
+
+diff --git a/pirates/pvp/PVPSkirmishAI.py b/pirates/pvp/PVPSkirmishAI.py
+new file mode 100644
+index 0000000..f29a08a
+--- /dev/null
++++ b/pirates/pvp/PVPSkirmishAI.py
+@@ -0,0 +1,157 @@
++from direct.directnotify import DirectNotifyGlobal
++
++
++# family server (11-18): one Skirmish ("Crew Battle") between two pirates, fought where they stand.
++# The old game sent challengers to a separate PvP world; that world has no island data here, so the
++# fight happens in place instead: each side gets its own PVP team (the client already treats two
++# different PVP teams as enemies), a knockout scores a point and the pirate gets up again a few
++# seconds later at full health, never in jail, never groggy, and nobody loses gold or loot.
++# First to WIN_SCORE knockouts wins, or the higher score when TIME_LIMIT runs out. Both sides get a
++# small gold reward for a finished match; a match that one side stopped pays nothing.
++class PVPSkirmishAI:
++    notify = DirectNotifyGlobal.directNotify.newCategory('PVPSkirmishAI')
++
++    WIN_SCORE = 3
++    TIME_LIMIT = 300.0       # seconds
++    RESPAWN_DELAY = 3.0      # seconds the knocked-out pirate lies down before getting up
++    WIN_GOLD = 50
++    PLAY_GOLD = 20           # the other side, and both sides on a tie
++    MIN_REWARD_TIME = 30.0   # a match must last this long, with a knockout, to pay anything
++
++    def __init__(self, manager, skirmishId, challenger, invitee):
++        self.manager = manager
++        self.air = manager.air
++        self.skirmishId = skirmishId
++        self.teams = {1: [challenger.doId], 2: [invitee.doId]}
++        self.scores = {1: 0, 2: 0}
++        self.names = {challenger.doId: challenger.getName(), invitee.doId: invitee.getName()}
++        self.parentId = challenger.parentId
++        self.startTime = globalClock.getRealTime()
++        self.over = False
++        self.gone = set()       # pirates who logged out: never send them anything again
++
++    def taskName(self, what):
++        return 'pvp-skirmish-%d-%s' % (self.skirmishId, what)
++
++    def getMemberIds(self):
++        return self.teams[1] + self.teams[2]
++
++    def getTeamOf(self, avId):
++        for team, members in self.teams.items():
++            if avId in members:
++                return team
++
++        return 0
++
++    def getOtherTeam(self, team):
++        return 2 if team == 1 else 1
++
++    def getAvatar(self, avId):
++        if avId in self.gone:
++            return None
++
++        return self.air.doId2do.get(avId)
++
++    def tell(self, text, avIds=None):
++        for avId in (avIds if avIds is not None else self.getMemberIds()):
++            avatar = self.getAvatar(avId)
++            if avatar is not None and hasattr(avatar, 'd_setSystemMessage'):
++                avatar.d_setSystemMessage(0, text)
++
++    def teamName(self, team):
++        return ' and '.join([self.names.get(avId, 'a pirate') for avId in self.teams[team]])
++
++    def scoreText(self):
++        return '%s %d, %s %d' % (self.teamName(1), self.scores[1], self.teamName(2), self.scores[2])
++
++    def start(self):
++        for team, members in self.teams.items():
++            for avId in members:
++                avatar = self.getAvatar(avId)
++                if avatar is not None:
++                    avatar.b_setPVPTeam(team)
++
++        taskMgr.doMethodLater(self.TIME_LIMIT, self.__timeUp, self.taskName('time'))
++        for team in (1, 2):
++            other = self.getOtherTeam(team)
++            self.tell('Skirmish with %s! First to %d knockouts wins. Nobody loses gold or loot. '
++                'To stop, open %s\'s panel and press Crew Battle again.' % (
++                self.teamName(other), self.WIN_SCORE, self.teamName(other)), self.teams[team])
++
++    def __timeUp(self, task):
++        if self.scores[1] == self.scores[2]:
++            self.finish(0, 'Time is up! It is a tie.')
++        else:
++            winner = 1 if self.scores[1] > self.scores[2] else 2
++            self.finish(winner, 'Time is up! %s wins the skirmish.' % self.teamName(winner))
++
++        return task.done
++
++    def knockout(self, avatar):
++        # one point for the other side; the knocked-out pirate gets up again (never jail, no groggy)
++        team = self.getTeamOf(avatar.doId)
++        if not team or self.over:
++            return
++
++        other = self.getOtherTeam(team)
++        self.scores[other] += 1
++        if self.scores[other] >= self.WIN_SCORE:
++            self.finish(other, '%s knocked out %s. %s wins the skirmish!' % (
++                self.teamName(other), self.names.get(avatar.doId, 'a pirate'), self.teamName(other)))
++        else:
++            self.tell('%s knocked out %s! Score: %s.' % (
++                self.teamName(other), self.names.get(avatar.doId, 'a pirate'), self.scoreText()))
++
++    def stop(self, avId, reason):
++        # either side stopped it, logged out or walked away: no winner, no reward
++        if self.over:
++            return
++
++        name = self.names.get(avId, 'a pirate')
++        if reason == 'left':
++            self.gone.add(avId)
++            text = '%s left. The skirmish is over.' % name
++        elif reason == 'moved':
++            text = '%s went somewhere else. The skirmish is over.' % name
++        else:
++            text = '%s stopped the skirmish.' % name
++
++        self.finish(None, text)
++
++    def finish(self, winner, text):
++        # winner: 1 or 2, 0 for a tie, None when it was stopped
++        if self.over:
++            return
++
++        self.over = True
++        taskMgr.remove(self.taskName('time'))
++        for avId in self.getMemberIds():
++            avatar = self.getAvatar(avId)
++            if avatar is not None and avatar.getPVPTeam():
++                avatar.b_setPVPTeam(0)
++
++        self.tell(text)
++        if winner is not None:
++            self.reward(winner)
++
++        self.manager.skirmishOver(self)
++
++    def reward(self, winner):
++        elapsed = globalClock.getRealTime() - self.startTime
++        if elapsed < self.MIN_REWARD_TIME or not (self.scores[1] or self.scores[2]):
++            return
++
++        for team, members in self.teams.items():
++            gold = self.WIN_GOLD if team == winner else self.PLAY_GOLD
++            for avId in members:
++                avatar = self.getAvatar(avId)
++                if avatar is None or not self.manager.mayReward(avId):
++                    continue
++
++                inventory = avatar.getInventory() if hasattr(avatar, 'getInventory') else None
++                if not inventory:
++                    continue
++
++                inventory.addGoldInPocket(gold)
++                self.manager.noteReward(avId)
++                self.tell('You earned %d gold for the skirmish.' % gold, [avId])
+-- 
+2.53.0
+

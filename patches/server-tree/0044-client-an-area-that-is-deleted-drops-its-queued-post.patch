@@ -1,0 +1,65 @@
+From 1f4f112b5c4e9a86101bb14cbb971705a3b923a8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 21:58:51 -0800
+Subject: [PATCH 044/371] client: an area that is deleted drops its queued
+ post-load calls, so leaving the Black Pearl island no longer crashes the next
+ area
+
+processPostLoadCalls ran ClientArea.flattenObjNode on a deleted island (self.cr None) from the next area loadZoneObjects,
+twice, and the client died. ClientArea.delete now drops the calls it queued; flattenObjNode also returns for a deleted area.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ pirates/world/ClientArea.py   | 8 ++++++++
+ pirates/world/WorldCreator.py | 9 +++++++++
+ 2 files changed, 17 insertions(+)
+
+diff --git a/pirates/world/ClientArea.py b/pirates/world/ClientArea.py
+index fb36b43..257e9a3 100644
+--- a/pirates/world/ClientArea.py
++++ b/pirates/world/ClientArea.py
+@@ -712,6 +712,10 @@ class ClientArea(DirectObject):
+         return objNode
+ 
+     def flattenObjNode(self, objNode):
++        if self.cr is None or objNode.isEmpty():
++            # a post-load call that ran after this area was deleted
++            return
++
+         lodnode = objNode.find('**/+LODNode')
+         if not lodnode.isEmpty():
+             sgr = SceneGraphReducer()
+@@ -1219,6 +1223,10 @@ class ClientArea(DirectObject):
+         self.dynamicLights.append(light)
+ 
+     def delete(self):
++        district = getattr(self.cr, 'distributedDistrict', None)
++        if district and getattr(district, 'worldCreator', None):
++            district.worldCreator.dropPostLoadCalls(self)
++
+         self.ignore('HolidayStarted')
+         self.ignore('HolidayEnded')
+         for currLight in self.dynamicLights:
+diff --git a/pirates/world/WorldCreator.py b/pirates/world/WorldCreator.py
+index c58182a..962e39d 100644
+--- a/pirates/world/WorldCreator.py
++++ b/pirates/world/WorldCreator.py
+@@ -401,6 +401,15 @@ class WorldCreator(WorldCreatorBase.WorldCreatorBase, DirectObject.DirectObject)
+     def registerPostLoadCall(self, funcCall):
+         self.postLoadCalls.append(funcCall)
+ 
++    def dropPostLoadCalls(self, owner):
++        """Forget the post-load calls queued by `owner` (an area that is being deleted): they would run on it after
++        its delete, with its cr gone (2026-11-16: leaving the Black Pearl island crashed the client in the next area)"""
++        def ownedBy(call):
++            func = getattr(call, '_function', call)
++            return getattr(func, '__self__', None) is owner
++
++        self.postLoadCalls = [call for call in self.postLoadCalls if not ownedBy(call)]
++
+     def processPostLoadCalls(self):
+         functionsCalled = []
+         for currObj in self.postLoadCalls:
+-- 
+2.53.0
+

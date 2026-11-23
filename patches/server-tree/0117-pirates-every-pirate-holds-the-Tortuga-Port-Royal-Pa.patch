@@ -1,0 +1,36 @@
+From 43aed25423a21b064b0968658d1681a9a56fc38b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 19:19:13 -0800
+Subject: [PATCH 117/371] pirates: every pirate holds the Tortuga, Port Royal,
+ Padres del Fuego and Cuba teleport totems from his next login, so the map
+ takes him island to island, as server-tree patch 0131 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/PirateInventoryAI.py | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/pirates/uberdog/PirateInventoryAI.py b/pirates/uberdog/PirateInventoryAI.py
+index e5370a1..c7df802 100644
+--- a/pirates/uberdog/PirateInventoryAI.py
++++ b/pirates/uberdog/PirateInventoryAI.py
+@@ -154,6 +154,16 @@ class PirateInventoryAI(DistributedInventoryAI):
+         if liveMaps != maps:
+             self.b_setDoIdListCategory(InventoryCategory.TREASURE_MAPS, liveMaps)
+ 
++        # family server (11-17, brain order a): every pirate holds the island teleport totems, so the map can take him
++        # Tortuga, Port Royal, Padres del Fuego and Cuba from day one. Done here, at every login, so new pirates get them
++        # on their first login and existing pirates on their next. Only a missing totem is set (to 1, the same as Tia
++        # Dalma's reward), so her totem quests still run and pay the same way. Kingshead has no map teleport, so no totem
++        for token in (InventoryType.TortugaTeleportToken, InventoryType.PortRoyalTeleportToken,
++                      InventoryType.PadresDelFuegoTeleportToken, InventoryType.CubaTeleportToken):
++            if self.getStackQuantity(token) < 1:
++                self.b_setStackQuantity(token, 1)
++                self.notify.info('TOTEM-GIVEN %d to avatar %d' % (token, avatar.doId))
++
+         # populate the avatar's quest list
+         # family server (2026-09-18): the tutorial is skipped, so nothing ever
+         # hands out the first MainStory quest. Once saved quests are active, give
+-- 
+2.53.0
+

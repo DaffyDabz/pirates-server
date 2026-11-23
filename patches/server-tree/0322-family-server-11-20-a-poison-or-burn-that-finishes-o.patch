@@ -1,0 +1,53 @@
+From 4dcc6d2a5a8ea831adc6c8899125b52d8afa9b10 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 18:25:14 -0800
+Subject: [PATCH 322/371] family server (11-20): a poison or burn that finishes
+ off an enemy can no longer take the whole server down (0406)
+
+Server: the skill-effect tick runs as a task, so readerPollOnce's district-survived catch never saw its errors
+(the 17:20:38 AI crash). _updateSkillEffects now logs "district-survived: skill effect ..." with the traceback,
+drops that one effect and keeps everyone else's ticking. Lane: tick (tick-0001). Test: test_tick_kill.py all.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/BattleManagerAI.py | 17 ++++++++++++++++-
+ 1 file changed, 16 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/battle/BattleManagerAI.py b/pirates/battle/BattleManagerAI.py
+index c89bbaa..9d805ed 100644
+--- a/pirates/battle/BattleManagerAI.py
++++ b/pirates/battle/BattleManagerAI.py
+@@ -1,6 +1,7 @@
+ import random
+ import time
+ import collections
++import traceback
+ 
+ from panda3d.core import *
+ 
+@@ -475,7 +476,21 @@ class BattleManagerAI(BattleManagerBase):
+             pendingSkillEffect = self._pendingSkillEffects.popleft()
+             assert(pendingSkillEffect is not None)
+ 
+-            if self._updateSkillEffect(pendingSkillEffect):
++            # family server (11-20): this runs as a task, not a message, so readerPollOnce's district-survived catch
++            # never saw it. At 17:20:38 a poison tick killed an undead, the kill finished a ladder quest, the swap
++            # raised, and the error ended the whole AI. Same handling as readerPollOnce: log it and keep serving.
++            # Nobody is kicked (there is no sender here) and the broken effect is dropped so it can't raise every second.
++            try:
++                keep = self._updateSkillEffect(pendingSkillEffect)
++            except (SystemExit, KeyboardInterrupt):
++                raise
++            except Exception as e:
++                keep = False
++                self.notify.warning('district-survived: skill effect %s from %s on %s raised %r\n%s' % (
++                    pendingSkillEffect.effectId, getattr(pendingSkillEffect.attacker, 'doId', None),
++                    getattr(pendingSkillEffect.target, 'doId', None), e, traceback.format_exc()))
++
++            if keep:
+                 self._pendingSkillEffects.append(pendingSkillEffect)
+ 
+         return task.again
+-- 
+2.53.0
+

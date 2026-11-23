@@ -1,0 +1,30 @@
+From 45b5f40e64f6311f583bda77fca8d8bece071645 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 00:17:43 -0800
+Subject: [PATCH 192/371] pirates: a pirate without enough gold for a quest
+ bribe is no longer dropped from the game (0260)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 3611c53..75877f7 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -966,6 +966,11 @@ class QuestManagerAI(DirectObject):
+ 
+             return
+ 
++        if inventory.getGoldInPocket() < bribeAmount:
++            # pir-test 11-19 (0260): a pirate short of gold was dropped from the game (gold went below 0 in setGoldInPocket)
++            self.notify.warning('avatar %d cannot afford a %d gold bribe (has %d)' % (avatar.doId, bribeAmount, inventory.getGoldInPocket()))
++            return
++
+         questEvent = QuestEvent.NPCBribed()
+         questEvent.setLocation(parentObj.getUniqueId())
+         questEvent.setNpcId(npc.getDNAId())
+-- 
+2.53.0
+

@@ -1,0 +1,58 @@
+From d981247ecbdaf857ae8e7d761ae7aeeb550da16d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:58:05 -0800
+Subject: [PATCH 248/371] pirates: the Lookout can invite guild mates (0275)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedMatchMakerAI.py | 27 +++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/pirates/instance/DistributedMatchMakerAI.py b/pirates/instance/DistributedMatchMakerAI.py
+index e0deebe..2d6eb48 100644
+--- a/pirates/instance/DistributedMatchMakerAI.py
++++ b/pirates/instance/DistributedMatchMakerAI.py
+@@ -192,6 +192,23 @@ class DistributedMatchMakerAI(DistributedObjectGlobalAI):
+ 
+         return ids
+ 
++    def guildIds(self, avatar):
++        # family server (0275): the other pirates of his guild who are on in this district. The guild manager
++        # (PCGuildManagerUD, 0255/0256) sets guildId on every pirate's AI object; 0 = not in a guild (None here).
++        guildId = avatar.getGuildId() if hasattr(avatar, 'getGuildId') else 0
++        if not guildId:
++            return None
++
++        ids = []
++        for doId in list(self.air.doId2do.keys()):
++            other = self.getPlayer(doId)
++            if other is None or doId == avatar.doId or not hasattr(other, 'getGuildId'):
++                continue
++            if other.getGuildId() == guildId:
++                ids.append(doId)
++
++        return sorted(ids)
++
+     def crewIds(self, avId):
+         bandManager = getattr(self.air, 'bandManager', None)
+         if not bandManager or not hasattr(bandManager, 'getCrewmateMembers'):
+@@ -278,6 +295,16 @@ class DistributedMatchMakerAI(DistributedObjectGlobalAI):
+         if PiratesGlobals.LOOKOUT_INVITE_FRIENDS in modes:
+             candidates.extend(self.friendIds(avatar))
+ 
++        if PiratesGlobals.LOOKOUT_INVITE_GUILD in modes:
++            # family server (0275): guild mates are asked like friends (one who is busy is skipped quietly)
++            guildIds = self.guildIds(avatar)
++            if guildIds is None:
++                self.tell(avId, 'You are not in a guild, so no guild invites went out.')
++            elif not guildIds:
++                self.tell(avId, 'Nobody else in your guild is on right now.')
++            else:
++                candidates.extend(guildIds)
++
+         for otherId in additionalAvs or []:
+             candidates.append(otherId)
+             counted.add(otherId)
+-- 
+2.53.0
+

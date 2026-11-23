@@ -1,0 +1,227 @@
+From 3a1d10e6f098843457bd7cf10e9fda7bec33c795 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 08:51:16 -0800
+Subject: [PATCH 268/371] pirates: each new pirate gets his own tutorial world
+ (0360)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedTeleportMgrAI.py | 14 +++
+ pirates/tutorial/PiratesTutorialManagerAI.py | 95 ++++++++++++++++++--
+ 2 files changed, 100 insertions(+), 9 deletions(-)
+
+diff --git a/pirates/instance/DistributedTeleportMgrAI.py b/pirates/instance/DistributedTeleportMgrAI.py
+index 6967a5e..0beb1a1 100644
+--- a/pirates/instance/DistributedTeleportMgrAI.py
++++ b/pirates/instance/DistributedTeleportMgrAI.py
+@@ -202,6 +202,13 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+             # family server (11-16): the world he stands in (on a ship the parent is the ocean grid, not the world,
+             # so this found none), or the main world when he stands in none
+             world = standingWorld or self.getMainWorld()
++        elif instanceType == PiratesGlobals.INSTANCE_TUTORIAL:
++            # family server (11-19, 0360): each new pirate has his own tutorial world. The first tutorial world found
++            # was taken, so a second new pirate who logged in while another kid was in the tutorial got no tutorial
++            # of his own: he was put on the other kid's island, with no jail scene, no Dan and no boat for him. His
++            # own world, or none (which starts his tutorial below)
++            tutorialFsm = self.air.tutorialManager.avatar2fsm.get(avatar.doId)
++            world = getattr(tutorialFsm, 'instance', None)
+         else:
+             world = self.getWorld(instanceType, instanceName)
+             # family server (11-17): the client asks for the main world as 'mainWorld' (leaving the tutorial, the
+@@ -236,6 +243,13 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+             return
+ 
+         gameArea = world.builder.getObject(uniqueId=locationUid)
++        if not gameArea and world.getType() == PiratesGlobals.INSTANCE_TUTORIAL:
++            # family server (11-19, 0360): the jail is not in the world's builder, and the uid manager below names
++            # the newest tutorial's jail. Take this pirate's own
++            tutorialFsm = self.air.tutorialManager.avatar2fsm.get(avatar.doId)
++            if tutorialFsm is not None and getattr(tutorialFsm, 'instance', None) is world:
++                gameArea = tutorialFsm.getLoadedObject(locationUid)
++
+         if not gameArea:
+             # Try looking up the object via uidMgr (for interiors, etc.)
+             objectDoId = self.air.uidMgr.getDoId(locationUid)
+diff --git a/pirates/tutorial/PiratesTutorialManagerAI.py b/pirates/tutorial/PiratesTutorialManagerAI.py
+index e26a9a9..227ab19 100644
+--- a/pirates/tutorial/PiratesTutorialManagerAI.py
++++ b/pirates/tutorial/PiratesTutorialManagerAI.py
+@@ -30,6 +30,11 @@ STUMPY_DNA_ID = '1153439632.21darren'
+ STUMPY_ON_BOAT_POS = (0.0, -1.2, 9.0)
+ STUMPY_ON_BOAT_HPR = (180.0, 0.0, 0.0)
+ 
++# family server (11-19, 0360): seconds between two tutorial world loads. A load names its objects by uid, and the
++# uid manager hands each uid's objects to waiting callbacks 0.1 s after the load; a second load inside that time had
++# its callbacks answered with the first kid's objects
++TUTORIAL_LOAD_GAP = 1.0
++
+ 
+ class TutorialFSM(FSM):
+     notify = DirectNotifyGlobal.directNotify.newCategory('TutorialFSM')
+@@ -51,21 +56,77 @@ class TutorialFSM(FSM):
+         self.stumpy = None
+         # everything the scene file load built, for the teardown in enterStop
+         self.loadedDoIds = set()
++        # family server (11-19, 0360): this tutorial's own uids -> doIds (its world, island, jail, doors, Dan, Nell,
++        # Bo Beck and his boat). The uid manager keeps one doId per uid, the newest tutorial's
++        self.myUids = {}
+ 
+     def enterStart(self):
+         self.acceptOnce(self.avatar.getDeleteEvent(), self.cleanup)
+         self.notify.info('Starting tutorial for avatar: %s' % self.avatar.doId)
++        self.__loadWorld()
++
++    def exitStart(self):
++        pass
++
++    # family server (11-19, 0360): two new pirates in the tutorial at once. The world was found by uid callbacks, and
++    # the uid manager keeps one object per uid: the second kid's tutorial was answered with the first kid's world,
++    # island and jail. He was put in the first kid's jail, his own Bo Beck and boat were spawned in the first kid's
++    # world, his doors led to the first kid's places, and when the first kid finished, his teardown deleted the
++    # second kid's world under him. Now each tutorial takes its own objects straight from its own load: the other
++    # tutorials' uids are let go before the load (so the load links its doors and parents to its own objects), the
++    # load's uids are kept in myUids, and two loads are at least TUTORIAL_LOAD_GAP apart
++    def __loadTaskName(self):
++        return 'tutorialLoad-%d' % self.avatar.doId
++
++    def __isCurrent(self):
++        manager = self.air.tutorialManager
++        return manager.avatar2fsm.get(self.avatar.doId) is self and self.avatar.doId in self.air.doId2do
++
++    def __loadWorld(self, task=None):
++        if not self.__isCurrent():
++            return Task.done
++
++        manager = self.air.tutorialManager
++        now = globalClock.getRealTime()
++        last = getattr(manager, 'lastTutorialLoad', None)
++        if last is not None and 0 <= now - last < TUTORIAL_LOAD_GAP:
++            self.notify.info('Avatar %d: another tutorial world is loading, waiting' % self.avatar.doId)
++            taskMgr.doMethodLater(TUTORIAL_LOAD_GAP - (now - last) + 0.05, self.__loadWorld, self.__loadTaskName())
++            return Task.done
++
++        uidMgr = self.air.uidMgr
++        for other in list(manager.avatar2fsm.values()):
++            if other is self:
++                continue
+ 
+-        # Register callback for the Region UID (world) first so we have it when interior arrives
+-        self.air.uidMgr.addUidCallback(RAMBLESHACK_REGION_UID, self.__instanceArrived)
++            for uid, doId in list(getattr(other, 'myUids', {}).items()):
++                if uidMgr.uid2doId.get(uid) == doId:
++                    # not removeUid: that would also drop callbacks other code is waiting on
++                    del uidMgr.uid2doId[uid]
+ 
+         # Now load our world (the load is synchronous, so the new doIds are this tutorial's)
+         before = set(self.air.doId2do.keys())
+         self.air.worldCreator.loadObjectsFromFile(WorldGlobals.PiratesTutorialSceneFile)
+         self.loadedDoIds = set(self.air.doId2do.keys()) - before
++        manager.lastTutorialLoad = globalClock.getRealTime()
++        self.myUids = dict((uid, doId) for uid, doId in list(uidMgr.uid2doId.items()) if doId in self.loadedDoIds)
++        # the load's own uid callbacks (door links) run 0.1 s after it; carry on after them, as before
++        taskMgr.doMethodLater(0.2, self.__worldLoaded, self.__loadTaskName())
++        return Task.done
+ 
+-    def exitStart(self):
+-        pass
++    def __worldLoaded(self, task=None):
++        if self.__isCurrent():
++            self.__instanceArrived(self.myUids.get(RAMBLESHACK_REGION_UID))
++
++        return Task.done
++
++    def getLoadedObject(self, uid):
++        # this tutorial's own object for a world uid (the jail, a door, Dan), or None
++        doId = self.myUids.get(uid)
++        if doId is None:
++            return None
++
++        return self.air.doId2do.get(doId)
+ 
+     def __instanceArrived(self, instanceDoId):
+         self.instance = self.air.doId2do.get(instanceDoId)
+@@ -76,8 +137,8 @@ class TutorialFSM(FSM):
+ 
+         self.notify.info('Tutorial world created for avatar %d: %s' % (self.avatar.doId, self.instance))
+ 
+-        # Now wait for the island
+-        self.air.uidMgr.addUidCallback(TutorialGlobals.RAMBLESHACK_ISLE_UID, self.__islandArrived)
++        # Now the island (this tutorial's own, 0360)
++        self.__islandArrived(self.myUids.get(TutorialGlobals.RAMBLESHACK_ISLE_UID))
+ 
+     def __islandArrived(self, islandDoId):
+         self.island = self.air.doId2do.get(islandDoId)
+@@ -89,8 +150,8 @@ class TutorialFSM(FSM):
+         self.notify.info('Tutorial island created for avatar %d: %s' % (self.avatar.doId, self.island))
+         self.__spawnStumpyBoat()
+ 
+-        # Now wait for the interior
+-        self.air.uidMgr.addUidCallback(TutorialGlobals.JAIL_INTERIOR, self.__interiorArrived)
++        # Now the interior (this tutorial's own jail, 0360)
++        self.__interiorArrived(self.myUids.get(TutorialGlobals.JAIL_INTERIOR))
+ 
+     # family server (11-17): the scene file lists Bo Beck's boat (a 'Ship Part' of the world), but the world
+     # builder makes no ships, so nothing spawned it: the client's boat scene (stumpyBoatHere) never started and
+@@ -128,6 +189,7 @@ class TutorialFSM(FSM):
+         ship.sendCurrentPosition()
+         ship.b_setGameState('Neutral', 0)
+         self.air.uidMgr.addUid(TutorialGlobals.STUMPY_BOAT_UID, ship.doId)
++        self.myUids[TutorialGlobals.STUMPY_BOAT_UID] = ship.doId
+         self.stumpyBoat = ship
+         self.__spawnStumpy(ship)
+         self.notify.info('Tutorial boat created for avatar %d: %d in zone %d of ocean grid %d' % (
+@@ -158,7 +220,7 @@ class TutorialFSM(FSM):
+             return
+ 
+         # Get the exterior door to find its parent location
+-        doorDoId = self.air.uidMgr.getDoId(TutorialGlobals.JAIL_EXTERIOR_DOOR)
++        doorDoId = self.myUids.get(TutorialGlobals.JAIL_EXTERIOR_DOOR)
+         if doorDoId:
+             self.exteriorDoor = self.air.doId2do.get(doorDoId)
+ 
+@@ -180,6 +242,7 @@ class TutorialFSM(FSM):
+ 
+     def enterStop(self):
+         self.ignoreAll()
++        taskMgr.remove(self.__loadTaskName())
+         self.__teardownWorld()
+ 
+         if self.tutorialHandler:
+@@ -240,6 +303,7 @@ class TutorialFSM(FSM):
+         npc.d_setSpawnIn()
+         npc.b_setGameState(npc.getStartState())
+         self.air.uidMgr.addUid(TutorialGlobals.STUMPY_UID, npc.doId)
++        self.myUids[TutorialGlobals.STUMPY_UID] = npc.doId
+         self.stumpy = npc
+         self.notify.info('Tutorial Bo Beck created for avatar %d: %d on boat %d' % (
+             self.avatar.doId, npc.doId, ship.doId))
+@@ -286,6 +350,17 @@ class TutorialFSM(FSM):
+             if getattr(obj, 'doId', None) in found:
+                 uidMgr.removeUidObj(uid)
+ 
++        # family server (11-19, 0360): another new pirate's tutorial may still be running; its uids were let go when
++        # this one loaded. Give them back to it, so lookups by uid find his Dan, his boat and his doors again
++        self.myUids = {}
++        for other in list(self.air.tutorialManager.avatar2fsm.values()):
++            if other is self:
++                continue
++
++            for uid, doId in list(getattr(other, 'myUids', {}).items()):
++                if uid not in uidMgr.uid2doId and doId not in found and doId in self.air.doId2do:
++                    uidMgr.uid2doId[uid] = doId
++
+         # the world creator follows the newest world it built: point it back at the main world
+         world = self.air.worldCreator.world
+         if world is not None and world.doId in found:
+@@ -319,6 +394,8 @@ class PiratesTutorialManagerAI(DistributedObjectAI):
+         DistributedObjectAI.__init__(self, air)
+ 
+         self.avatar2fsm = {}
++        # family server (11-19, 0360): when the last tutorial world was loaded (globalClock real time)
++        self.lastTutorialLoad = None
+ 
+     def getParentingRules(self):
+         return ['', '']
+-- 
+2.53.0
+

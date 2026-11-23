@@ -1,0 +1,71 @@
+From 20ab43e3bfdedca40289aef12406472c6b689875 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 18:40:19 -0800
+Subject: [PATCH 026/371] NPC chase: the chase task holds the target's id, not
+ the target
+
+The AI crashed during a full garbage collection (core 11-16 18:25): the collector walked a
+pending AttackChase task (BattleNPCGameFSMAI._walkToPoint) whose argument, the pirate being
+chased, was already freed. The task kept the pirate object itself, its handle was never dropped
+or removed, so an NPC that chased a pirate who then logged out kept that task forever.
+
+The task now gets the pirate's doId and looks him up when it runs (no pirate any more: the NPC
+breaks off combat), drops its handle once it has run, and is removed when the chase ends.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/BattleNPCGameFSMAI.py | 17 +++++++++++++++--
+ 1 file changed, 15 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/pirate/BattleNPCGameFSMAI.py b/pirates/pirate/BattleNPCGameFSMAI.py
+index 7791e4e..3476c36 100644
+--- a/pirates/pirate/BattleNPCGameFSMAI.py
++++ b/pirates/pirate/BattleNPCGameFSMAI.py
+@@ -26,6 +26,7 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+         self.__updateBattleStateTask = None
+         self.__nextAttackTask = None
+         self.__chaseTargetTask = None
++        self.__attackChaseTask = None
+         self.__returnToSpawnTask = None
+         self.__mojoRegenTask = None
+ 
+@@ -213,15 +214,23 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+                 self.request('Battle')
+                 return
+ 
++            # the task gets the target's doId, not the target: the AI crashed in a full garbage collection on this
++            # task still holding a pirate who had logged out (deleted) while the NPC chased him
+             self.__attackChaseTask = taskMgr.doMethodLater(0.1, self._walkToPoint,
+                                                                 self.getWalkToPointChaseName(),
+-                                                                extraArgs=[currentTarget],
++                                                                extraArgs=[currentTarget.doId],
+                                                                 appendTask=False)
+ 
+         elif state == 'BreakCombat':
+             self.request(self.avatar.getStartState())
+ 
+-    def _walkToPoint(self, currentTarget):
++    def _walkToPoint(self, targetId):
++        self.__attackChaseTask = None
++        currentTarget = self.air.doId2do.get(targetId)
++        if not currentTarget or currentTarget.isEmpty():
++            self.demand('BreakCombat')
++            return
++
+         self.walkToPoint(currentTarget.getPos(), currentTarget.getParent())
+ 
+     def walkToPoint(self, walkPoint, parent=None):
+@@ -380,6 +389,10 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+             taskMgr.remove(self.__chaseTargetTask)
+             self.__chaseTargetTask = None
+ 
++        if self.__attackChaseTask:
++            taskMgr.remove(self.__attackChaseTask)
++            self.__attackChaseTask = None
++
+         if self.__movementInterval:
+             self.__movementInterval.finish()
+             self.__movementInterval = None
+-- 
+2.53.0
+

@@ -1,0 +1,31 @@
+From 87e2a8c95d0270245c1a80803bbeda4e49df2a2a Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:54:31 -0800
+Subject: [PATCH 097/371] pirates: paying for a repair says the ship is
+ repaired and fills its hull bar, as server-tree patch 0111 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/economy/DistributedShopKeeperAI.py | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/pirates/economy/DistributedShopKeeperAI.py b/pirates/economy/DistributedShopKeeperAI.py
+index e7b49ef..70c3c24 100644
+--- a/pirates/economy/DistributedShopKeeperAI.py
++++ b/pirates/economy/DistributedShopKeeperAI.py
+@@ -865,6 +865,12 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+ 
+             self.logShopkeepTransaction(type=kind, shipId=shipId, price=cost, purchaser=avatar.doId)
+             self.d_makeSaleResponse(avatar.doId, 2)
++            # the client's "Your ship has been repaired" box and the refreshed
++            # hull bar in the shipwright's list come only from this; it was never
++            # sent, so the pirate paid and saw nothing happen (2026-11-17)
++            self.sendUpdateToAvatarId(avatar.doId, 'responseShipRepair', [shipId])
++            self.notify.info('%s: pirate %d paid %d gold, ship %d mended to %d/%d hull' % (
++                kind, avatar.doId, cost, shipId, maxHp, maxHp))
+ 
+         self._withOwnedShip(shipId, _got)
+ 
+-- 
+2.53.0
+

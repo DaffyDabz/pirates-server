@@ -1,0 +1,193 @@
+From 18986a112aebb56469a6858af8c75d54299a9289 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 02:47:42 -0800
+Subject: [PATCH 141/371] pirates: a pirate without enough gold gets his ship
+ repaired free, so he is never left without a ship
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/economy/DistributedShopKeeper.py   | 17 ++++++++--
+ pirates/economy/DistributedShopKeeperAI.py |  9 +++--
+ pirates/ship/DistributedShipAI.py          | 39 +++++++++++++++++++---
+ pirates/ship/ShipGlobals.py                | 11 ++++++
+ pirates/world/DistributedShipDeployerAI.py |  6 ++--
+ 5 files changed, 71 insertions(+), 11 deletions(-)
+
+diff --git a/pirates/economy/DistributedShopKeeper.py b/pirates/economy/DistributedShopKeeper.py
+index d6f4538..d2b0eba 100644
+--- a/pirates/economy/DistributedShopKeeper.py
++++ b/pirates/economy/DistributedShopKeeper.py
+@@ -406,15 +406,26 @@ class DistributedShopKeeper:
+             self.confirmDialog.destroy()
+             self.confirmDialog = None
+         
+-        self.confirmDialog = PDialog.PDialog(text = PLocalizer.RepairConfirmDialog % {
+-            'gold': cost}, style = OTPDialog.YesNo, command = r)
++        # family server (11-18): a pirate whose gold is below the price is repaired free (the AI does the same)
++        price = ShipGlobals.getRepairPrice(cost, self._repairGold())
++        if cost > 0 and price == 0:
++            text = 'You do not have enough gold, so this repair is free! Repair your ship?'
++        else:
++            text = PLocalizer.RepairConfirmDialog % {'gold': price}
++        self.confirmDialog = PDialog.PDialog(text = text, style = OTPDialog.YesNo, command = r)
++
++    def _repairGold(self):
++        inventory = base.localAvatar.getInventory()
++        if inventory:
++            return inventory.getStackQuantity(InventoryType.GoldInPocket)
++        return 0
+ 
+     def sendRequestRepairShip(self, shipId, choice):
+         shipOV = self.cr.getOwnerView(shipId)
+         if not shipOV:
+             return
+         
+-        cost = ShipGlobals.getRepairCost(shipOV)
++        cost = ShipGlobals.getRepairPrice(ShipGlobals.getRepairCost(shipOV), self._repairGold())
+         if choice == 1:
+             inventory = base.localAvatar.getInventory()
+             if inventory:
+diff --git a/pirates/economy/DistributedShopKeeperAI.py b/pirates/economy/DistributedShopKeeperAI.py
+index 331c06c..5b2e9c4 100644
+--- a/pirates/economy/DistributedShopKeeperAI.py
++++ b/pirates/economy/DistributedShopKeeperAI.py
+@@ -882,7 +882,7 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+             self.air.send(dclass.aiFormatUpdate(field, shipId, shipId, self.air.ourChannel, value))
+         self.air.dbInterface.updateObject(self.air.dbId, shipId, dclass, values)
+ 
+-    def _repairShip(self, shipId, costFn, kind):
++    def _repairShip(self, shipId, costFn, kind, freeWhenBroke=False):
+         def _got(avatar, inventory, dclass, fields):
+             maxHp, = fields['setMaxHp']
+             hp, = fields['setHp']
+@@ -890,6 +890,10 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+             sp, = fields['setSp']
+             shipClass, = fields['setShipClass']
+             cost = int(costFn(maxHp, hp, maxSp, sp, shipClass))
++            if freeWhenBroke:
++                # family server (11-18): a pirate whose gold is below the price is repaired free
++                from pirates.ship import ShipGlobals
++                cost = ShipGlobals.getRepairPrice(cost, inventory.getGoldInPocket())
+             if cost > inventory.getGoldInPocket():
+                 self.d_makeSaleResponse(avatar.doId, 0)
+                 return
+@@ -916,7 +920,8 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+ 
+     def requestPurchaseRepair(self, shipId):
+         from pirates.ship import ShipGlobals
+-        self._repairShip(shipId, lambda mh, h, ms, s, sc: ShipGlobals.calcRepairCost(mh, h, ms, s, ShipGlobals.getModelClass(sc)), 'requestPurchaseRepair')
++        self._repairShip(shipId, lambda mh, h, ms, s, sc: ShipGlobals.calcRepairCost(mh, h, ms, s, ShipGlobals.getModelClass(sc)), 'requestPurchaseRepair',
++            freeWhenBroke=True)
+ 
+     def requestPurchaseOverhaul(self, shipId):
+         from pirates.economy import EconomyGlobals
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index 8a24477..f0c891f 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -1162,6 +1162,36 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         self._leaveOceanGrid()
+         self.b_setLocation(self.parentId, 0)
+         self.notify.warning('sunk ship %s: put away sunk, a shipwright can repair it' % self.doId)
++        # an owner who cannot pay the shipwright gets it mended now, so the dinghy can launch it again
++        self.mendFreeIfOwnerCannotPay('sank')
++
++    def mendFreeIfOwnerCannotPay(self, why):
++        # family server (11-18): a sunk ship whose owner's gold is below the repair price
++        # (ShipGlobals.getRepairPrice) is mended free, the way the shipwright mends it. True when it was.
++        if self.hp > 0:
++            return False
++
++        ownerId = self.getOwnerId()
++        inventory = self.air.inventoryManager.getInventory(ownerId) if ownerId else None
++        if inventory is None:
++            # owner not on this district: his next visit to a shipwright mends it free instead
++            return False
++
++        cost = ShipGlobals.calcRepairCost(self.maxHp, self.hp, self.maxSp, self.sp,
++            ShipGlobals.getModelClass(self.shipClass))
++        gold = inventory.getGoldInPocket()
++        if ShipGlobals.getRepairPrice(cost, gold):
++            return False
++
++        self.shipwrightRepaired()
++        self.air.writeServerEvent('ship-repair-free', shipId=self.doId, avatarId=ownerId, cost=cost, gold=gold, why=why)
++        self.notify.info('sunk ship %s mended free (%s): owner %d has %d gold, repair costs %d' % (
++            self.doId, why, ownerId, gold, cost))
++        owner = self.air.doId2do.get(ownerId)
++        if owner is not None and hasattr(owner, 'd_setSystemMessage'):
++            owner.d_setSystemMessage(0, 'Your ship sank, and the shipwright mended it for free. It is ready to sail again!')
++
++        return True
+ 
+     def shipwrightRepaired(self):
+         # the shipwright's repair on a ship the AI holds: hull, sails and every part
+@@ -1547,12 +1577,13 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+                 return
+ 
+             gold = inventory.getGoldInPocket()
+-            if gold < cost:
+-                self.notify.debug('Avatar %d cannot afford to repair ship %d; cost=%d gold=%d' % (
++            # family server (11-18): a pirate who cannot pay gets the repair free
++            price = ShipGlobals.getRepairPrice(cost, gold)
++            if price < cost:
++                self.notify.info('Avatar %d repairs ship %d free; cost=%d gold=%d' % (
+                     avatar.doId, self.doId, cost, gold))
+ 
+-                return
+-
++            cost = price
+             inventory.setGoldInPocket(gold - cost)
+ 
+         self._restoreAll()
+diff --git a/pirates/ship/ShipGlobals.py b/pirates/ship/ShipGlobals.py
+index 987e686..d226fb1 100644
+--- a/pirates/ship/ShipGlobals.py
++++ b/pirates/ship/ShipGlobals.py
+@@ -6795,6 +6795,17 @@ def getRepairCost(ship, hull = None, cabin = None, masts = [], sails = [], prow
+     return calcRepairCost(ship.maxHp, ship.Hp, ship.maxSp, ship.Sp, ship.modelClass)
+ 
+ 
++def getRepairPrice(cost, gold):
++    # family server (11-18): what a pirate pays for a ship repair. A pirate whose gold is below the price gets
++    # it free, so nobody is ever left without a ship that sails (a sunk ship with 4 gold against an 8 gold
++    # repair soft-locked the story, whose c3visitJack quest needs sailing). Everyone else pays the full price.
++    cost = int(cost)
++    if cost <= 0 or gold < cost:
++        return 0
++
++    return cost
++
++
+ def calcRepairCost(maxHp, Hp, maxSp, Sp, modelClass):
+     totalCost = 0
+     totalCost += (maxHp - Hp) + (maxSp - Sp) / 2
+diff --git a/pirates/world/DistributedShipDeployerAI.py b/pirates/world/DistributedShipDeployerAI.py
+index 5ffce9a..116f080 100644
+--- a/pirates/world/DistributedShipDeployerAI.py
++++ b/pirates/world/DistributedShipDeployerAI.py
+@@ -82,7 +82,8 @@ class DeployShipFSM(ShipDeployerOperationFSM):
+                 'ship-deploy-timeout-%d' % self.avatar.doId)
+             self.acceptOnce('generate-%d' % self.shipId, self.shipArrivedCallback)
+             self.air.sendSetObjectLocation(self.shipId, self.oceanGrid.doId, self.zoneId)
+-        elif ship.getHp() <= 0 or ship.getGameState()[0] == 'Sinking':
++        elif ship.getGameState()[0] == 'Sinking' or (
++                ship.getHp() <= 0 and not ship.mendFreeIfOwnerCannotPay('deploy')):
+             self.notify.warning('Cannot deploy ship %d for avatar %d, '
+                 'it is sunk and needs a shipwright!' % (self.shipId, self.avatar.doId))
+ 
+@@ -108,9 +109,10 @@ class DeployShipFSM(ShipDeployerOperationFSM):
+             self.cleanup(False)
+             return
+ 
+-        if self.ship.getHp() <= 0:
++        if self.ship.getHp() <= 0 and not self.ship.mendFreeIfOwnerCannotPay('deploy'):
+             # a ship that sank before its owner logged out comes back from the
+             # database with no hull points: it goes back off the sea, still sunk
++            # (unless its owner cannot pay the shipwright: then it is mended free above)
+             self.notify.warning('Cannot deploy ship %d for avatar %d, '
+                 'it is sunk and needs a shipwright!' % (self.shipId, self.avatar.doId))
+ 
+-- 
+2.53.0
+

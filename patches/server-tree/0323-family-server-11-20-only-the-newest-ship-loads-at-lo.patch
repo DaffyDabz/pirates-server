@@ -1,0 +1,81 @@
+From 65e0059bbb4cf40f6bf918814c3ade99a3651671 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 18:38:25 -0800
+Subject: [PATCH 323/371] family server (11-20): only the newest ship loads at
+ login again, which stops the server freezing on a re-login (0407, reverts
+ 0397)
+
+Server: reverts 26d78ed (0397, "every ship a pirate owns loads at login"). At 18:06 Player1's second login in one AI run
+loaded his ships twice and the AI grew to 19 GB until the kernel killed it at 18:09, taking WSL down. The sea lane
+could not reproduce the runaway in its time box, so the queue is out until a proper fix comes back as a new patch.
+Only the newest ship is ready at the dock after a log-in again (test_ship_activate.py back to 1/4, the known
+pre-0397 result); sea enemy, cannons, ship, skills, tick and shipdmg tests unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/DistributedShipLoaderAI.py | 29 ----------------------
+ 1 file changed, 29 deletions(-)
+
+diff --git a/pirates/uberdog/DistributedShipLoaderAI.py b/pirates/uberdog/DistributedShipLoaderAI.py
+index 4c75fbe..7b99c4b 100644
+--- a/pirates/uberdog/DistributedShipLoaderAI.py
++++ b/pirates/uberdog/DistributedShipLoaderAI.py
+@@ -41,9 +41,6 @@ class ShipLoaderOperationFSM(FSM):
+         if self.callback:
+             self.callback(*args, **kwargs)
+ 
+-        # family server (sea-0001): the next of his ships waiting to be activated
+-        self.air.shipLoader._activateNextShip(self.avatar)
+-
+ 
+ class CreateShipFSM(ShipLoaderOperationFSM):
+ 
+@@ -125,8 +122,6 @@ class DistributedShipLoaderAI(DistributedObjectGlobalAI):
+         DistributedObjectGlobalAI.__init__(self, air)
+ 
+         self.avatar2fsm = {}
+-        # family server (sea-0001): ships waiting to be activated, per pirate
+-        self.avatar2pending = {}
+ 
+     def announceGenerate(self):
+         DistributedObjectGlobalAI.announceGenerate(self)
+@@ -198,36 +193,12 @@ class DistributedShipLoaderAI(DistributedObjectGlobalAI):
+         fsm.demand('Finish', shipId)
+ 
+     def activateShip(self, avatar, shipId):
+-        # family server (sea-0001): at login every ship he owns is activated, one after another. Only one loader
+-        # job runs per pirate, so the second and later ships were refused, and only his newest ship ever reached
+-        # his game: the dock and the Ships page left the others out, so he could never sail them. They now wait
+-        # their turn.
+-        fsm = self.avatar2fsm.get(avatar.doId)
+-        pending = self.avatar2pending.setdefault(avatar.doId, [])
+-        if shipId in pending or getattr(fsm, 'shipId', None) == shipId:
+-            return
+-
+-        if fsm is not None:
+-            pending.append(shipId)
+-            return
+ 
+         def _shipActivatedCallback(success):
+             pass
+ 
+         self.runShipLoaderFSM(ActivateShipFSM, avatar, shipId, callback=_shipActivatedCallback)
+ 
+-    def _activateNextShip(self, avatar):
+-        pending = self.avatar2pending.get(avatar.doId)
+-        if not pending or avatar.doId in self.avatar2fsm:
+-            return
+-
+-        # he logged out before his last ships were activated: nothing left to show them to
+-        if self.air.doId2do.get(avatar.doId) is not avatar:
+-            del self.avatar2pending[avatar.doId]
+-            return
+-
+-        self.activateShip(avatar, pending.pop(0))
+-
+     def sendActivateShip(self, avatarId, shipId):
+         self.air.netMessenger.send('activateShip', [avatarId, shipId])
+ 
+-- 
+2.53.0
+

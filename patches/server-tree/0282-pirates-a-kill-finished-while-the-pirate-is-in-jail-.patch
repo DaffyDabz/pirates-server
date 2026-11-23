@@ -1,0 +1,33 @@
+From 9c63fc9ac66c486395d96db85b5d0088445313fa Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 15:42:39 -0800
+Subject: [PATCH 282/371] pirates: a kill finished while the pirate is in jail
+ counts where the enemy fell (0368)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 251af6e..da8b0c8 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -681,6 +681,14 @@ class QuestManagerAI(DirectObject):
+ 
+     def enemyDefeated(self, avatar, enemy, weaponType=None):
+         parentObj = avatar.getParentObj()
++        # family server (11-19, 0368): a pirate knocked out while his crewmate finished the enemy is still paid,
++        # but by then he is in the jail, so the kill was counted at the jail and his "defeat N on the island" step
++        # did not go up. Count it where the enemy fell (only a jail interior has cell doors).
++        if parentObj is not None and hasattr(parentObj, 'getCellDoor'):
++            enemyParent = enemy.getParentObj()
++            if enemyParent is not None and hasattr(enemyParent, 'getUniqueId'):
++                parentObj = enemyParent
++
+         if not parentObj:
+             return
+ 
+-- 
+2.53.0
+

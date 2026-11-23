@@ -1,0 +1,30 @@
+From 60aab4a4119364d683594ec314f26ddfa6a38c6b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:06:50 -0800
+Subject: [PATCH 080/371] pirates: an enemy ship's level matches its class, so
+ its rewards and strength scale, as server-tree patch 0094 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/ShipManagerAI.py | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/ship/ShipManagerAI.py b/pirates/ship/ShipManagerAI.py
+index 8938827..2e42f42 100644
+--- a/pirates/ship/ShipManagerAI.py
++++ b/pirates/ship/ShipManagerAI.py
+@@ -317,7 +317,10 @@ class ShipManagerAI:
+ 
+         ship = NPCShipAI(self.air)
+         ship.setBaseTeam(ShipGlobals.getShipTeam(shipClass))
+-        ship.setLevel(1)
++        # the class level, the one combat and the sink reward use (GameFSMShipAI.
++        # _getShipLevel). Every enemy ship was sent level 1, so each one's name
++        # tag read "Lv1" whatever its class (2026-11-17)
++        ship.setLevel(max(1, int(ShipGlobals.getShipLevel(shipClass) or 1)))
+         ship.setShipClass(shipConfig['setShipClass'][0])
+         ship.setName(ShipClassNames.get(shipClass, 'Unknown Ship'))
+         ship.setNPCship(1)
+-- 
+2.53.0
+

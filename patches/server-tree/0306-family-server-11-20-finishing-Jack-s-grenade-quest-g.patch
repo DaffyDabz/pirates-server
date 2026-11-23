@@ -1,0 +1,30 @@
+From 0a0eee25bac9d49c295236af74006b350958d956 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 306/371] family server (11-20): finishing Jack's grenade quest
+ gives 25 grenades to throw (0390)
+
+Server: GrenadeReward gave the grenade weapon but no grenade ammo. Lane: combat. Test: test_grenade_reward_ammo.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestReward.py | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/pirates/quest/QuestReward.py b/pirates/quest/QuestReward.py
+index 97fc541..1110464 100644
+--- a/pirates/quest/QuestReward.py
++++ b/pirates/quest/QuestReward.py
+@@ -419,6 +419,9 @@ class GrenadeReward(QuestReward):
+         trade.giveGrenadeTraining()
+         trade.giveStack(InventoryType.GrenadeWeaponL1, 1)
+         trade.giveStack(InventoryType.GrenadeExplosion, 2)
++        # the grenade came with nothing to throw (explosives are not infinite
++        # like pistol shot); the inventory caps this at the pouch limit
++        trade.giveStack(InventoryType.AmmoGrenadeExplosion, 25)
+ 
+     def getDescriptionText(self):
+         return PLocalizer.GrenadeRewardDesc
+-- 
+2.53.0
+

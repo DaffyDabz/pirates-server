@@ -1,0 +1,30 @@
+From b8bcf3c936020d375c1259a62497dc5e2392e8f7 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 23:16:54 -0800
+Subject: [PATCH 130/371] pirates: a sail update that arrives after the ship
+ docked no longer closes the pirate's game, as server-tree patch 0144 (1
+ client file)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/shipparts/Sail.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/shipparts/Sail.py b/pirates/shipparts/Sail.py
+index a141c84..11eb794 100644
+--- a/pirates/shipparts/Sail.py
++++ b/pirates/shipparts/Sail.py
+@@ -557,7 +557,9 @@ class Sail(NodePath, ShipPart.ShipPart):
+             animName = 'break0A'
+         
+         self.currAnim = animName
+-        if not self.sailFSM:
++        # pir-test 11-17 (0144): a sail update can arrive after the ship docked and the sail was deleted (delete()
++        # removes sailFSM); the missing attribute closed the game (SMOKE-shipfight5 22:52)
++        if not getattr(self, 'sailFSM', None):
+             return
+         
+         if animName in MastDNA.AllMastAnims and self.sailFSM.state == 'Falling':
+-- 
+2.53.0
+

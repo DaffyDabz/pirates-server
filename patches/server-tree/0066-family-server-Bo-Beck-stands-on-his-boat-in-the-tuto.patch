@@ -1,0 +1,215 @@
+From 188c47c27a8f893726a45359c3767b4ea7e52997 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 13:42:16 -0800
+Subject: [PATCH 066/371] family server: Bo Beck stands on his boat in the
+ tutorial, and the boat scene waits for him
+
+Nothing spawned Bo Beck (the tutorial code calls him Stumpy), so the boat scene ended in a client crash
+(enableBoatBoarding -> stageStumpyPositionOnBoat with no NPCStumpy) and a new pirate never boarded.
+
+AI: the tutorial manager spawns him as a townsperson aboard the tutorial boat (hull/cannon zone, which the
+client opens as soon as it sees the boat), uid tutorial_stumpy, looks and name of 1153439632.21darren, and
+the world teardown deletes him with the boat.
+
+Client: DistributedPiratesTutorial no longer needs him to be there first. If he arrives after the boat the
+intro request starts then; boarding arms its own boarded-ship step; he is put at the wheel when he arrives.
+
+Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>
+---
+ .../tutorial/DistributedPiratesTutorial.py    | 37 +++++++++++-
+ pirates/tutorial/PiratesTutorialManagerAI.py  | 58 +++++++++++++++++++
+ 2 files changed, 93 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/tutorial/DistributedPiratesTutorial.py b/pirates/tutorial/DistributedPiratesTutorial.py
+index 1022e59..2b68594 100644
+--- a/pirates/tutorial/DistributedPiratesTutorial.py
++++ b/pirates/tutorial/DistributedPiratesTutorial.py
+@@ -300,8 +300,19 @@ class DistributedPiratesTutorial(DistributedObject.DistributedObject, FSM.FSM):
+         self.StumpyDoId = None
+         self.IslandDoId = None
+         
++        # family server (11-17): Bo Beck ('Stumpy') can arrive after his boat, or after the boat scene. Every
++        # step that needs him now waits for him instead of crashing or silently never happening
++        self.NPCStumpy = None
++        self._stumpyWanted = False
++        self._stumpyStageLater = False
++        self._stumpyIntroDone = False
++
+         def stumpyHere(stumpyId):
+             self.StumpyDoId = stumpyId
++            if self._stumpyWanted:
++                self._stumpyWanted = False
++                self.pendingStumpyRequest = base.cr.relatedObjectMgr.requestObjects([
++                    self.StumpyDoId], eachCallback = self.doStumpyIntro)
+         
+         def stumpyBoatHere(stumpyBoatId):
+             self.BoatStumpyDoId = stumpyBoatId
+@@ -403,6 +414,11 @@ class DistributedPiratesTutorial(DistributedObject.DistributedObject, FSM.FSM):
+             self.accept(stumpyBoat.proximityCollisionEnterEvent, self.triggerBoBeckCut)
+             self.acceptOnce('enableBoatBoarding', self.enableBoatBoarding)
+             self.notify.debug('stumpyBoat:waiting for stumpy %s' % self.StumpyDoId)
++            if self.StumpyDoId is None:
++                # not here yet: stumpyHere starts this when he arrives
++                self._stumpyWanted = True
++                return
++
+             self.pendingStumpyRequest = base.cr.relatedObjectMgr.requestObjects([
+                 self.StumpyDoId], eachCallback = self.doStumpyIntro)
+ 
+@@ -753,17 +769,30 @@ class DistributedPiratesTutorial(DistributedObject.DistributedObject, FSM.FSM):
+         localAvatar.guiMgr.chestTray.show()
+ 
+     def stageStumpyPositionOnBoat(self):
++        if localAvatar.ship and getattr(localAvatar.ship, 'wheel', None):
++            localAvatar.ship.wheel[0].geom_High.setScale(0.96)
++
++        if not self.NPCStumpy or self.NPCStumpy.isEmpty():
++            # family server: he is not here yet; doStumpyIntro puts him at the wheel when he arrives
++            self.notify.warning('stageStumpyPositionOnBoat: Bo Beck is not here yet, will place him when he arrives')
++            self._stumpyStageLater = True
++            return
++
++        self._stumpyStageLater = False
+         self.NPCStumpy.motionFSM.request('Off')
+         self.NPCStumpy.setPos(0, -1.2, 9)
+         self.NPCStumpy.setHpr(180, 0, 0)
+         self.NPCStumpy.loop('wheel_idle')
+-        localAvatar.ship.wheel[0].geom_High.setScale(0.96)
+     
+     def enableBoatBoarding(self):
+         self.notify.debug('enableBoatBoarding')
+         if self.BoatStumpyDoId:
+             stumpyBoat = base.cr.doId2do[self.BoatStumpyDoId]
+             self.island.stopCustomEffects()
++            if not self._stumpyIntroDone:
++                # family server: boarding carries on even when Bo Beck has not arrived to arm this himself
++                self.acceptOnce(stumpyBoat.uniqueName('localAvBoardedShip'), self.doneStumpyIntro)
++
+             localAvatar.placeOnShip(stumpyBoat)
+             localAvatar.setH(-90)
+             self.stageStumpyPositionOnBoat()
+@@ -786,12 +815,16 @@ class DistributedPiratesTutorial(DistributedObject.DistributedObject, FSM.FSM):
+         self.NPCStumpy.disableBodyCollisions()
+         self.NPCStumpy.setZ(9)
+         self.notify.debug('collision event for Stumpy %s' % self.NPCStumpy.proximityCollisionEvent)
+-        if self.BoatStumpyDoId:
++        if self.BoatStumpyDoId and not self._stumpyIntroDone:
+             stumpyBoat = base.cr.doId2do[self.BoatStumpyDoId]
+             self.acceptOnce(stumpyBoat.uniqueName('localAvBoardedShip'), self.doneStumpyIntro)
+ 
++        if self._stumpyStageLater:
++            self.stageStumpyPositionOnBoat()
++
+     def doneStumpyIntro(self, task = None):
+         self.notify.debug('Done Introducing Stumpy McGee')
++        self._stumpyIntroDone = True
+         localAvatar.gameFSM.lockFSM = False
+         localAvatar.b_setGameState('LandRoam')
+         localAvatar.gameFSM.lockFSM = True
+diff --git a/pirates/tutorial/PiratesTutorialManagerAI.py b/pirates/tutorial/PiratesTutorialManagerAI.py
+index bf5cc28..077c26e 100644
+--- a/pirates/tutorial/PiratesTutorialManagerAI.py
++++ b/pirates/tutorial/PiratesTutorialManagerAI.py
+@@ -5,6 +5,10 @@ from direct.fsm.FSM import FSM
+ from pirates.instance.DistributedInstanceBaseAI import DistributedInstanceBaseAI
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.piratesbase import PLocalizer
++from pirates.pirate import AvatarTypes
++from pirates.battle import EnemyGlobals
++from pirates.leveleditor import NPCList
++from pirates.npc.DistributedNPCTownfolkAI import DistributedNPCTownfolkAI
+ from pirates.ship import ShipGlobals
+ from pirates.ship.TutorialShipAI import TutorialShipAI
+ from pirates.world.WorldCreatorAI import WorldCreatorAI
+@@ -19,6 +23,12 @@ RAMBLESHACK_REGION_UID = '1115838788a.58jubutler'
+ STUMPY_BOAT_POS = (128.511, 152.104, 0.0)
+ STUMPY_BOAT_HPR = (-114.033, 0.0, 0.0)
+ 
++# Bo Beck himself ('Stumpy' in the code): his looks and name, and where he stands on his boat (at the wheel,
++# the spot the client's stageStumpyPositionOnBoat uses)
++STUMPY_DNA_ID = '1153439632.21darren'
++STUMPY_ON_BOAT_POS = (0.0, -1.2, 9.0)
++STUMPY_ON_BOAT_HPR = (180.0, 0.0, 0.0)
++
+ 
+ class TutorialFSM(FSM):
+     notify = DirectNotifyGlobal.directNotify.newCategory('TutorialFSM')
+@@ -37,6 +47,7 @@ class TutorialFSM(FSM):
+         self.tutorialHandler = None
+         self.tutorialHandlerZoneId = None
+         self.stumpyBoat = None
++        self.stumpy = None
+         # everything the scene file load built, for the teardown in enterStop
+         self.loadedDoIds = set()
+ 
+@@ -117,6 +128,7 @@ class TutorialFSM(FSM):
+         ship.b_setGameState('Neutral', 0)
+         self.air.uidMgr.addUid(TutorialGlobals.STUMPY_BOAT_UID, ship.doId)
+         self.stumpyBoat = ship
++        self.__spawnStumpy(ship)
+         self.notify.info('Tutorial boat created for avatar %d: %d in zone %d of ocean grid %d' % (
+             self.avatar.doId, ship.doId, ship.zoneId, oceanGrid.doId))
+ 
+@@ -189,6 +201,48 @@ class TutorialFSM(FSM):
+     def exitStop(self):
+         pass
+ 
++    # family server (11-17): nothing spawned Bo Beck either, so the boat scene ended in a client crash
++    # (enableBoatBoarding -> stageStumpyPositionOnBoat with no NPCStumpy) and the pirate never boarded. Spawn him
++    # as a townsperson aboard his boat, in the zone the boat's hull and cannons live in (the client opens that one
++    # as soon as it sees the boat, long before boarding), under the uid the client's tutorial waits for
++    def __spawnStumpy(self, ship):
++        avatarType = AvatarTypes.Commoner
++        npc = DistributedNPCTownfolkAI(self.air)
++        npc.setScale(1.0)
++        npc.setUniqueId(TutorialGlobals.STUMPY_UID)
++        npc.setPos(*STUMPY_ON_BOAT_POS)
++        npc.setHpr(*STUMPY_ON_BOAT_HPR)
++        npc.setCollisionMode(PiratesGlobals.COLL_MODE_FLOORS_CL)
++        npc.setSpawnPos(npc.getPos())
++        npc.setInitZ(npc.getZ())
++        npc.setAvatarType(avatarType)
++        aggroInfo = EnemyGlobals.determineAggroInfo(None)
++        npc.setAggroMode(aggroInfo[0])
++        npc.setAggroRadius(aggroInfo[1])
++        npc.setTeam(PiratesGlobals.VILLAGER_TEAM)
++        npc.setLevel(EnemyGlobals.getRandomEnemyLevel(avatarType))
++        npcHp, npcMp = EnemyGlobals.getEnemyStats(avatarType, npc.getLevel())
++        npc.setMaxHp(npcHp)
++        npc.setHp(npc.getMaxHp(), True)
++        npc.setMaxMojo(npcMp)
++        npc.setMojo(npc.getMaxMojo())
++        npc.setShopId(PiratesGlobals.PORT_ROYAL_DEFAULTS)
++        npc.spawnUid = STUMPY_DNA_ID
++        npc.setDNAId(STUMPY_DNA_ID)
++        npc.setName(NPCList.NPC_LIST[STUMPY_DNA_ID][NPCList.setName])
++        npc.setAnimSet('default')
++        npc.setStartState('Idle')
++        npc.setAmbush(False)
++
++        ship.generateChildWithRequired(npc, PiratesGlobals.ShipZoneSilhouette)
++        npc.d_setInitZ(npc.getZ())
++        npc.d_setSpawnIn()
++        npc.b_setGameState(npc.getStartState())
++        self.air.uidMgr.addUid(TutorialGlobals.STUMPY_UID, npc.doId)
++        self.stumpy = npc
++        self.notify.info('Tutorial Bo Beck created for avatar %d: %d on boat %d' % (
++            self.avatar.doId, npc.doId, ship.doId))
++
+     # family server (11-16): Stop deleted the island, the world and the jail but left the jail's own container
+     # instance (GameAreaBuilderAI builds it at the district root, outside the world), every world uid (Dan, Nell,
+     # Stumpy's boat, the doors, the jail) pointing at deleted objects, and the world creator following a deleted
+@@ -202,6 +256,10 @@ class TutorialFSM(FSM):
+             found.add(self.stumpyBoat.doId)
+             self.stumpyBoat = None
+ 
++        if self.stumpy:
++            found.add(self.stumpy.doId)
++            self.stumpy = None
++
+         self.loadedDoIds = set()
+         if not found:
+             return
+-- 
+2.53.0
+

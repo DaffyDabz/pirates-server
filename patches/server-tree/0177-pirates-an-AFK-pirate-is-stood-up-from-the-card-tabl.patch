@@ -1,0 +1,117 @@
+From f9f78977e8cadc774840087dc652e5310abb69fe Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:27:12 -0800
+Subject: [PATCH 177/371] pirates: an AFK pirate is stood up from the card
+ table instead of losing his gold to antes (0219)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../minigame/DistributedBlackjackTableAI.py   | 17 ++++++++++++++--
+ pirates/minigame/DistributedPokerTableAI.py   | 20 ++++++++++++++++++-
+ 2 files changed, 34 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/minigame/DistributedBlackjackTableAI.py b/pirates/minigame/DistributedBlackjackTableAI.py
+index 13fa479..da59539 100644
+--- a/pirates/minigame/DistributedBlackjackTableAI.py
++++ b/pirates/minigame/DistributedBlackjackTableAI.py
+@@ -34,6 +34,7 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+         self._deck2 = []      # second deck for reshuffle
+         self._numSeats = self._availableSeats  # seats in use (dealer slot added)
+         self._roundActive = False
++        self._bidTimeouts = {}  # seatIndex -> rounds in a row his bid was left to the timer
+ 
+     def delete(self):
+         taskMgr.remove(self.uniqueName('bj-bid'))
+@@ -91,6 +92,7 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+ 
+     def avatarSit(self, avatar, seatIndex):
+         DistributedGameTableAI.avatarSit(self, avatar, seatIndex)
++        self._bidTimeouts.pop(seatIndex, None)
+         inv = self.air.inventoryManager.getInventory(avatar.doId) if avatar not in (0, 1) else None
+         self._chipsCount = self._normalizeChipsCount(self._chipsCount)
+         if inv:
+@@ -236,9 +238,19 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+         self._checkAllBidsIn()
+ 
+     def _bidTimeoutTask(self, task=None):
+-        # Auto-bid the minimum for anyone who hasn't bid
++        # Auto-bid the minimum for anyone who hasn't bid. A pirate who left his bid to
++        # the timer MaximumTimeouts rounds in a row is away: stand him up instead.
+         for seatIndex in list(self._waitingBids):
+-            self._receiveBid(seatIndex, self._getTableBidAmount())
++            seat = self.seats[seatIndex]
++            if seat is not None and seat not in (0, 1):
++                n = self._bidTimeouts.get(seatIndex, 0) + 1
++                self._bidTimeouts[seatIndex] = n
++                if n >= PlayingCardGlobals.MaximumTimeouts:
++                    self._bidTimeouts.pop(seatIndex, None)
++                    self._standUpHuman(seat, seatIndex)
++                    continue
++            if seatIndex in self._waitingBids:
++                self._receiveBid(seatIndex, self._getTableBidAmount())
+         return Task.done
+ 
+     def _receiveBid(self, seatIndex, amount):
+@@ -365,6 +377,7 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+         amount = action[1] if len(action) > 1 else 0
+ 
+         if actionCode == PlayingCardGlobals.Bid:
++            self._bidTimeouts.pop(seatIndex, None)  # he is here
+             self._receiveBid(seatIndex, amount)
+             return
+ 
+diff --git a/pirates/minigame/DistributedPokerTableAI.py b/pirates/minigame/DistributedPokerTableAI.py
+index 7af6ece..d2a06a2 100644
+--- a/pirates/minigame/DistributedPokerTableAI.py
++++ b/pirates/minigame/DistributedPokerTableAI.py
+@@ -191,6 +191,7 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         else:
+             self._chipsCount[seatIndex] = 0
+         self._totalWinnings[seatIndex] = PlayingCardGlobals.PlayerLost
++        self._timeouts[seatIndex] = 0
+         self.d_setTableState()
+         self._scheduleHandStart()
+ 
+@@ -239,6 +240,15 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+                 return True
+         return False
+ 
++    def _standUpHuman(self, avatar, seatIndex):
++        # Stand a pirate up the way requestExit does, so his client is told
++        # (requestSeatResponse 2) and leaves the table instead of sitting on as a ghost
++        if self.handleRequestExit(avatar) != self.ACCEPT:
++            return
++        self.sendUpdateToAvatarId(avatar.doId, 'setUserId', [0])
++        self.handlePostRequestExit(avatar)
++        messenger.send(avatar.uniqueName('interact-canceled'))
++
+     # ------------------------------------------------------------------
+     # Hand management
+     # ------------------------------------------------------------------
+@@ -293,7 +303,8 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         self._playerActions = [[PlayingCardGlobals.NoAction, 0] for _ in range(self._availableSeats)]
+         self._totalWinnings = [PlayingCardGlobals.PlayerInactive] * self._availableSeats
+         self._activeBettors = list(occupied)
+-        self._timeouts = {s: 0 for s in self._activeBettors}
++        for s in self._activeBettors:
++            self._timeouts.setdefault(s, 0)  # counts timeouts in a row, across hands
+         self.b_setPotSize(0)
+         self._broadcastTableState(0)
+ 
+@@ -440,6 +451,13 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         # Away from the table: check when that costs nothing, else fold. A timeout
+         # never spends his gold.
+         self._timeouts[seatIndex] = self._timeouts.get(seatIndex, 0) + 1
++        seat = self.seats[seatIndex]
++        if (self._timeouts[seatIndex] >= PlayingCardGlobals.MaximumTimeouts
++                and seat is not None and seat not in (0, 1)):
++            # Away for MaximumTimeouts turns in a row: stand him up (this folds him)
++            self._standUpHuman(seat, seatIndex)
++            if self.seats[seatIndex] is None:
++                return Task.done
+         callAmount = max(0, self._maxBet - self._playerActions[seatIndex][1])
+         if callAmount == 0 and self._timeouts[seatIndex] < PlayingCardGlobals.MaximumTimeouts:
+             self._applyAction(seatIndex, PlayingCardGlobals.Check, 0)
+-- 
+2.53.0
+

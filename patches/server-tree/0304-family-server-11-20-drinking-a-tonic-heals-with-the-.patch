@@ -1,0 +1,40 @@
+From 8fcad1a4df53d6508d2b64aff435f22276c54b9b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 304/371] family server (11-20): drinking a tonic heals, with
+ the weapon out or put away (0388)
+
+Server: every tonic (UseItem) was refused by the weapon checks, so it neither healed nor was used up.
+Lane: combat. Test: test_tonic_heals.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/BattleManagerAI.py | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/pirates/battle/BattleManagerAI.py b/pirates/battle/BattleManagerAI.py
+index a051dd4..2d32f3f 100644
+--- a/pirates/battle/BattleManagerAI.py
++++ b/pirates/battle/BattleManagerAI.py
+@@ -91,6 +91,18 @@ class BattleManagerAI(BattleManagerBase):
+         if not avatar:
+             return None
+ 
++        # a tonic belongs to no weapon (UseItem has no reputation), so the
++        # weapon checks below always turned it away and a tonic never healed;
++        # drink it here, once, for the avatar itself and only while awake
++        if skillId == InventoryType.UseItem and ammoSkillId in InventoryType.Potions:
++            if target and target is not avatar:
++                return None
++
++            if not isinstance(avatar, DistributedPlayerPirateAI) or avatar.getHp()[0] <= 0:
++                return None
++
++            return self._otherSkillResult(avatar, None, skillId, ammoSkillId, areaIdList, timestamp, pos, charge)
++
+         currentWeaponId, isWeaponDrawn = avatar.getCurrentWeapon()
+         if not isWeaponDrawn:
+             self.notify.debug('Cannot get skill result for avatar %d, '
+-- 
+2.53.0
+

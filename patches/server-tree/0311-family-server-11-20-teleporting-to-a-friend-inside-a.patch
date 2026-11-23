@@ -1,0 +1,61 @@
+From 72cc266d9043b7db916a797bcb2d7d63890537ae Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 311/371] family server (11-20): teleporting to a friend inside
+ a shop, tavern or any building takes you to him (0395)
+
+Server: a building's inside is its own small world, so teleportToFriend never found the main world and said he was
+not available. It now uses the world the building's outside door stands in. Lane: social. Test: test_friend_in_building.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedTeleportMgrAI.py | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/pirates/instance/DistributedTeleportMgrAI.py b/pirates/instance/DistributedTeleportMgrAI.py
+index 0beb1a1..c49642d 100644
+--- a/pirates/instance/DistributedTeleportMgrAI.py
++++ b/pirates/instance/DistributedTeleportMgrAI.py
+@@ -2,6 +2,7 @@ from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from direct.directnotify import DirectNotifyGlobal
+ from direct.fsm.FSM import FSM
+ from panda3d.core import Point3
++import math
+ 
+ from otp.ai.MagicWordGlobal import *
+ 
+@@ -352,6 +353,14 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+         friend = self.air.doId2do.get(friendDoId)
+         area = friend.getParentObj() if friend else None
+         world = self.getStandingWorld(friend) if area else None
++        # family server (11-20): a friend inside a building (a shop, a tavern, a jail) stands in the building's own
++        # small world (type INSTANCE_GENERIC), so he was always "not available". The building's outside door stands
++        # on the island, in the main world
++        from pirates.world.DistributedGAInteriorAI import DistributedGAInteriorAI
++        door = area.getExteriorFrontDoor() if isinstance(area, DistributedGAInteriorAI) else None
++        if door is not None:
++            world = self.getStandingWorld(door)
++
+         refused = None
+         if isinstance(area, DistributedShipAI):
+             # the old way onto a friend's ship (_localTeleportToIdResponse) left him at his own last spawn point,
+@@ -386,6 +395,16 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+                 area.isValidZone(area.getZoneFromXYZ((pt[0], pt[1], pt[2]))):
+             spawnPt = (pt[0], pt[1], pt[2], friend.getH(area) + 180)
+ 
++        if spawnPt is None and door is not None:
++            # family server (11-20): a building's inside does not hold its pirates under it on the AI, and with no
++            # spawn point the teleport would take the building's small world for the world. His client sends his spot
++            # in the building's own coordinates: three feet in front of him, else the middle of the room
++            spawnPt = (0, 0, 0, 0)
++            pos, h = friend.getPos(), friend.getH()
++            pt = pos + Point3(-3 * math.sin(math.radians(h)), 3 * math.cos(math.radians(h)), 0)
++            if pos != Point3(0, 0, 0) and area.isValidZone(area.getZoneFromXYZ((pt[0], pt[1], pt[2]))):
++                spawnPt = (pt[0], pt[1], pt[2], h + 180)
++
+         self.notify.info('Teleporting avatar %d to friend %d in %s, spawn %s' % (avatar.doId, friendDoId,
+             area.getUniqueId(), spawnPt))
+         self.d_initiateTeleport(avatar, world.getType(), world.getFileName(), area.getUniqueId(), spawnPt)
+-- 
+2.53.0
+

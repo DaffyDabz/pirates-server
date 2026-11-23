@@ -1,0 +1,34 @@
+From 936ba814ae0247c19534b87e4f813d7f43a6a4f6 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 03:53:16 -0800
+Subject: [PATCH 232/371] pirates: using the Lookout never kicks a pirate off,
+ and its answers reach him (0301)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedMatchMakerAI.py | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/instance/DistributedMatchMakerAI.py b/pirates/instance/DistributedMatchMakerAI.py
+index 629a9d4..e0deebe 100644
+--- a/pirates/instance/DistributedMatchMakerAI.py
++++ b/pirates/instance/DistributedMatchMakerAI.py
+@@ -150,8 +150,13 @@ class DistributedMatchMakerAI(DistributedObjectGlobalAI):
+         return avId, self.getPlayer(avId)
+ 
+     def send(self, avId, field, args):
+-        if self.getPlayer(avId) is not None:
+-            self.sendUpdateToAvatarId(avId, field, args)
++        # family server (2026-11-19, 0301): the Lookout replies (requestActivityAccepted, lookoutMatchFound,
++        # lookoutMatchFailed, lookoutFeedback, requestInvitesResp, requestLookoutInvite) are the pirate's own dc
++        # fields (DistributedPlayerPirate), not the match maker's. Sent as the match maker's, the AI found no field
++        # and raised, and boot-on-error then kicked the pirate off the game (code 153) the moment he used the Lookout.
++        avatar = self.getPlayer(avId)
++        if avatar is not None:
++            avatar.sendUpdateToAvatarId(avId, field, args)
+ 
+     def tell(self, avId, text):
+         avatar = self.getPlayer(avId)
+-- 
+2.53.0
+

@@ -1,0 +1,55 @@
+From 366bd3ece6dfc50a9bff21153afbcbc6ffef19bd Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:04:41 -0800
+Subject: [PATCH 239/371] pirates: the collection pages lay their items out in
+ whole rows (0303, patch 22)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/piratesgui/CollectionMain.py   | 2 +-
+ pirates/piratesgui/CollectionPage.py   | 2 +-
+ pirates/piratesgui/CrewIconSelector.py | 2 +-
+ 3 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/piratesgui/CollectionMain.py b/pirates/piratesgui/CollectionMain.py
+index 105059b..1b11389 100644
+--- a/pirates/piratesgui/CollectionMain.py
++++ b/pirates/piratesgui/CollectionMain.py
+@@ -103,7 +103,7 @@ class CollectionMain(InventoryPage.InventoryPage):
+                 pass
+             else:
+                 rowSpot = loopItr % 4
+-                colSpot = 1 + loopItr / 4
++                colSpot = 1 + loopItr // 4  # family server (patch 0303): whole-number division, as in the 2008 Python 2 code
+                 localHeight = PiratesGuiGlobals.InventoryPanelHeight - 0.2
+                 pic_name = CollectionMap.Assets[setKey]
+                 tex = self.card.find('**/%s*' % pic_name)
+diff --git a/pirates/piratesgui/CollectionPage.py b/pirates/piratesgui/CollectionPage.py
+index a68c00e..a12590e 100644
+--- a/pirates/piratesgui/CollectionPage.py
++++ b/pirates/piratesgui/CollectionPage.py
+@@ -84,7 +84,7 @@ class CollectionPage(InventoryPage.InventoryPage):
+         for loopItr in range(setSize):
+             setItem = setKey + 1 + loopItr
+             rowSpot = loopItr % 4
+-            colSpot = loopItr / 4
++            colSpot = loopItr // 4  # family server (patch 0303): whole-number division, as in the 2008 Python 2 code
+             localHeight = PiratesGuiGlobals.InventoryPanelHeight - 0.2
+             howMany = inv.getStackQuantity(setItem)
+             if setItem in CollectionMap.Collection_Set_Locked:
+diff --git a/pirates/piratesgui/CrewIconSelector.py b/pirates/piratesgui/CrewIconSelector.py
+index e64c512..6dbb577 100644
+--- a/pirates/piratesgui/CrewIconSelector.py
++++ b/pirates/piratesgui/CrewIconSelector.py
+@@ -96,7 +96,7 @@ class CrewIconSelector(GuiPanel.GuiPanel):
+             self.setPics[setKey].setTransparency(1)
+             counter += 1
+             rowSpot = counter % 4
+-            colSpot = counter / 4
++            colSpot = counter // 4  # family server (patch 0303): whole-number division, as in the 2008 Python 2 code
+     
+     def __setIconKey(self, setValue):
+         self.selectedIconKey = setValue
+-- 
+2.53.0
+

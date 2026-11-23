@@ -1,0 +1,109 @@
+From d75ac6a6cf32b72946be1553c856d1ff7262f401 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 07:54:34 -0800
+Subject: [PATCH 263/371] pirates: a pirate who earned levels he never got
+ catches up when he logs in (0352)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/PirateInventoryAI.py | 77 ++++++++++++++++++++++++++++
+ 1 file changed, 77 insertions(+)
+
+diff --git a/pirates/uberdog/PirateInventoryAI.py b/pirates/uberdog/PirateInventoryAI.py
+index ab579df..4291b1c 100644
+--- a/pirates/uberdog/PirateInventoryAI.py
++++ b/pirates/uberdog/PirateInventoryAI.py
+@@ -100,6 +100,75 @@ class PirateInventoryAI(DistributedInventoryAI):
+         self.notify.info('LEVELUP-QUEST %s for avatar %d' % (questIds, avatar.doId))
+         self.air.questMgr.createQuests(avatar, questIds)
+ 
++    # family server (11-19, patch 0352): weapon rep -> (skill range name, its unspent-point stack), as the respec uses
++    LevelSkillRanges = {
++        InventoryType.CutlassRep: ('WeaponSkillCutlass', InventoryType.UnspentCutlass),
++        InventoryType.PistolRep: ('WeaponSkillPistol', InventoryType.UnspentPistol),
++        InventoryType.DaggerRep: ('WeaponSkillDagger', InventoryType.UnspentDagger),
++        InventoryType.GrenadeRep: ('WeaponSkillGrenade', InventoryType.UnspentGrenade),
++        InventoryType.DollRep: ('WeaponSkillDoll', InventoryType.UnspentDoll),
++        InventoryType.WandRep: ('WeaponSkillWand', InventoryType.UnspentWand),
++        InventoryType.SailingRep: ('SkillSailing', InventoryType.UnspentSailing),
++        InventoryType.CannonRep: ('WeaponSkillCannon', InventoryType.UnspentCannon)}
++
++    def catchUpLevelRewards(self, avatar):
++        # family server (11-19, patch 0352): a pirate who levelled before patch 0351 is owed what his level-up pop-ups
++        # promised: notoriety never raised max HP or Voodoo, a weapon level SET the skill point to 1 instead of adding
++        # one, and a jump of 2+ levels skipped the levels in between. At every login, from his saved notoriety and
++        # weapon XP: max HP and Voodoo come up to 250 / 50 plus every level's gain, unspent points come up to the
++        # points earned minus the points spent on skill ranks (counted the way the trainer's respec counts them),
++        # every skill his levels unlock is unlocked, and a level-up quest he never got (not held, not in his quest
++        # history) is given. Nothing is ever lowered, so a second login changes nothing.
++        getLevel = ReputationGlobals.getLevelFromTotalReputation
++        overall = getLevel(InventoryType.OverallRep, self.getReputation(InventoryType.OverallRep))[0]
++        hpGoal = 250 + RepChart.getHpGain(InventoryType.OverallRep) * (overall - 1)
++        mojoGoal = 50 + RepChart.getManaGain(InventoryType.OverallRep) * (overall - 1)
++        quests = []
++        for level in range(2, overall + 1):
++            quests.extend(RepChart.getLevelUpQuest(InventoryType.OverallRep, level))
++        changes = []
++        for repType, (rangeName, unspentId) in self.LevelSkillRanges.items():
++            level = getLevel(repType, self.getReputation(repType))[0]
++            if level <= 1:
++                continue
++            hpGoal += RepChart.getHpGain(repType) * (level - 1)
++            mojoGoal += RepChart.getManaGain(repType) * (level - 1)
++            earned = 0
++            for l in range(2, level + 1):
++                points, skills = RepChart.getLevelUpSkills(repType, l)
++                earned += len(points)
++                for skillId in skills:
++                    if not self.getStackQuantity(skillId):
++                        self.b_setStackQuantity(skillId, 1)
++                        changes.append('skill %d' % skillId)
++                quests.extend(RepChart.getWeaponLevelUpQuest(repType, l, self))
++            spent = 0
++            for skillId in range(getattr(InventoryType, 'begin_' + rangeName), getattr(InventoryType, 'end_' + rangeName)):
++                if skillId in InventoryType.DontResetSkills:
++                    continue
++                spent += max(0, self.getStackQuantity(skillId) - (2 if skillId in InventoryType.StartingSkills else 1))
++            owed = earned - spent - self.getStackQuantity(unspentId)
++            if owed > 0:
++                self.b_setStackQuantity(unspentId, self.getStackQuantity(unspentId) + owed)
++                changes.append('+%d points rep %d' % (owed, repType))
++        if avatar.getLevel() < overall:
++            avatar.b_setLevel(overall)
++            changes.append('level %d' % overall)
++        if avatar.getMaxHp() < hpGoal:
++            changes.append('maxHp %d -> %d' % (avatar.getMaxHp(), hpGoal))
++            avatar.b_setMaxHp(hpGoal)
++            avatar.b_setHp(hpGoal)
++        if avatar.getMaxMojo() < mojoGoal:
++            changes.append('maxMojo %d -> %d' % (avatar.getMaxMojo(), mojoGoal))
++            avatar.b_setMaxMojo(mojoGoal)
++            avatar.b_setMojo(mojoGoal)
++        if changes:
++            self.notify.info('LEVEL-CATCHUP avatar %d: %s' % (avatar.doId, ', '.join(changes)))
++        if quests:
++            # after the login quest jobs (saved quests, the Chapter 2 opener), which would drop a quest given at once
++            taskMgr.doMethodLater(5.0, lambda task: self.giveLevelUpQuests(avatar, quests),
++                                  'levelCatchUpQuests-%d' % avatar.doId)
++
+     def getReputation(self, repType):
+         return self.getAccumulator(repType)
+ 
+@@ -186,6 +255,14 @@ class PirateInventoryAI(DistributedInventoryAI):
+                 self.b_setStackQuantity(token, 1)
+                 self.notify.info('TOTEM-GIVEN %d to avatar %d' % (token, avatar.doId))
+ 
++        # family server (patch 0352): what his level-ups promised but the old code never gave
++        try:
++            self.catchUpLevelRewards(avatar)
++        except Exception:
++            # the catch-up must never break a login
++            import traceback
++            self.notify.warning('level catch-up for avatar %d failed:\n%s' % (avatar.doId, traceback.format_exc()))
++
+         # populate the avatar's quest list
+         # family server (2026-09-18): the tutorial is skipped, so nothing ever
+         # hands out the first MainStory quest. Once saved quests are active, give
+-- 
+2.53.0
+

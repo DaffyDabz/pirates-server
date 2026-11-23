@@ -1,0 +1,1133 @@
+From e691f1f565b921a93706b2ce2c45719d7ac8cc52 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 01:28:02 -0800
+Subject: [PATCH 206/371] pirates: the Lookout finds Skirmish, Team Battle, Sea
+ Battle, card table and treasure map games (0272)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedMatchMakerAI.py | 1108 ++++++++++++++++++-
+ 1 file changed, 1105 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/instance/DistributedMatchMakerAI.py b/pirates/instance/DistributedMatchMakerAI.py
+index 894474f..21790d9 100644
+--- a/pirates/instance/DistributedMatchMakerAI.py
++++ b/pirates/instance/DistributedMatchMakerAI.py
+@@ -1,8 +1,1110 @@
+-from direct.distributed.DistributedObjectAI import DistributedObjectAI
++from direct.distributed.DistributedObjectGlobalAI import DistributedObjectGlobalAI
+ from direct.directnotify import DirectNotifyGlobal
+ 
+-class DistributedMatchMakerAI(DistributedObjectAI):
++from pirates.piratesbase import PiratesGlobals
++
++
++# family server (11-19, 0272): the Lookout's match maker. The Lookout panel (the spyglass) sends a pirate's
++# request here, and this finds him a game:
++#   PvP Skirmish / Team Battle  a queue per game type; a match forms from 2 to 8 pirates, the pirates are moved to
++#                               one island and fight a Skirmish there (PVPSkirmishAI, the same rules as Crew Battle)
++#   PvP Sea Battle              picks the smaller side and moves him to that side's dock (SeaBattleManagerAI)
++#   Parlor games                "find a table": the blackjack or poker table with the most pirates and a free seat
++#   Treasure map with crew      the captain and the crewmates who said yes start the map's voyage together
++#
++# The client side is the old game's, unchanged (LookoutRequestLVL1):
++#   avatar.requestActivity / requestInvites   client -> the pirate's own object (DistributedPlayerPirateAI hands
++#                                              them to this object)
++#   requestActivityAccepted, lookoutFeedback(chance), requestInvitesResp(invitees, failed), requestLookoutInvite,
++#   lookoutMatchFound(seconds, matchId), lookoutMatchFailed(restart)   AI -> the pirate
++#   requestJoin(matchId), skipJoin(matchId, stop), cancelRequest(matchId)   client -> this object (doId 4700)
++# This is a global object (every district has one on the same doId); each one only acts on pirates in its own
++# district.
++
++# GameTypeGlobals (pirates.world) imports the GUI, so its option keys and chance levels are copied here
++OPTION_MIN_PLAYERS = 7
++OPTION_DESIRED_PLAYERS = 8
++OPTION_MAX_PLAYERS = 9
++OPTION_VIP_PASS = 12
++OPTION_TM_ID = 14
++CHANCE_LOW = 1
++CHANCE_MODERATE = 25
++CHANCE_HIGH = 75
++
++PVP_MAX_PLAYERS = 8
++SEARCH_TIMEOUT = 600.0      # seconds a PvP search waits for other pirates
++ARRIVAL_TIMEOUT = 60.0      # seconds the pirates of a match have to reach the island or the voyage
++MEETING_UIDS = ['1150922126.8dzlu',     # Port Royal
++                '1156207188.95dzlu',    # Tortuga
++                '1160614528.73sdnaik',  # Cuba
++                '1142018473.22dxschafe']  # Isla del Fuego
++LOOKOUT_WIN_SCORE = 5       # knockouts to win a Lookout skirmish with more than two pirates
++
++
++class LookoutRequest:
++    # one search: a pirate alone, or a captain with the crewmates who said yes to his invite
++    def __init__(self, members, style, category, options, shipIds):
++        self.leaderId = members[0]
++        self.members = list(members)
++        self.style = style
++        self.category = category
++        self.options = options
++        self.shipIds = shipIds
++        self.declined = set()   # PvP: leaders he said no to; parlor: tables he said no to
++        self.match = None
++        minPlayers = intOption(options, OPTION_MIN_PLAYERS, 2)
++        self.minPlayers = min(max(2, minPlayers), PVP_MAX_PLAYERS)
++
++    def size(self):
++        return len(self.members)
++
++
++class LookoutMatch:
++    def __init__(self, matchId, kind, requests, data):
++        self.matchId = matchId
++        self.kind = kind        # 'pvp', 'table', 'sea' or 'tm'
++        self.requests = list(requests)
++        self.data = data
++        self.joined = set()
++        self.launched = False
++
++    def memberIds(self):
++        ids = []
++        for request in self.requests:
++            ids.extend(request.members)
++
++        return ids
++
++
++class LookoutInvite:
++    # a captain asked his crew or friends along; they say yes or no on their own Lookout panel
++    def __init__(self, leaderId, category, style, options, rawOptions, invitees):
++        self.leaderId = leaderId
++        self.category = category
++        self.style = style
++        self.options = options
++        self.rawOptions = rawOptions
++        self.pending = set(invitees)
++        self.accepted = []
++        self.leaderRequest = None   # (style, category, options, shipIds) once his client sends it
++        self.timedOut = False
++
++
++def parseOptions(options):
++    parsed = {}
++    for pair in options or []:
++        try:
++            parsed[int(pair[0])] = str(pair[1])
++        except (ValueError, TypeError, IndexError):
++            continue
++
++    return parsed
++
++
++def intOption(options, key, default=0):
++    try:
++        return int(options.get(key, default))
++    except (ValueError, TypeError):
++        return default
++
++
++class DistributedMatchMakerAI(DistributedObjectGlobalAI):
+     notify = DirectNotifyGlobal.directNotify.newCategory('DistributedMatchMakerAI')
+ 
+     def __init__(self, air):
+-        DistributedObjectAI.__init__(self, air)
+\ No newline at end of file
++        DistributedObjectGlobalAI.__init__(self, air)
++        self.avatar2request = {}    # avId -> LookoutRequest (every member of it)
++        self.queues = {}            # PvP style -> [LookoutRequest] still searching, oldest first
++        self.matches = {}           # matchId -> LookoutMatch
++        self.invites = {}           # leaderId -> LookoutInvite
++        self.invitee2invite = {}    # avId -> LookoutInvite
++        self.nextMatchId = 1
++
++    def delete(self):
++        for name in list(self.matches.keys()):
++            self.closeMatch(self.matches[name])
++
++        for request in list(set(self.avatar2request.values())):
++            self.removeRequest(request)
++
++        for invite in list(self.invites.values()):
++            self.removeInvite(invite)
++
++        DistributedObjectGlobalAI.delete(self)
++
++    # --- small helpers ---
++
++    def now(self):
++        return globalClock.getRealTime()
++
++    def getPlayer(self, avId):
++        from pirates.pirate.DistributedPlayerPirateAI import DistributedPlayerPirateAI
++        avatar = self.air.doId2do.get(avId)
++        if not isinstance(avatar, DistributedPlayerPirateAI):
++            return None
++
++        return avatar
++
++    def getSender(self):
++        avId = self.air.getAvatarIdFromSender()
++        return avId, self.getPlayer(avId)
++
++    def send(self, avId, field, args):
++        if self.getPlayer(avId) is not None:
++            self.sendUpdateToAvatarId(avId, field, args)
++
++    def tell(self, avId, text):
++        avatar = self.getPlayer(avId)
++        if avatar is not None and text:
++            avatar.d_setSystemMessage(0, text)
++
++    def fail(self, avId, restart, text=None):
++        # restart: his panel keeps searching; otherwise the search ends (this also lets go of his teleport lock)
++        self.send(avId, 'lookoutMatchFailed', [restart])
++        self.tell(avId, text)
++
++    def nameOf(self, avId):
++        avatar = self.getPlayer(avId)
++        return avatar.getName() if avatar is not None else 'A pirate'
++
++    def taskName(self, what, num):
++        return 'lookout-%s-%d' % (what, num)
++
++    def isBusy(self, avId):
++        return avId in self.avatar2request or avId in self.invitee2invite or avId in self.invites
++
++    def inSkirmish(self, avId):
++        pvpManager = getattr(self.air, 'pvpManager', None)
++        return bool(pvpManager and pvpManager.getSkirmish(avId))
++
++    def friendIds(self, avatar):
++        ids = []
++        for entry in (avatar.getFriendsList() if hasattr(avatar, 'getFriendsList') else None) or []:
++            if isinstance(entry, (list, tuple)):
++                entry = entry[0] if entry else 0
++            if entry:
++                ids.append(entry)
++
++        return ids
++
++    def crewIds(self, avId):
++        bandManager = getattr(self.air, 'bandManager', None)
++        if not bandManager or not hasattr(bandManager, 'getCrewmateMembers'):
++            return []
++
++        ids = []
++        for member in bandManager.getCrewmateMembers(avId) or []:
++            memberId = member.getAvatarId() if hasattr(member, 'getAvatarId') else member
++            if memberId:
++                ids.append(memberId)
++
++        return ids
++
++    def canMove(self, avatar):
++        # the same places a friend teleport may leave from: on land in the main world, not in jail, not on a ship
++        from pirates.ship.DistributedShipAI import DistributedShipAI
++        from pirates.world.DistributedGameAreaAI import DistributedGameAreaAI
++        from pirates.world.DistributedJailInteriorAI import DistributedJailInteriorAI
++        area = avatar.getParentObj()
++        if area is None or isinstance(area, DistributedShipAI) or not isinstance(area, DistributedGameAreaAI):
++            return False
++
++        if isinstance(area, DistributedJailInteriorAI):
++            return False
++
++        world = self.air.teleportMgr.getStandingWorld(avatar)
++        if world is None or world.getType() != PiratesGlobals.INSTANCE_MAIN:
++            return False
++
++        busy = (PiratesGlobals.TFNoTeleport & ~PiratesGlobals.TFInInitTeleport) | PiratesGlobals.TFInWelcomeWorld
++        if not hasattr(avatar, 'getTeleportFlags'):
++            return True
++
++        return (avatar.getTeleportFlags() & busy).isZero()
++
++    def areaUidOf(self, avatar, uids):
++        # the uid among uids of the area he stands in, up his parent chain (an island, from inside a building too)
++        obj = avatar.getParentObj()
++        for i in range(4):
++            if obj is None:
++                return None
++
++            uid = obj.getUniqueId() if hasattr(obj, 'getUniqueId') else None
++            if uid in uids:
++                return uid
++
++            obj = obj.getParentObj() if hasattr(obj, 'getParentObj') else None
++
++        return None
++
++    # --- from the pirate's own object (DistributedPlayerPirateAI.requestActivity / requestInvites) ---
++
++    def handleRequestActivity(self, avatar, style, category, options, shipIds):
++        avId = avatar.doId
++        parsed = parseOptions(options)
++        vipPass = intOption(parsed, OPTION_VIP_PASS, 0)
++        if vipPass and vipPass != avId:
++            self.acceptInvite(avatar, vipPass)
++            return
++
++        invite = self.invites.get(avId)
++        if vipPass == avId and invite is not None:
++            # the captain's own request after his invites went out: wait for his crew to answer
++            invite.leaderRequest = (style, category, parsed, shipIds)
++            self.send(avId, 'requestActivityAccepted', [])
++            self.checkInvite(invite)
++            return
++
++        self.dropPirate(avId, quiet=True)
++        request = LookoutRequest([avId], style, category, parsed, shipIds)
++        self.send(avId, 'requestActivityAccepted', [])
++        self.dispatch(request)
++
++    def handleRequestInvites(self, avatar, modes, category, style, options, additionalAvs):
++        avId = avatar.doId
++        self.dropPirate(avId, quiet=True)
++        candidates = []
++        counted = set()     # crewmates and named pirates count as failed when they cannot come; offline friends do not
++        if PiratesGlobals.LOOKOUT_INVITE_CREW in modes:
++            for memberId in self.crewIds(avId):
++                candidates.append(memberId)
++                counted.add(memberId)
++
++        if PiratesGlobals.LOOKOUT_INVITE_FRIENDS in modes:
++            candidates.extend(self.friendIds(avatar))
++
++        for otherId in additionalAvs or []:
++            candidates.append(otherId)
++            counted.add(otherId)
++
++        invitees = []
++        numFailed = 0
++        for otherId in candidates:
++            if otherId == avId or otherId in invitees:
++                continue
++
++            other = self.getPlayer(otherId)
++            if other is None or self.isBusy(otherId) or self.inSkirmish(otherId):
++                if otherId in counted:
++                    numFailed += 1
++                continue
++
++            invitees.append(otherId)
++
++        self.send(avId, 'requestInvitesResp', [invitees, min(numFailed, 255)])
++        if not invitees:
++            # his panel goes on alone, or tells him a treasure map needs a crew
++            return
++
++        invite = LookoutInvite(avId, category, style, parseOptions(options), options, invitees)
++        self.invites[avId] = invite
++        for otherId in invitees:
++            self.invitee2invite[otherId] = invite
++            self.send(otherId, 'requestLookoutInvite', [avId, avatar.getName(), category, style, options])
++
++        taskMgr.doMethodLater(PiratesGlobals.LOOKOUT_JOIN_TIMEOUT_INVITE + 2, self.__inviteTimedOut,
++            self.taskName('invite', avId), extraArgs=[avId])
++
++    # --- invites ---
++
++    def acceptInvite(self, avatar, leaderId):
++        avId = avatar.doId
++        invite = self.invites.get(leaderId)
++        if invite is None or avId not in invite.pending:
++            self.fail(avId, False, 'That invitation is over.')
++            return
++
++        invite.pending.discard(avId)
++        invite.accepted.append(avId)
++        self.send(avId, 'requestActivityAccepted', [])
++        self.tell(avId, 'You said yes. You will go along when %s\'s crew is ready.' % self.nameOf(leaderId))
++        self.tell(leaderId, '%s is coming along.' % avatar.getName())
++        self.checkInvite(invite)
++
++    def declineInvite(self, avId):
++        invite = self.invitee2invite.get(avId)
++        if invite is None:
++            return False
++
++        del self.invitee2invite[avId]
++        if avId in invite.pending:
++            invite.pending.discard(avId)
++            self.tell(invite.leaderId, '%s said no.' % self.nameOf(avId))
++        elif avId in invite.accepted:
++            invite.accepted.remove(avId)
++            self.tell(invite.leaderId, '%s is not coming after all.' % self.nameOf(avId))
++
++        self.checkInvite(invite)
++        return True
++
++    def __inviteTimedOut(self, leaderId):
++        invite = self.invites.get(leaderId)
++        if invite is None:
++            return
++
++        invite.timedOut = True
++        if invite.leaderRequest is None:
++            # his client never sent his own request: the invite is over
++            for otherId in invite.accepted:
++                self.fail(otherId, False, 'The invitation from %s is over.' % self.nameOf(leaderId))
++            self.removeInvite(invite)
++            return
++
++        self.checkInvite(invite)
++
++    def removeInvite(self, invite):
++        taskMgr.remove(self.taskName('invite', invite.leaderId))
++        if self.invites.get(invite.leaderId) is invite:
++            del self.invites[invite.leaderId]
++
++        for otherId in list(invite.pending) + list(invite.accepted):
++            if self.invitee2invite.get(otherId) is invite:
++                del self.invitee2invite[otherId]
++
++    def cancelInvite(self, invite, text):
++        self.removeInvite(invite)
++        for otherId in invite.accepted:
++            self.fail(otherId, False, text)
++
++    def checkInvite(self, invite):
++        # ready once the captain's request is in and everybody answered (or the time ran out)
++        if self.invites.get(invite.leaderId) is not invite or invite.leaderRequest is None:
++            return
++
++        if invite.pending and not invite.timedOut:
++            return
++
++        self.removeInvite(invite)
++        leaderId = invite.leaderId
++        crew = [otherId for otherId in invite.accepted if self.getPlayer(otherId) is not None]
++        style, category, options, shipIds = invite.leaderRequest
++        if not crew:
++            if category == PiratesGlobals.GAME_TYPE_TM:
++                self.tell(leaderId, 'Nobody in your crew said yes, so you sail alone.')
++            else:
++                self.tell(leaderId, 'Nobody said yes, so you go on your own.')
++
++        request = LookoutRequest([leaderId] + crew, style, category, options, shipIds)
++        self.dispatch(request)
++
++    # --- requests ---
++
++    def addRequest(self, request):
++        for avId in request.members:
++            self.avatar2request[avId] = request
++
++    def removeRequest(self, request):
++        for avId in request.members:
++            if self.avatar2request.get(avId) is request:
++                del self.avatar2request[avId]
++
++        self.dequeue(request)
++
++    def dequeue(self, request):
++        queue = self.queues.get(request.style)
++        if queue and request in queue:
++            queue.remove(request)
++            taskMgr.remove(self.taskName('search', request.leaderId))
++            self.sendFeedback(request.style)
++
++    def endRequest(self, request, text=None, leaderText=None):
++        # the whole search is over: every member's panel stops searching
++        self.removeRequest(request)
++        for avId in request.members:
++            self.fail(avId, False, leaderText if avId == request.leaderId and leaderText else text)
++
++    def dispatch(self, request):
++        category, style = request.category, request.style
++        for avId in list(request.members):
++            if self.inSkirmish(avId):
++                if avId == request.leaderId:
++                    self.endRequest(request, 'Your captain is in a skirmish.', 'Finish your skirmish first.')
++                    return
++
++                request.members.remove(avId)
++                self.fail(avId, False, 'Finish your skirmish first.')
++
++        self.addRequest(request)
++        if category == PiratesGlobals.GAME_TYPE_PG and style in (PiratesGlobals.GAME_STYLE_BLACKJACK,
++                PiratesGlobals.GAME_STYLE_POKER):
++            self.findTable(request)
++        elif category == PiratesGlobals.GAME_TYPE_PVP and style in (PiratesGlobals.GAME_STYLE_BATTLE,
++                PiratesGlobals.GAME_STYLE_TEAM_BATTLE):
++            self.enqueue(request)
++        elif category == PiratesGlobals.GAME_TYPE_PVP and style == PiratesGlobals.GAME_STYLE_SHIP_BATTLE:
++            self.findSeaBattle(request)
++        elif category == PiratesGlobals.GAME_TYPE_TM:
++            self.findTreasureMap(request)
++        else:
++            self.endRequest(request, 'That game isn\'t on this server yet.')
++
++    def dropPirate(self, avId, quiet=False, offline=False):
++        # he stopped looking, logged off or started a new search
++        invite = self.invites.get(avId)
++        if invite is not None:
++            text = '%s logged off.' % self.nameOf(avId) if offline else '%s stopped looking.' % self.nameOf(avId)
++            self.cancelInvite(invite, text + ' The invitation is over.')
++
++        if avId in self.invitee2invite:
++            self.declineInvite(avId)
++
++        request = self.avatar2request.get(avId)
++        if request is None:
++            return
++
++        match = request.match
++        if avId != request.leaderId:
++            self.leaveParty(request, avId)
++            if match is not None and not match.launched:
++                self.checkJoined(match)
++            return
++
++        self.removeRequest(request)
++        for otherId in request.members:
++            if otherId != avId:
++                self.fail(otherId, False, 'Your captain stopped looking for a match.')
++
++        if not quiet and not offline:
++            self.send(avId, 'lookoutMatchFailed', [False])
++
++        if match is not None:
++            self.requestLeftMatch(match, request)
++
++    def leaveParty(self, request, avId):
++        if avId in request.members:
++            request.members.remove(avId)
++
++        if self.avatar2request.get(avId) is request:
++            del self.avatar2request[avId]
++
++        if request.match is not None:
++            request.match.joined.discard(avId)
++            teams = request.match.data.get('teams')
++            if teams:
++                for team in teams:
++                    if avId in team:
++                        team.remove(avId)
++
++    # --- the matches ---
++
++    def makeMatch(self, kind, requests, **data):
++        match = LookoutMatch(self.nextMatchId, kind, requests, data)
++        self.nextMatchId += 1
++        self.matches[match.matchId] = match
++        for request in requests:
++            self.dequeue(request)
++            request.match = match
++
++        for avId in match.memberIds():
++            self.send(avId, 'lookoutMatchFound', [PiratesGlobals.LOOKOUT_JOIN_TIMEOUT, match.matchId])
++
++        taskMgr.doMethodLater(PiratesGlobals.LOOKOUT_JOIN_TIMEOUT + 2, self.__joinTimedOut,
++            self.taskName('join', match.matchId), extraArgs=[match.matchId])
++        return match
++
++    def closeMatch(self, match):
++        # the match is done (launched, or called off); its requests are finished too
++        taskMgr.remove(self.taskName('join', match.matchId))
++        taskMgr.remove(self.taskName('arrive', match.matchId))
++        self.matches.pop(match.matchId, None)
++        for request in match.requests:
++            if request.match is match:
++                request.match = None
++                self.removeRequest(request)
++
++    def detachMatch(self, match):
++        # call the match off but keep its requests (they search again or end on their own)
++        taskMgr.remove(self.taskName('join', match.matchId))
++        taskMgr.remove(self.taskName('arrive', match.matchId))
++        self.matches.pop(match.matchId, None)
++        for request in match.requests:
++            if request.match is match:
++                request.match = None
++
++    def requestJoin(self, matchId):
++        avId, avatar = self.getSender()
++        if avatar is None:
++            return
++
++        request = self.avatar2request.get(avId)
++        match = request.match if request is not None else None
++        if match is None:
++            self.fail(avId, False, 'That match is over.')
++            return
++
++        if match.launched:
++            return
++
++        match.joined.add(avId)
++        self.checkJoined(match)
++
++    def checkJoined(self, match):
++        if self.matches.get(match.matchId) is not match or match.launched:
++            return
++
++        members = match.memberIds()
++        if members and set(members) <= match.joined:
++            self.launch(match)
++
++    def skipJoin(self, matchId, stop):
++        avId, avatar = self.getSender()
++        if avatar is None:
++            return
++
++        if avId in self.invitee2invite:
++            # "no" to an invite (his panel sends stop=True)
++            self.declineInvite(avId)
++            return
++
++        request = self.avatar2request.get(avId)
++        if request is None:
++            return
++
++        match = request.match
++        if match is None or match.launched:
++            if stop:
++                self.dropPirate(avId, quiet=True)
++            return
++
++        if avId != request.leaderId:
++            # a crewmate said no: he stays behind, the others go on
++            self.leaveParty(request, avId)
++            if not stop:
++                self.fail(avId, False, 'You stayed behind.')
++            self.checkJoined(match)
++            return
++
++        if match.kind == 'pvp':
++            others = [other for other in match.requests if other is not request]
++            self.detachMatch(match)
++            for other in others:
++                self.requeue(other)
++
++            if stop:
++                self.removeRequest(request)
++                self.send(avId, 'lookoutMatchFailed', [False])
++                for otherId in request.members:
++                    if otherId != avId:
++                        self.fail(otherId, False, 'Your captain stopped looking for a match.')
++            else:
++                request.declined.update([other.leaderId for other in others])
++                for otherId in request.members:
++                    if otherId != avId:
++                        self.fail(otherId, True)
++                self.enqueue(request, announce=False)
++
++            self.formMatches(request.style)
++            return
++
++        if match.kind == 'table' and not stop:
++            self.detachMatch(match)
++            request.declined.add(match.data['tableId'])
++            for otherId in request.members:
++                if otherId != avId:
++                    self.fail(otherId, True)
++            self.findTable(request)
++            return
++
++        self.detachMatch(match)
++        self.removeRequest(request)
++        if not stop:
++            self.send(avId, 'lookoutMatchFailed', [False])
++        for otherId in request.members:
++            if otherId != avId:
++                self.fail(otherId, False, 'Your captain said no.')
++
++    def cancelRequest(self, matchId):
++        avId, avatar = self.getSender()
++        if avatar is None:
++            return
++
++        self.dropPirate(avId, quiet=True)
++
++    def requestLeftMatch(self, match, request):
++        # a captain (or a pirate alone) left a match that has not launched yet
++        if match.launched or self.matches.get(match.matchId) is not match:
++            if request in match.requests:
++                match.requests.remove(request)
++            return
++
++        others = [other for other in match.requests if other is not request]
++        if match.kind == 'pvp' and others:
++            self.detachMatch(match)
++            for other in others:
++                self.requeue(other)
++            self.formMatches(match.requests[0].style)
++            return
++
++        self.detachMatch(match)
++
++    def requeue(self, request):
++        for avId in request.members:
++            self.fail(avId, True)
++
++        self.enqueue(request, announce=False)
++
++    def __joinTimedOut(self, matchId):
++        match = self.matches.get(matchId)
++        if match is None or match.launched:
++            return
++
++        for request in list(match.requests):
++            for avId in list(request.members):
++                if avId in match.joined:
++                    continue
++
++                if avId == request.leaderId:
++                    match.requests.remove(request)
++                    request.match = None
++                    self.removeRequest(request)
++                    for otherId in request.members:
++                        if otherId == avId:
++                            self.fail(otherId, False, 'You did not answer in time, so the search ended.')
++                        else:
++                            self.fail(otherId, False, 'Your captain did not answer in time.')
++                    break
++
++                self.leaveParty(request, avId)
++                self.fail(avId, False, 'You did not answer in time, so you stayed behind.')
++
++        if not match.requests:
++            self.detachMatch(match)
++            return
++
++        if match.kind == 'pvp':
++            style = match.requests[0].style
++            if self.groupWorks(match.requests, style):
++                match.data['teams'] = self.splitTeams(match.requests, style)
++                self.launch(match)
++                return
++
++            requests = list(match.requests)
++            self.detachMatch(match)
++            for request in requests:
++                self.requeue(request)
++            self.formMatches(style)
++            return
++
++        self.launch(match)
++
++    def launch(self, match):
++        match.launched = True
++        taskMgr.remove(self.taskName('join', match.matchId))
++        if match.kind == 'pvp':
++            self.launchSkirmish(match)
++        elif match.kind == 'table':
++            self.launchTable(match)
++        elif match.kind == 'sea':
++            self.launchSeaBattle(match)
++        elif match.kind == 'tm':
++            self.launchTreasureMap(match)
++
++    def moveTo(self, avatar, uid, spawnPt=None, world=None):
++        teleportMgr = self.air.teleportMgr
++        world = world or teleportMgr.getMainWorld()
++        if world is None:
++            return False
++
++        teleportMgr.d_initiateTeleport(avatar, world.getType(), world.getFileName(), uid, spawnPt)
++        return True
++
++    # --- PvP Skirmish and Team Battle: the queue ---
++
++    def enqueue(self, request, announce=True):
++        queue = self.queues.setdefault(request.style, [])
++        if request not in queue:
++            queue.append(request)
++
++        taskMgr.remove(self.taskName('search', request.leaderId))
++        taskMgr.doMethodLater(SEARCH_TIMEOUT, self.__searchTimedOut, self.taskName('search', request.leaderId),
++            extraArgs=[request])
++        if announce:
++            self.tell(request.leaderId, 'You will be notified when a match is found.')
++
++        self.sendFeedback(request.style)
++        self.formMatches(request.style)
++
++    def __searchTimedOut(self, request):
++        if request.match is not None or request not in self.queues.get(request.style, []):
++            return
++
++        self.endRequest(request, 'Nobody else is looking for that game right now. Try again later!')
++
++    def sendFeedback(self, style):
++        queue = self.queues.get(style, [])
++        total = sum([request.size() for request in queue])
++        for request in queue:
++            if total >= request.minPlayers and len(queue) > 1:
++                chance = CHANCE_HIGH
++            elif len(queue) > 1:
++                chance = CHANCE_MODERATE
++            else:
++                chance = CHANCE_LOW
++            for avId in request.members:
++                self.send(avId, 'lookoutFeedback', [chance])
++
++    def conflicts(self, group, request):
++        for other in group:
++            if other.leaderId in request.declined or request.leaderId in other.declined:
++                return True
++
++        return False
++
++    def groupWorks(self, group, style):
++        total = sum([request.size() for request in group])
++        if len(group) < 2 or total > PVP_MAX_PLAYERS:
++            return False
++
++        return total >= max([request.minPlayers for request in group])
++
++    def formMatches(self, style):
++        # oldest search first: add every other search that fits (up to 8 pirates), and drop the ones that want
++        # more pirates than came together
++        while True:
++            queue = list(self.queues.get(style, []))
++            found = None
++            for seed in queue:
++                if seed.size() > PVP_MAX_PLAYERS:
++                    continue
++
++                group = [seed]
++                total = seed.size()
++                for other in queue:
++                    if other is seed or self.conflicts(group, other):
++                        continue
++                    if total + other.size() <= PVP_MAX_PLAYERS:
++                        group.append(other)
++                        total += other.size()
++
++                while len(group) > 1 and not self.groupWorks(group, style):
++                    extra = [other for other in group[1:] if other.minPlayers > total]
++                    if not extra:
++                        break
++                    drop = max(extra, key=lambda other: other.minPlayers)
++                    group.remove(drop)
++                    total -= drop.size()
++
++                if self.groupWorks(group, style):
++                    found = group
++                    break
++
++            if found is None:
++                return
++
++            self.makeMatch('pvp', found, teams=self.splitTeams(found, style))
++
++    def splitTeams(self, group, style):
++        # a team battle: two teams as even as can be, a crew never split; a free-for-all: one team per crew
++        if style != PiratesGlobals.GAME_STYLE_TEAM_BATTLE:
++            return [list(request.members) for request in group]
++
++        teams = [[], []]
++        for request in sorted(group, key=lambda request: -request.size()):
++            smaller = 0 if len(teams[0]) <= len(teams[1]) else 1
++            teams[smaller].extend(request.members)
++
++        return teams
++
++    def pickIsland(self, avIds):
++        counts = dict([(uid, 0) for uid in MEETING_UIDS])
++        for avId in avIds:
++            avatar = self.getPlayer(avId)
++            uid = self.areaUidOf(avatar, MEETING_UIDS) if avatar is not None else None
++            if uid:
++                counts[uid] += 1
++
++        return max(MEETING_UIDS, key=lambda uid: (counts[uid], -MEETING_UIDS.index(uid)))
++
++    def launchSkirmish(self, match):
++        members = [avId for avId in match.memberIds() if self.getPlayer(avId) is not None]
++        uid = self.pickIsland(members)
++        islandDoId = self.air.uidMgr.getDoId(uid)
++        if not islandDoId or self.air.teleportMgr.getMainWorld() is None:
++            for avId in members:
++                self.fail(avId, False, 'The skirmish island is not ready. Try again later.')
++            self.closeMatch(match)
++            return
++
++        match.data['islandDoId'] = islandDoId
++        match.data['waitStart'] = self.now()
++        for avId in members:
++            avatar = self.getPlayer(avId)
++            if avatar.parentId == islandDoId:
++                self.fail(avId, False, 'You\'re already here: the skirmish starts when everyone arrives.')
++            elif not self.canMove(avatar):
++                self.leaveParty(self.avatar2request[avId], avId)
++                self.fail(avId, False, 'You can\'t be moved from where you are, so you were left out of the skirmish.')
++            else:
++                self.moveTo(avatar, uid)
++                self.tell(avId, 'Off to the skirmish! It starts when everyone arrives.')
++
++        self.checkArrivals(match.matchId)
++
++    def checkArrivals(self, matchId):
++        match = self.matches.get(matchId)
++        if match is None:
++            return
++
++        islandDoId = match.data['islandDoId']
++        teams = []
++        waiting = False
++        for team in match.data['teams']:
++            here = []
++            for avId in team:
++                avatar = self.getPlayer(avId)
++                if avatar is None or self.avatar2request.get(avId) is None:
++                    continue
++                if avatar.parentId == islandDoId:
++                    here.append(avatar)
++                else:
++                    waiting = True
++            teams.append(here)
++
++        if waiting and self.now() - match.data['waitStart'] < ARRIVAL_TIMEOUT:
++            taskMgr.doMethodLater(1.0, self.checkArrivals, self.taskName('arrive', matchId), extraArgs=[matchId])
++            return
++
++        self.closeMatch(match)
++        teams = [[avatar for avatar in team if not self.inSkirmish(avatar.doId)] for team in teams]
++        teams = [team for team in teams if team]
++        pvpManager = getattr(self.air, 'pvpManager', None)
++        if len(teams) < 2 or pvpManager is None:
++            for team in teams:
++                for avatar in team:
++                    self.tell(avatar.doId, 'Not enough pirates made it, so the skirmish is off.')
++            return
++
++        total = sum([len(team) for team in teams])
++        pvpManager.startTeamSkirmish(teams, parentId=islandDoId,
++            winScore=LOOKOUT_WIN_SCORE if total > 2 else None)
++
++    # --- PvP Sea Battle ---
++
++    def findSeaBattle(self, request):
++        manager = getattr(self.air, 'seaBattleMgr', None)
++        hqUids = getattr(manager, 'hqUids', None) if manager is not None else None
++        if not hqUids:
++            self.endRequest(request, 'The Sea Battle isn\'t running right now.')
++            return
++
++        from pirates.pvp import SeaBattleManagerAI
++        members = getattr(manager, 'members', {})
++        team = members.get(request.leaderId)
++        if team:
++            self.endRequest(request, 'Your captain is already in the Sea Battle.',
++                'You are already in the Sea Battle for the %s.' % SeaBattleManagerAI.TEAM_NAMES.get(team, 'other side'))
++            return
++
++        counts = {SeaBattleManagerAI.FRENCH: 0, SeaBattleManagerAI.SPANISH: 0}
++        for side in members.values():
++            if side in counts:
++                counts[side] += 1
++
++        team = SeaBattleManagerAI.FRENCH
++        if counts[SeaBattleManagerAI.SPANISH] < counts[SeaBattleManagerAI.FRENCH]:
++            team = SeaBattleManagerAI.SPANISH
++        if not hqUids.get(team):
++            team = SeaBattleManagerAI.otherTeam(team)
++
++        hqUid = hqUids.get(team)
++        teamName = SeaBattleManagerAI.TEAM_NAMES.get(team, 'your side')
++        for avId in list(request.members):
++            avatar = self.getPlayer(avId)
++            if avatar is not None and self.areaUidOf(avatar, [hqUid]):
++                text = 'You\'re at the %s dock: launch a ship from the dinghy here to join the Sea Battle.' % teamName
++                if avId == request.leaderId:
++                    self.endRequest(request, text, text)
++                    return
++                self.leaveParty(request, avId)
++                self.fail(avId, False, text)
++
++        self.makeMatch('sea', [request], team=team, hqUid=hqUid)
++
++    def launchSeaBattle(self, match):
++        from pirates.pvp import SeaBattleManagerAI
++        team = match.data['team']
++        hqUid = match.data['hqUid']
++        teamName = SeaBattleManagerAI.TEAM_NAMES.get(team, 'your side')
++        for avId in match.memberIds():
++            avatar = self.getPlayer(avId)
++            if avatar is None:
++                continue
++            if self.areaUidOf(avatar, [hqUid]):
++                self.fail(avId, False, 'You\'re at the %s dock: launch a ship from the dinghy here.' % teamName)
++            elif not self.canMove(avatar):
++                self.fail(avId, False, 'You can\'t be moved from where you are.')
++            elif self.moveTo(avatar, hqUid):
++                self.tell(avId, 'Launch a ship from the dinghy to sail for the %s!' % teamName)
++            else:
++                self.fail(avId, False, 'The Sea Battle isn\'t ready. Try again later.')
++
++        self.closeMatch(match)
++
++    # --- parlor games: find a table ---
++
++    def tableClasses(self, style):
++        if style == PiratesGlobals.GAME_STYLE_BLACKJACK:
++            from pirates.minigame.DistributedBlackjackTableAI import DistributedBlackjackTableAI
++            return [DistributedBlackjackTableAI]
++
++        from pirates.minigame.DistributedHoldemTableAI import DistributedHoldemTableAI
++        from pirates.minigame.Distributed7StudTableAI import Distributed7StudTableAI
++        return [DistributedHoldemTableAI, Distributed7StudTableAI]
++
++    def openSeats(self, table):
++        return len([seat for seat in getattr(table, 'seats', []) if seat is None])
++
++    def piratesAt(self, table):
++        return len([seat for seat in getattr(table, 'seats', []) if seat is not None and seat != 1])
++
++    def findTable(self, request):
++        classes = self.tableClasses(request.style)
++        best = None
++        bestKey = None
++        for obj in list(self.air.doId2do.values()):
++            if not isinstance(obj, tuple(classes)) or obj.doId in request.declined:
++                continue
++
++            seats = self.openSeats(obj)
++            if not seats:
++                continue
++
++            kind = len(classes) - [isinstance(obj, cls) for cls in classes].index(True)
++            key = (seats >= request.size(), self.piratesAt(obj), kind, seats, -obj.doId)
++            if bestKey is None or key > bestKey:
++                best, bestKey = obj, key
++
++        if best is None:
++            if request.declined:
++                self.endRequest(request, 'No other card tables are open right now.')
++            else:
++                self.endRequest(request, 'No card tables are open right now.')
++            return
++
++        interior = best.getParentObj()
++        here = [avId for avId in request.members
++                if self.getPlayer(avId) is not None and self.getPlayer(avId).parentId == best.parentId]
++        if len(here) == len(request.members):
++            self.endRequest(request, 'There\'s an open seat right here: walk up to the table and sit down.')
++            return
++
++        self.makeMatch('table', [request], tableId=best.doId)
++
++    def tableSpawn(self, table, interior):
++        from panda3d.core import Point3
++        heading = table.getH(interior)
++        for distance in (8, 5):
++            pt = interior.getRelativePoint(table, Point3(0, -distance, 0))
++            if not hasattr(interior, 'isValidZone') or interior.isValidZone(interior.getZoneFromXYZ(pt)):
++                return (pt[0], pt[1], pt[2], heading)
++
++        pos = table.getPos(interior)
++        return (pos[0], pos[1], pos[2], heading)
++
++    def launchTable(self, match):
++        table = self.air.doId2do.get(match.data['tableId'])
++        interior = table.getParentObj() if table is not None else None
++        world = self.air.teleportMgr.getStandingWorld(table) if table is not None else None
++        if interior is None or world is None or not self.openSeats(table):
++            for avId in match.memberIds():
++                self.fail(avId, False, 'That table filled up. Try the Lookout again.')
++            self.closeMatch(match)
++            return
++
++        spawnPt = self.tableSpawn(table, interior)
++        uid = interior.getUniqueId()
++        for avId in match.memberIds():
++            avatar = self.getPlayer(avId)
++            if avatar is None:
++                continue
++            if avatar.parentId == interior.doId:
++                self.fail(avId, False, 'There\'s an open seat right here: walk up to the table and sit down.')
++            elif not self.canMove(avatar):
++                self.fail(avId, False, 'You can\'t be moved from where you are.')
++            else:
++                self.moveTo(avatar, uid, spawnPt, world)
++                self.tell(avId, 'Walk up to the table and sit down.')
++
++        self.closeMatch(match)
++
++    # --- treasure maps with crew ---
++
++    def getTreasureMap(self, request):
++        from pirates.treasuremap.DistributedTreasureMapAI import DistributedTreasureMapAI
++        treasureMap = self.air.doId2do.get(intOption(request.options, OPTION_TM_ID, 0))
++        if not isinstance(treasureMap, DistributedTreasureMapAI) or not treasureMap.getIsEnabled():
++            return None
++
++        if treasureMap.getOwnerId() not in (0, request.leaderId):
++            return None
++
++        return treasureMap
++
++    def findTreasureMap(self, request):
++        treasureMap = self.getTreasureMap(request)
++        if treasureMap is None:
++            self.endRequest(request, 'Your captain\'s treasure map can\'t be used right now.',
++                'That treasure map can\'t be used right now.')
++            return
++
++        self.makeMatch('tm', [request], mapId=treasureMap.doId)
++
++    def launchTreasureMap(self, match):
++        request = match.requests[0] if match.requests else None
++        treasureMap = self.getTreasureMap(request) if request is not None else None
++        leader = self.getPlayer(request.leaderId) if request is not None else None
++        if treasureMap is None or leader is None:
++            for avId in match.memberIds():
++                self.fail(avId, False, 'That treasure map can\'t be used right now.')
++            self.closeMatch(match)
++            return
++
++        crew = [avId for avId in match.memberIds() if avId != request.leaderId]
++        treasureMap.startFor(leader)
++        self.closeMatch(match)
++        if crew:
++            self.matches[match.matchId] = match
++            match.data['crew'] = crew
++            match.data['waitStart'] = self.now()
++            self.checkVoyage(match.matchId)
++
++    def findVoyage(self):
++        from pirates.treasuremap.TreasureMapBlackPearlAI import TreasureMapBlackPearlAI
++        for obj in list(self.air.doId2do.values()):
++            if isinstance(obj, TreasureMapBlackPearlAI) and not obj.tornDown and obj.isJoinable():
++                return obj
++
++        return None
++
++    def checkVoyage(self, matchId):
++        # the captain's voyage is being built; once it takes pirates, his crew joins it
++        match = self.matches.get(matchId)
++        if match is None:
++            return
++
++        treasureMap = self.air.doId2do.get(match.data['mapId'])
++        voyage = self.findVoyage() if treasureMap is not None else None
++        if voyage is not None:
++            self.matches.pop(matchId, None)
++            for avId in match.data['crew']:
++                avatar = self.getPlayer(avId)
++                if avatar is not None:
++                    treasureMap.startFor(avatar)
++            return
++
++        if treasureMap is None or self.now() - match.data['waitStart'] >= ARRIVAL_TIMEOUT:
++            self.matches.pop(matchId, None)
++            for avId in match.data['crew']:
++                self.tell(avId, 'Your captain\'s voyage did not start, so you stay here.')
++            return
++
++        taskMgr.doMethodLater(0.5, self.checkVoyage, self.taskName('arrive', matchId), extraArgs=[matchId])
++
++    # --- the pirate logged off ---
++
++    def avatarOffline(self, avId):
++        self.dropPirate(avId, quiet=True, offline=True)
++        for match in list(self.matches.values()):
++            crew = match.data.get('crew')
++            if crew and avId in crew:
++                crew.remove(avId)
+-- 
+2.53.0
+

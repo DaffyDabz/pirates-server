@@ -1,0 +1,443 @@
+From 589ecd581072090c40a3e0ef2595ffc48301bf6c Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 15:42:40 -0800
+Subject: [PATCH 287/371] pirates: the journal's reward lines are true, and no
+ developer placeholder lines are shown (0359, patch 29)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/piratesbase/PQuestStringsEnglish.py | 155 ++++++++++----------
+ 1 file changed, 78 insertions(+), 77 deletions(-)
+
+diff --git a/pirates/piratesbase/PQuestStringsEnglish.py b/pirates/piratesbase/PQuestStringsEnglish.py
+index c821905..2f35674 100644
+--- a/pirates/piratesbase/PQuestStringsEnglish.py
++++ b/pirates/piratesbase/PQuestStringsEnglish.py
+@@ -1,11 +1,12 @@
+ Reward_Gold = 'Gold'
+ Reward_XP = 'Notoriety'
+ Reward_Both = 'Gold & Notoriety'
+-Teleport_Reward_Tortuga = 'Tortugan Teleport Totem, Gold & Notoriety'
+-Teleport_Reward_PortRoyal = 'Port Royal Teleport Totem, Gold & Notoriety'
+-Teleport_Reward_Cuba = 'Cuba Teleport Totem, Gold & Notoriety'
+-Teleport_Reward_PadresDelFuego = 'Padres Del Fuego Teleport Totem, Gold & Notoriety'
+-Playing_Card_Reward = 'A Playing Card, Gold & Notoriety'
++Teleport_Reward_Tortuga = 'Tortugan Teleport Totem & Notoriety'
++Teleport_Reward_PortRoyal = 'Port Royal Teleport Totem & Notoriety'
++Teleport_Reward_Cuba = 'Cuba Teleport Totem & Notoriety'
++Teleport_Reward_PadresDelFuego = 'Padres Del Fuego Teleport Totem & Notoriety'
++Playing_Card_Reward = 'A Playing Card & Notoriety'
++Playing_Card_Reward_Only = 'A Playing Card'
+ Collection_Reward_Rogues = 'Nine Rogues Collection Unlock & Notoriety'
+ Collection_Reward_Medals = 'Navy Medals Collection Unlocked, Gold & Notoriety'
+ Collection_Reward_Teeth = "Rudyard's Teeth Collection Unlocked, Gold & Notoriety"
+@@ -421,38 +422,38 @@ QuestStrings = {
+   'pa1.bribeOlivier': {
+     'title': 'Bribe Olivier',
+     'description': 'Information does not come cheap, you will need to bribe Olivier to find the gems.',
+-    'dialogBefore': 'bribeOlivier dialog before',
++    'dialogBefore': '',
+     'dialogAfter': 'The gems... yes, now I remember. Seems a crew of pirates lost their way recently.\x07They ended up stashing some of their cargo of precious gems around Padres Del Fuego.\x07Chances are you can still find some if you look hard enough.'
+   },
+   'pa1.gatherRubyStones': {
+     'title': 'Buried Rubies',
+     'description': 'Recover Rubies from buried treasure chests hidden somewhere on Padres Del Fuego.',
+-    'dialogBefore': 'gatherRubyStones dialog before',
++    'dialogBefore': '',
+     'dialogAfter': "Some fine rubies indeed. These alone though will not save the shop.\x07Bring me some Amethysts as well and we'll talk."
+   },
+   'pa1.gatherAmethystStones': {
+     'title': 'Buried Amethyst',
+     'description': 'Recover Amethysts from buried treasure chest hidden somewhere on Padres Del Fuego.',
+-    'dialogBefore': 'gatherAmethystStones dialog before',
++    'dialogBefore': '',
+     'dialogAfter': 'You found them! Amethysts are one of my favorite gems you know.\x07I like them almost as much as I like Sapphires.\x07Think you can find some for me?'
+   },
+   'pa1.gatherSapphireStones': {
+     'title': 'Buried Sapphires',
+     'description': 'Recover Sapphires from buried treasure chests hidden somewhere on Padres Del Fuego.',
+-    'dialogBefore': 'gatherSapphireStones dialog before',
++    'dialogBefore': '',
+     'dialogAfter': 'Perfect, these are just lovely.\x07I could use your help on one last thing before you go on your way though.\x07Lately some skeletons have been harassing my customers and driving away business.\x07Deal with them for me and I will pay you handsomely.'
+   },
+   'pa1.defeatPerlasEnemy': {
+     'title': "Perla's Protection",
+     'description': "Lately Perla's customers have been avoiding the shop due to some recent skeleton raids. She has asked you to take care of them for her.",
+-    'dialogBefore': 'defeatPerlasEnemy dialog before',
+-    'dialogAfter': 'defeatPerlasEnemy dialog after'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'pa1.returnToPerla': {
+     'title': 'returnToPerla title',
+     'description': 'returnToPerla description',
+-    'dialogBefore': 'returnToPerla dialog before',
+-    'dialogAfter': 'returnToPerla dialog after',
++    'dialogBefore': '',
++    'dialogAfter': '',
+     'reward': Jewelry_Reward
+   },
+   'DajinMingJewels': {
+@@ -1278,99 +1279,99 @@ QuestStrings = {
+   'CutlassUnlockL5': {
+     'title': 'Pirate Blade Upgrade: Spanish Smithing',
+     'description': "Utilize the secret of Spanish sword smithing to upgrade to 'Pirate Blade' cutlass.",
+-    'dialogBefore': 'Dialog DB Error cul5_1',
++    'dialogBefore': '',
+     'dialogAfter': "Excellent work, mate. Here's yer sword.\x07 Be careful, eh? Don't want it fallin' into the wrong hands.",
+     'reward': ''
+   },
+   'cul5.1visitBalthasar': {
+     'title': 'Visit Balthasar Bollard',
+     'description': 'Balthasar Bollard is the resident shipwright of Padres Del Fuego.',
+-    'dialogBefore': 'Dialog DB Error cul5_2',
++    'dialogBefore': '',
+     'dialogAfter': "So ye be needing a new cutlass, eh?  I can help...but it will cost ya.\x07 I be needin' supplies.  Sailcloth from some navy ships, and also some plankin' as well.  Best quality, they are.\x07Then I'll be needing some ropes and rigging that's only found on East India vessels.\x07Now go and be quick about it!"
+   },
+   'cul5r1ShipParts': {
+     'title': "Balthasar's Ship Parts",
+     'description': "Hunt Navy and EITC ships for Balthasar's parts.",
+-    'dialogBefore': 'Dialog DB Error cul5_3',
++    'dialogBefore': '',
+     'dialogAfter': 'Nice work, mate.  Now find a gent name of Miquel Montoya, here on Padres.\x07Got into some trouble, he did.\x07But if you can help him, he holds the secret to making top-notch Spanish swords.'
+   },
+   'cul5r1.1acquireSailcloth': {
+     'title': 'Sail Cloth',
+     'description': 'Find Navy ships in Caribbean shipping lanes.',
+-    'dialogBefore': 'Dialog DB Error cul5_4',
+-    'dialogAfter': 'Dialog DB Error cul5_5'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'cul5r1.2acquireWoodPlanks': {
+     'title': 'Wood Planks',
+     'description': 'Find Navy ships in Caribbean shipping lanes.',
+-    'dialogBefore': 'Dialog DB Error cul5_6',
+-    'dialogAfter': 'Dialog DB Error cul5_7'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'cul5r1.3acquireRopes': {
+     'title': 'Ropes',
+     'description': 'Find EITC ships in Caribbean shipping lanes.',
+-    'dialogBefore': 'Dialog DB Error cul5_8',
+-    'dialogAfter': 'Dialog DB Error cul5_9'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'cul5r1.4acquireRigging': {
+     'title': 'Rigging',
+     'description': 'Find EITC ships in Caribbean shipping lanes',
+-    'dialogBefore': 'Dialog DB Error cul5_10',
+-    'dialogAfter': 'Dialog DB Error cul5_11'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'cul5.2visitMiguel': {
+     'title': 'Visit Miguel Montoya',
+     'description': 'Miguel Montoya is swapping stories with the local blacksmiths on Padres.',
+-    'dialogBefore': 'Dialog DB Error cul5_12',
++    'dialogBefore': '',
+     'dialogAfter': "Bollard sent you, eh?  Rascal.\x07I'll not divulge my secret without some assistance getting out of a mess of my own.\x07I have a debt to repay.\x07Seeing how my debtor's son was killed by the French muerte,  could you defeat some of these diablos in my name?\x07This might just free me of my debt."
+   },
+   'cul5.3defeatUndeadFrench': {
+     'title': 'Undead French',
+     'description': 'Undead French have been sighted on Isla Cangrejos',
+-    'dialogBefore': 'Dialog DB Error cul5_13',
++    'dialogBefore': '',
+     'dialogAfter': 'Gracias.  Listen closely-all my secrets I passed off to my apprentice,  Fuller,  the Port Royal smith.\x07He will get you what you need.  Via con Dios, Amigo.'
+   },
+   'cul5.4visitPhillip': {
+     'title': 'Visit Phillip Fuller',
+     'description': 'Blacksmith Phillip Fuller has a thriving shop on Port Royal.',
+-    'dialogBefore': 'Dialog DB Error cul5_14',
++    'dialogBefore': '',
+     'dialogAfter': "Spanish swords?  Yeah, I can make 'em.  But it ain't easy.  Takes the finest steel.\x07Bring me some premium Navy steel.  It's in a crate on Kingshead.\x07And I needs the bones of an undead Brigand for the handle. Savvy?  Go on now, don't tarry."
+   },
+   'cul5r2SwordParts': {
+     'title': 'Sword Components',
+     'description': "Undead Brigands can be found in the Rat's Nest, on Tortuga.",
+-    'dialogBefore': 'Dialog DB Error cul5_15',
++    'dialogBefore': '',
+     'dialogAfter': "Ah yes that's what I be needin' and, while I'm making your sword, I owe a favor to my old chum, Doc Grog.\x07He's brewin' a new healin' potion and needs the blood of a dread scorpion.\x07Find this nasty bugger on Tortuga named 'Venom Lash' and then give it to Doc and we'll be square."
+   },
+   'cul5r2.1findNavySteel': {
+     'title': 'Navy Steel',
+     'description': 'Fuller told you to search the crates in Kingshead.',
+-    'dialogBefore': 'Dialog DB Error cul5_16',
+-    'dialogAfter': 'Dialog DB Error cul5_17'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'cul5r2.2acquireBoneHandle': {
+     'title': 'Bone Handle',
+     'description': "Undead Brigands can be found in the Rat's Nest on Tortuga.",
+-    'dialogBefore': 'Dialog DB Error cul5_18',
+-    'dialogAfter': 'Dialog DB Error cul5_19'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'cul5.5defeatBossScorpion': {
+     'title': 'Venom Lash',
+     'description': 'Venom Lash, one of the nastiest Dread Scorpions in the Caribbean, can be found in the Wildwoods of Tortuga.',
+-    'dialogBefore': 'Dialog DB Error cul5_20',
+-    'dialogAfter': 'Dialog DB Error cul5_21'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'cul5.6visitGrog': {
+     'title': 'Visit Doc Grog',
+     'description': 'Return the dread scorpion blood to Doc Grog so he can finish his elixir.',
+-    'dialogBefore': 'Dialog DB Error cul5_22',
++    'dialogBefore': '',
+     'dialogAfter': "Finally! Can't finish me elixir without this blood.\x07Fine work.  Now off ya go to Fuller and he'll reward ya right properly."
+   },
+   'cul5.7visitFuller': {
+     'title': 'Visit Phillip Fuller',
+     'description': 'All you have to do now is return to Fuller on Port Royal to get your just rewards!',
+-    'dialogBefore': 'Dialog DB Error cul5_23',
+-    'dialogAfter': 'Dialog DB Error cul5_24'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'FeatsOfStrength': {
+     'title': 'Coltello Upgrade: Feats of Strength',
+@@ -1483,87 +1484,87 @@ QuestStrings = {
+   'DaggerUnlockL5': {
+     'title': 'Bloodletter Upgrade: Stolen Daggers',
+     'description': 'Ferrera needs your help to recover some stolen daggers.',
+-    'dialogBefore': 'Dialog DB Error dul5_1',
++    'dialogBefore': '',
+     'dialogAfter': "Well done, my friend!\x07 You're sure to become the most notorious pirate in all the Caribbean.  Enjoy your reward.",
+     'reward': ''
+   },
+   'dul5.1visitFerrar': {
+     'title': 'Visit Ferrera',
+     'description': 'Ferrera can be found in his shop in Padres Del Fuego.',
+-    'dialogBefore': 'Dialog DB Error dul5_2',
++    'dialogBefore': '',
+     'dialogAfter': "Daggers? Just made a few but some bilge rat stole 'em.  Not sure who, you'll have to help.\x07If you return them, one's yours. Start off by finding a necklace that once belonged to my friend - Orinda on Port Royal.\x07Gov. Swann stole it and buried it in the Governor's Garden.\x07Find her necklace and maybe that will loosen up her tongue and lead you to the daggers.  Fair winds!"
+   },
+   'dul5.2findNecklace': {
+     'title': "Orinda's Necklace",
+     'description': "The Governor's Garden is behind Swann's mansion on Port Royal.  Be careful digging because its haunted by the undead and patrolled by Navy Guards.",
+-    'dialogBefore': 'Dialog DB Error dul5_3',
+-    'dialogAfter': 'Dialog DB Error dul5_4'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'dul5.3visitOrinda': {
+     'title': 'Visit Orinda',
+     'description': 'Orinda can be found on the docks of Tortuga.',
+-    'dialogBefore': 'Dialog DB Error dul5_5',
++    'dialogBefore': '',
+     'dialogAfter': "My necklace, at last! Now I can pay me debts.\x07But before I tell you what I know, I need a favor.\x07My late husband Timothy is now in Jolly Roger's undead army.  Find the poor bloke and put him out of his misery!\x07That'll make me-talkative."
+   },
+   'dul5.4defeatExHusband': {
+     'title': 'Defeat Timothy Dartan',
+     'description': 'Undead Timothy Dartan can be found on the dangerous, abandoned village on the far side of Padres Del Fuego.',
+-    'dialogBefore': 'Dialog DB Error dul5_6',
++    'dialogBefore': '',
+     'dialogAfter': "Many thanks, mate.\x07Now go to Cuba and find Billy McKidd.  He's well informed about such matters.\x07He's almost always in the La Bodeguita Tavern, drinkin' and talkin' to anyone who'll listen."
+   },
+   'dul5.5visitMcKidd': {
+     'title': 'Visit Billy McKidd',
+     'description': 'Find Billy McKidd telling his tall tales in the Cuban Tavern named, La Bodeguita.',
+-    'dialogBefore': 'Dialog DB Error dul5_7',
++    'dialogBefore': '',
+     'dialogAfter': "Tell you where the daggers are?  What's in it for me?\x07Here's a plan-Find me old Navy boss, Captain Swain, or swine as I like to call him.  Find that pig and maroon him on a wild island.\x07Yeah, then I'll give you an answer.  Now shove off!"
+   },
+   'dul5.6captureSwain': {
+     'title': 'Capture Captain Swain',
+     'description': "Find Navy Captain Swain and maroon him on the closest wild island.  It's more kindness than he deserves!",
+-    'dialogBefore': 'Dialog DB Error dul5_8',
+-    'dialogAfter': 'Dialog DB Error dul5_9'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'dul5.7maroonSwain': {
+     'title': 'Maroon Captain Swain',
+     'description': "Find Navy Captain Swain and maroon him on the closest wild island.  It's more kindness that he deserves!",
+-    'dialogBefore': 'Dialog DB Error dul5_10',
++    'dialogBefore': '',
+     'dialogAfter': "Back so soon? Blimey, you're good.\x07  I know who knows about the stolen daggers.  Tia Dalma.\x07 But don't tell her I sent you.  That witch despises me."
+   },
+   'dul5.8visitTia': {
+     'title': 'Visit Tia Dalma',
+     'description': 'Tia Dalma makes her home in the swamps of Cuba.',
+-    'dialogBefore': 'Dialog DB Error dul5_11',
++    'dialogBefore': '',
+     'dialogAfter': "Yes, I know who stole da daggers but I ain't tellin' without no gift.\x07Do a favor for Tia first - find an undead witchdoctor name of Bonerattler who's been vexing me spirits.\x07Get rid of him and I tell you who stole da daggers.  Hurry now. It's your destiny!"
+   },
+   'dul5.9defeatWitchdoctorBoss': {
+     'title': 'Defeat Bonerattler',
+     'description': 'Bonerattler was last seen in the Catacombs on Padres.  Watch your back!  He has lots of friends.',
+-    'dialogBefore': 'Dialog DB Error dul5_12',
++    'dialogBefore': '',
+     'dialogAfter': 'I thank you, and so do my  spirits.  Da man who stole da daggers guards the jail on Port Royal.\x07A pitiful thieving Navy man named, Grimm, Ensign Grimm.'
+   },
+   'dul5.10visitGrimm': {
+     'title': 'Visit Ensign Grimm',
+     'description': 'Ensign Grimm is passing the time pretending to do his duty guarding the Port Royal jail.',
+-    'dialogBefore': 'Dialog DB Error dul5_13',
++    'dialogBefore': '',
+     'dialogAfter': "Why should I tell you, you filthy pirate?!  Hey, sorry about the remark,  you seem like a decent chap.\x07But I needs some gold coins to loosen my tongue.  Slip me a proper sum and I'll tell ya where I buried the goods.  Honest."
+   },
+   'dul5.10.5bribeGrimm': {
+     'title': 'Bribe Ensign Grimm',
+     'description': 'Bribe the jailer for information about the daggers.',
+-    'dialogBefore': 'Dialog DB Error dul5_14',
++    'dialogBefore': '',
+     'dialogAfter': "Thanks much, mate.  I buried the daggers here on Port Royal somewhere 'round the Governors mansion.\x07Don't know where exactly seeing as how I was full of grog at the time.  Cheers!"
+   },
+   'dul5.11findDaggers': {
+     'title': 'Excavate Stolen Daggers',
+     'description': "Look for a green circle around the Governor's Mansion.  Once found, return the daggers to Ferrera.",
+-    'dialogBefore': 'Dialog DB Error dul5_15',
+-    'dialogAfter': 'Dialog DB Error dul5_16'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'dul5.12visitFerrar': {
+     'title': 'Visit Ferrera',
+     'description': 'Return to Ferrera on Padres Del Fuego.',
+-    'dialogBefore': 'Dialog DB Error dul5_17',
+-    'dialogAfter': 'Dialog DB Error dul5_18'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'GoodForBusiness': {
+     'title': 'Tri-Barrel Upgrade: Good For Business',
+@@ -1679,75 +1680,75 @@ QuestStrings = {
+   'PistolUnlockL5': {
+     'title': "Grand Pistol Upgrade: Erasmus' Pistol",
+     'description': 'Erasmus would like to build you a new pistol with your assistance.',
+-    'dialogBefore': 'Dialog DB Error pul5_1',
++    'dialogBefore': '',
+     'dialogAfter': 'Fine work, mate.  Enjoy yer new pistol, some of me best work, it is.',
+     'reward': ''
+   },
+   'pul5.1visitErasmus': {
+     'title': 'Visit Erasmus Grimsditch',
+     'description': 'Seek out Erasmus, a gunsmith, in his shop on Padres Del Fuego.',
+-    'dialogBefore': 'Dialog DB Error pul5_2',
++    'dialogBefore': '',
+     'dialogAfter': "Hello mate.  Needin' a new pistol, ey?  I'm yer man. \x07 But I be needing some help me self.\x07 I've invented a better rapid-fire pistol and it needs a few special parts. \x07 First-hammers from Spanish flintlocks.  Get me some of them from those undead vermin and I'll help get yer pistol."
+   },
+   'pul5.2acquirePistolParts': {
+     'title': 'Undead Spanish',
+     'description': 'Spanish Undead are known to inhabit the Cutthroat Island cemetery.  Via Con Dios!',
+-    'dialogBefore': 'Dialog DB Error pul5_3',
++    'dialogBefore': '',
+     'dialogAfter': "Excellent work.  Now help me with an old score I gotta settle.\x07 Me friend Delilah Densmore has been sold into indentured servitude\x07 by her former love to a Padres jeweler name of Perla.\x07 Find Delilah and she'll tell ye what she needs to buy her freedom."
+   },
+   'pul5.3visitDelilah': {
+     'title': 'Visit Delilah Dunsmore',
+     'description': "Delilah Dunsmore is a lovely lass who's serving out her indenture to Perla, the Padres del Fuego jeweler.",
+-    'dialogBefore': 'Dialog DB Error pul5_4',
++    'dialogBefore': '',
+     'dialogAfter': "Erasmus sent you?  Oh thank the heavens!\x07I know where some valuable gems are buried inside Beckett's Quarry that'll buy me freedom.\x07 Find 'em,  and defeat the wretch who sold me to pay off his gamblin' debts!\x07 He's an East India Thug named Samuel.  Bring me his brass buttons and you will get your pistol."
+   },
+   'pul5.4defeatFormerLove': {
+     'title': "Delilah's Former Love",
+     'description': "Beckett's Quarry is the mine on Padres del Fuego owned and heavily guarded by the East India Trading Company. Delilah's former love is posted there.",
+-    'dialogBefore': 'Dialog DB Error pul5_5',
+-    'dialogAfter': 'Dialog DB Error pul5_7'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'pul5.5findGems': {
+     'title': "Excavate Delilah's Gems",
+     'description': "Beckett's Quarry is the mine on Padres del Fuego owned and heavily guarded by the East India Trading Company. Delilah's gems are found there.",
+-    'dialogBefore': 'Dialog DB Error pul5_6',
++    'dialogBefore': '',
+     'dialogAfter': "Thanks.  You're as good as they say.\x07 Next...let the fair winds take you to Kingshead and get the musket stocks from 8 Navy officers.\x07 They're made of a rare wood ole Grimsditch needs to make his new invention.\x07 When you're done, return 'em to him.  God speed, friend."
+   },
+   'pul5.6acquireWoodStocks': {
+     'title': 'Wood Stocks',
+     'description': 'High level Navy soldiers can be found on the island of Kingshead.',
+-    'dialogBefore': 'Dialog DB Error pul5_8',
+-    'dialogAfter': 'Dialog DB Error pul5_9'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'pul5.7deliverToErasmus': {
+     'title': 'Deliver Components',
+     'description': 'Return the components to Erasmus on Padres Del Fuego.',
+-    'dialogBefore': 'Dialog DB Error pul5_10',
++    'dialogBefore': '',
+     'dialogAfter': "Ah, the black walnut stocks.  Excellent!  Sorry, mate but I be needing three more items.\x07 Some copper that's found on East India ships. I mix the copper with\x07 bone dust from a huge alligator boss name of Dreadtooth to make invincible bullets.\x07 Then all that's left is some high quality metal from Navy ships for me barrels.\x07Get those and get yerself that pistol."
+   },
+   'pul5r1Tasks': {
+     'title': 'Final Components',
+     'description': "Acquire the final components at Erasmus' request.",
+-    'dialogBefore': 'Dialog DB Error pul5_11',
+-    'dialogAfter': 'Dialog DB Error pul5_12'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'pul5r1.1acquireCopper': {
+     'title': 'Copper',
+     'description': 'Ships of this caliber can be found in the seas surrounding Port Royal.',
+-    'dialogBefore': 'Dialog DB Error pul5_13',
+-    'dialogAfter': 'Dialog DB Error pul5_14'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'pul5r1.2acquireGunPowder': {
+     'title': 'Gun Powder',
+     'description': 'Ships of this caliber can be found in the seas surrounding Port Royal.',
+-    'dialogBefore': 'Dialog DB Error pul5_15',
+-    'dialogAfter': 'Dialog DB Error pul5_16'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'pul5r1.3defeatAlligatorBoss': {
+     'title': 'Dreadtooth',
+     'description': "The huge alligator boss, Dreadtooth, is a nasty brute so approach with care! He's been seen sunning himself in the lake in Tortuga Graveyard.",
+-    'dialogBefore': 'Dialog DB Error pul5_17',
+-    'dialogAfter': 'Dialog DB Error pul5_18'
++    'dialogBefore': '',
++    'dialogAfter': ''
+   },
+   'TreasureRogues': {
+     'title': 'Treasure Unlock: The Nine Rogues',
+@@ -2729,7 +2730,7 @@ QuestStrings = {
+     'title': 'Prison Break (Easy)',
+     'description': 'Aid Shane as he prepares to liberate one of his crew.',
+     'dialogAfter': 'Let me express in advance the gratitude of my mate.\x07 Thanks to you, he will soon taste the free air of the sea!',
+-    'reward': Playing_Card_Reward
++    'reward': Playing_Card_Reward_Only
+   },
+   'PortRoyalPCTier1Tasks': {
+     'title': 'Prison Break Preparation',
+@@ -2748,7 +2749,7 @@ QuestStrings = {
+   'PortRoyalPCTier2': {
+     'title': 'Port Royal Fort Heist (Medium)',
+     'description': 'Help Shane prepare a heist involving Fort Charles.',
+-    'reward': Playing_Card_Reward
++    'reward': Playing_Card_Reward_Only
+   },
+   'PortRoyalPCTier2Tasks': {
+     'title': 'Additional Tasks',
+@@ -3150,7 +3151,7 @@ QuestStrings = {
+   'PeterChipparrAssailant': {
+     'title': "Peter Chipparr's Vengeance",
+     'description': 'Help Peter Chipparr get some payback.',
+-    'dialogAfter': 'Thank you for taking care of that for me. Come back and I might have more work for you.',
++    'dialogAfter': 'Thank you for taking care of that for me.',
+     'reward': Reward_Gold
+   },
+   'pc.1visitSam': {
+@@ -3181,7 +3182,7 @@ QuestStrings = {
+   'pc.7visitPeter3': {
+     'title': 'Return to Peter Chipparr',
+     'description': 'Return to Peter and let him know the good news.',
+-    'dialogAfter': 'Thank you for taking care of that for me. Come back and I might have more work for you.'
++    'dialogAfter': 'Thank you for taking care of that for me.'
+   },
+   'SeabonesErrand3': {
+     'title': 'Helping Sam Seabones',
+-- 
+2.53.0
+

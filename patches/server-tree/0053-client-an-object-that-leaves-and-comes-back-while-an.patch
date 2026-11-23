@@ -1,0 +1,80 @@
+From b3213766c3d0c6f29eb58f50eb117b9224261280 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 23:20:11 -0800
+Subject: [PATCH 053/371] client: an object that leaves and comes back while an
+ interest is opening is no longer deleted
+
+A pirate logging in by the Port Royal dock could not see the dock's
+dinghy, so he could not leave the island; NPCs, doors and treasure near
+his login spot vanished the same way, until those cells left his sight
+and came back.
+
+While one of the client's interests is still opening, the client queues
+each object that enters it and records each message for it, and plays
+them all back when the interest is done. At login the server can show
+an object, take it away and show it again inside that window. The
+client then queued its generate twice and recorded its leave between
+them; on playback it generated the object twice ("tried to create
+duplicate proximity sphere") and then played the leave, deleting an
+object the server still shows. Every later update for it hit "Asked to
+update non-existent DistObj".
+
+A leave for an object still waiting on an interest now drops that
+object's queued generates and messages, under every interest, instead
+of being recorded. If it enters again it is queued afresh, so it is
+generated once and stays. An object that is already shown still leaves
+as before.
+
+Client file only (otp/distributed/OTPClientRepository.py), no server
+restart. An old client still loses the object.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ otp/distributed/OTPClientRepository.py | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/otp/distributed/OTPClientRepository.py b/otp/distributed/OTPClientRepository.py
+index 412583f..c9658b4 100644
+--- a/otp/distributed/OTPClientRepository.py
++++ b/otp/distributed/OTPClientRepository.py
+@@ -1954,12 +1954,37 @@ class OTPClientRepository(ClientRepositoryBase):
+         if doId not in self.__doId2pendingInterest:
+             return False
+ 
++        if msgType == CLIENT_OBJECT_LEAVING:
++            # family server (11-16): it left before the interest that brought it in was done. The CA can show an
++            # object, take it away and show it again while that interest is still opening (a pirate logging in by
++            # the Port Royal dock). Its generate was queued twice and this leave played back after both, so the
++            # client deleted an object the CA still shows: the dock's dinghy, NPCs and doors stayed gone until
++            # those cells left sight. Drop what is queued for it instead; if it enters again, it queues afresh
++            self.__dropPendingObject(doId)
++            return doId not in self.doId2do
++
+         pending = self.__pendingMessages.setdefault(
+             self.__doId2pendingInterest[doId], [])
+         pending.append(Datagram(di.getDatagram()))
+ 
+         return True
+ 
++    def __dropPendingObject(self, doId):
++        # family server (11-16): forget an object's queued generates and messages, under every interest handle
++        del self.__doId2pendingInterest[doId]
++        for generates in self.__pendingGenerates.values():
++            generates[:] = [g for g in generates if g[0] != doId]
++
++        for messages in self.__pendingMessages.values():
++            kept = []
++            for dg in messages:
++                dgi = DatagramIterator(dg)
++                dgi.getUint16() # msgType
++                if dgi.getUint32() != doId:
++                    kept.append(dg)
++
++            messages[:] = kept
++
+     def __doGenerate(self, doId, parentId, zoneId, classId, di, other):
+         dclass = self.dclassesByNumber[classId]
+         # if self._isInvalidPlayerAvatarGenerate(doId, dclass, parentId, zoneId):
+-- 
+2.53.0
+

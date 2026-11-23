@@ -1,0 +1,130 @@
+From 21a6b35f3fef35f0db874e1640564a89abbeada0 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 04:10:39 -0800
+Subject: [PATCH 144/371] pirates: the game no longer closes when a pirate's
+ relaunched ship is redrawn while he is at the wheel
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShip.py         | 20 ++++++++++++++++++
+ pirates/ship/DistributedShipAI.py       | 13 +++++++++++-
+ pirates/world/DistributedOceanGridAI.py | 27 +++++++++++++++++++++++++
+ 3 files changed, 59 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/ship/DistributedShip.py b/pirates/ship/DistributedShip.py
+index 7022f43..c0f724b 100644
+--- a/pirates/ship/DistributedShip.py
++++ b/pirates/ship/DistributedShip.py
+@@ -345,6 +345,9 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+         self.lockedSails = 0
+         self.pendingClientSteer = None
+         self.pendingBeginSteer = None
++        # Family fix 0160: set here as well as in announceGenerate, so a
++        # steering call that runs before announceGenerate cannot crash on it.
++        self.exitWorldEvent = 'exitWorldBoundsSphere'
+         self.unboardTest = 0
+         self.stormEffect = None
+         self.gameFSM = GameFSMShip(self)
+@@ -1452,6 +1455,15 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+ 
+     @report(types=['frameCount', 'deltaStamp'], dConfigParam='want-shipboard-report')
+     def clientSteeringBegin(self, avId):
++        if not self.isGenerated():
++            # Family fix 0160 (2026-11-18): a ship (re)generated while it is
++            # already in ClientSteering enters that state from its required
++            # fields, before announceGenerate builds the wheel, the controls
++            # and exitWorldEvent (NEWP8-NP2 crash: AttributeError
++            # exitWorldEvent). Steer once the ship is fully generated.
++            self.acceptOnce(self.uniqueName('generate'), self._steerOnceGenerated, [avId])
++            return
++
+         self.steeringAvId = avId
+         av = self.cr.doId2do.get(self.steeringAvId)
+         if not av:
+@@ -1510,7 +1522,15 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+             av.stopSmooth()
+ 
+     @report(types=['frameCount', 'deltaStamp'], dConfigParam=['want-shipboard-report', 'want-shiksink-report'])
++    def _steerOnceGenerated(self, avId, ship=None):
++        # Family fix 0160: the deferred half of clientSteeringBegin. Only
++        # steer if the ship is still in a steering state by now.
++        if self.gameFSM and self.gameFSM.getCurrentOrNextState() in ('ClientSteering', 'AISteering'):
++            self.clientSteeringBegin(avId)
++
+     def clientSteeringEnd(self):
++        # Family fix 0160: drop a steer still waiting on the generate event.
++        self.ignore(self.uniqueName('generate'))
+         if not self.steeringAvId:
+             return
+ 
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index f0c891f..ae4e657 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -214,7 +214,18 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         x, y, z = self.getPos()
+         h, p, r = self.getHpr()
+         timestamp = globalClockDelta.getRealNetworkTime(bits=16)
+-        self.sendUpdate('setSmPosHpr', [x, y, z, h, p, r, timestamp])
++        # Family fix 0160 (2026-11-18): send the zone (L) with the position.
++        # setComponentL is a ram field: the state server keeps the last L a
++        # client sent. A relaunched ship (after a sink) still carried the old
++        # voyage's L, so the next client to see it generated it in that old
++        # cell with coords meant for the berth cell - three cells out at sea,
++        # among the enemies - and the steering client then fought the AI grid
++        # over its zone until the ship was regenerated mid-steer (NEWP8 crash).
++        zoneId = self.zoneId
++        if isinstance(zoneId, int) and zoneId > 0:
++            self.sendUpdate('setSmPosHprL', [zoneId, x, y, z, h, p, r, timestamp])
++        else:
++            self.sendUpdate('setSmPosHpr', [x, y, z, h, p, r, timestamp])
+ 
+     def startPosHprBroadcast(self):
+         taskName = self.uniqueName('broadcast-pos')
+diff --git a/pirates/world/DistributedOceanGridAI.py b/pirates/world/DistributedOceanGridAI.py
+index deea74f..78d260d 100644
+--- a/pirates/world/DistributedOceanGridAI.py
++++ b/pirates/world/DistributedOceanGridAI.py
+@@ -1,5 +1,6 @@
+ from direct.distributed.DistributedCartesianGridAI import DistributedCartesianGridAI
+ from direct.directnotify import DirectNotifyGlobal
++from direct.task import Task
+ 
+ from pirates.world.OceanGridBase import OceanGridBase
+ from pirates.world import WorldGlobals
+@@ -26,6 +27,32 @@ class DistributedOceanGridAI(DistributedCartesianGridAI, OceanGridBase):
+         assert(av is not None)
+         self.removeObjectFromGrid(av)
+ 
++    def updateGridTask(self, task=None):
++        # Family fix 0160 (2026-11-18): Panda's loop, but it skips a ship a
++        # client is steering. That client owns the ship's zone (it sends
++        # setLocation as it crosses cells). The AI copy of the ship takes the
++        # client's cell-local coords in the AI's own cell frame, so around a
++        # crossing (or with a stale zone) the 1 s check here re-zoned the ship
++        # back to the old cell. The client then lost the ship from its
++        # interest and regenerated it mid-steer, which closed the game
++        # (NEWP8-NP2: 2632 -> 2389 in one second). It resumes when the wheel
++        # is let go (controller 0).
++        for avId in list(self.gridObjects.keys()):
++            av = self.gridObjects[avId]
++            if av.isEmpty():
++                del self.gridObjects[avId]
++                continue
++            getController = getattr(av, 'getClientController', None)
++            if getController is not None and getController():
++                continue
++            pos = av.getPos()
++            if (pos[0] < 0 or pos[1] < 0) or \
++               (pos[0] > self.cellWidth or pos[1] > self.cellWidth):
++                self.handleAvatarZoneChange(av)
++        if task:
++            task.setDelay(1.0)
++        return Task.again
++
+     def handleChildArrive(self, childObj, zoneId):
+         if isinstance(childObj, DistributedMovingObjectAI):
+             self.addObjectToOceanGrid(childObj)
+-- 
+2.53.0
+

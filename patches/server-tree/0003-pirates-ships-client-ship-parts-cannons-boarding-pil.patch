@@ -1,0 +1,410 @@
+From 649ac487ce5cba2ce97505e8b0aba8b4166e18c8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 13:03:36 -0800
+Subject: [PATCH 003/371] pirates: ships - client ship parts, cannons,
+ boarding, pilot (Sept 2026 family-server fixes)
+
+- shipparts (BowSprit, Cabin, Hull, Mast, Sail, ShipDecor, Shippart,
+  SteeringWheel): a part can arrive before its ship (e.g. arriving next to
+  other ships). Wait for the ship instead of raising KeyError, and skip setup
+  for a part that was deleted while still waiting.
+- DistributedShipCannon, DistributedPCCannon, DistributedShipBroadside: same
+  early-arrival and deleted-before-ship guards; muzzle effects parent under
+  ship.root, never modelGeom, so flattening the hull cannot merge pooled
+  effects into a scene-graph cycle that crashed the client.
+- DistributedShip: hand the controls back when the ship is deleted under the
+  pilot; boarding movie for crewmates already aboard no longer waits on
+  boardingInProgress, so the last to board sees them.
+- ShipPilot2: thrust no longer scaled by dt twice, so speed does not depend on
+  frame rate; debug prints removed.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedPCCannon.py         |  3 +-
+ pirates/battle/DistributedShipBroadside.py    | 15 ++++----
+ pirates/battle/DistributedShipCannon.py       | 12 ++++---
+ pirates/ship/DistributedShip.py               | 18 +++++++---
+ pirates/ship/ShipPilot2.py                    |  9 ++---
+ pirates/shipparts/DistributedBowSprit.py      |  9 +++--
+ pirates/shipparts/DistributedCabin.py         |  2 +-
+ pirates/shipparts/DistributedHull.py          |  8 ++++-
+ pirates/shipparts/DistributedMast.py          |  6 ++--
+ pirates/shipparts/DistributedSail.py          |  6 +++-
+ pirates/shipparts/DistributedShipDecor.py     |  5 ++-
+ pirates/shipparts/DistributedShippart.py      | 34 +++++++++++++++++--
+ pirates/shipparts/DistributedSteeringWheel.py |  7 ++--
+ 13 files changed, 101 insertions(+), 33 deletions(-)
+
+diff --git a/pirates/battle/DistributedPCCannon.py b/pirates/battle/DistributedPCCannon.py
+index 6e6ab74..06634a5 100644
+--- a/pirates/battle/DistributedPCCannon.py
++++ b/pirates/battle/DistributedPCCannon.py
+@@ -108,8 +108,9 @@ class DistributedPCCannon(DistributedWeapon.DistributedWeapon):
+             self.aimAITrack = None
+ 
+         self.av = None
+-        self.prop.av = None
++        # a ship cannon deleted before its ship arrived never got a prop
+         if self.prop:
++            self.prop.av = None
+             self.prop = None
+ 
+         if self.grapplingHook:
+diff --git a/pirates/battle/DistributedShipBroadside.py b/pirates/battle/DistributedShipBroadside.py
+index 220e995..5b3a250 100644
+--- a/pirates/battle/DistributedShipBroadside.py
++++ b/pirates/battle/DistributedShipBroadside.py
+@@ -124,7 +124,8 @@ class DistributedShipBroadside(DistributedWeapon, DistributedShippart):
+         del self.leftBroadsideConfig
+         self.ignoreAll()
+         self.removeNode()
+-        if self.ship.broadside:
++        # (no ship if deleted while still waiting for it to arrive)
++        if self.ship is not None and self.ship.broadside:
+             self.ship.broadside[1] = None
+ 
+         DistributedWeapon.delete(self)
+@@ -438,14 +439,14 @@ class DistributedShipBroadside(DistributedWeapon, DistributedShippart):
+ 
+     def _getFireEffectParent(self):
+         """
+-        Prefer the ship model root for muzzle VFX, matching Cannon.playFireEffect.
++        Parent muzzle VFX under ship.root, as Cannon.playFireEffect does.
++        Never under ship.modelGeom: DistributedShip.optimizeShip() runs
++        modelGeom.flattenStrong() when the build completes, and a flatten
++        that catches pooled effects there merges their nodes (smoke into
++        flame), so the next ParticleEffect.start reparents a node under
++        itself -> scene-graph cycle assertion -> client crash.
+         Fall back to the broadside effectNode, then render.
+         """
+-        if self.ship and getattr(self.ship, 'modelGeom', None):
+-            modelGeom = self.ship.modelGeom
+-            if modelGeom and not modelGeom.isEmpty():
+-                return modelGeom
+-
+         if self.ship and getattr(self.ship, 'root', None):
+             root = self.ship.root
+             if root and not root.isEmpty():
+diff --git a/pirates/battle/DistributedShipCannon.py b/pirates/battle/DistributedShipCannon.py
+index e9dab9e..42c229d 100644
+--- a/pirates/battle/DistributedShipCannon.py
++++ b/pirates/battle/DistributedShipCannon.py
+@@ -23,10 +23,14 @@ class DistributedShipCannon(DistributedPCCannon.DistributedPCCannon, Distributed
+     def announceGenerate(self):
+         DistributedWeapon.DistributedWeapon.announceGenerate(self)
+         DistributedShippart.DistributedShippart.announceGenerate(self)
+-        if self.proximityCollisionNodePath:
+-            self.proximityCollisionNodePath.reparentTo(self.prop.propCollisions)
+-        
++        # a cannon can arrive before its ship (no prop yet): wait for the ship instead of
++        # crashing the client ('NoneType' has no propCollisions, at sea 2026-09-22)
++        self.whenLoaded(self.__setupLoadedCannon)
+         self.setAllowInteract(1)
++
++    def __setupLoadedCannon(self):
++        if self.proximityCollisionNodePath and self.prop is not None:
++            self.proximityCollisionNodePath.reparentTo(self.prop.propCollisions)
+     
+     def disable(self):
+         if self.pendingPlaceCannon:
+@@ -37,7 +41,7 @@ class DistributedShipCannon(DistributedPCCannon.DistributedPCCannon, Distributed
+         DistributedShippart.DistributedShippart.disable(self)
+ 
+     def delete(self):
+-        if self.ship.cannons.get(self.cannonIndex, 0):
++        if self.ship is not None and self.ship.cannons.get(self.cannonIndex, 0):
+             self.ship.cannons[self.cannonIndex][1] = None
+         
+         del self.dna
+diff --git a/pirates/ship/DistributedShip.py b/pirates/ship/DistributedShip.py
+index bd1ebd8..9a1c025 100644
+--- a/pirates/ship/DistributedShip.py
++++ b/pirates/ship/DistributedShip.py
+@@ -1586,11 +1586,15 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+             self.storeCamParams(curParams)
+         else:
+             self.notify.warning('disableShipControls: no orbitCam subject, cannot preserve ship camera settings')
+-        controls = self.controlManager.currentControls
+-        if controls:
+-            controls.disableAvatarControls()
++        # PlayerShip.disable drops its controlManager before this runs when the ship is
++        # deleted under the pilot; hand the controls back to the pirate anyway
++        if self.controlManager:
++            controls = self.controlManager.currentControls
++            if controls:
++                controls.disableAvatarControls()
++
++            self.controlManager.disable()
+ 
+-        self.controlManager.disable()
+         localAvatar.controlManager.enable()
+         localAvatar.controlManager.use('walk', localAvatar)
+         localAvatar.startListenAutoRun()
+@@ -1875,7 +1879,11 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+         DistributedMovingObject.handleChildArrive(self, child, zoneId)
+         if isinstance(child, DistributedBattleAvatar.DistributedBattleAvatar):
+             child.swapFloorCollideMask(PiratesGlobals.FloorBitmask, PiratesGlobals.ShipFloorBitmask)
+-            if not child.isLocal() and self.boardingInProgress:
++            # family server (2026-09-17): no boardingInProgress gate. setMovie is
++            # not a ram field, so whoever boards last never receives a boarding
++            # movie for the crewmates already aboard; without this they are left
++            # parented where they were and are invisible from the deck.
++            if not child.isLocal():
+                 child.wrtReparentTo(self.root)
+ 
+             if child.isLocal():
+diff --git a/pirates/ship/ShipPilot2.py b/pirates/ship/ShipPilot2.py
+index f3db8f0..152f54d 100644
+--- a/pirates/ship/ShipPilot2.py
++++ b/pirates/ship/ShipPilot2.py
+@@ -631,8 +631,6 @@ class ShipPilot2(PhysicsWalker):
+         straightSailBonus *= self.MAX_STRAIGHT_SAIL_BONUS
+         straightSailBonus += 1.0
+ 
+-        print ("##################")
+-        print (straightSailBonus)
+         
+         # this was causing the boat to get stuck moving forward or back
+         if 0:
+@@ -806,11 +804,14 @@ class ShipPilot2(PhysicsWalker):
+                 or self.__speed
+                 or self.__slideSpeed
+                 or self.__rotationSpeed):
+-            distance = dt * self.__speed
++            # This vector is a thrust force for the physics integrator, which
++            # already multiplies by dt: scaling it by dt again made the ship's
++            # speed depend on the frame rate (~1 unit/s at 120 fps).
++            distance = self.__speed
+             goForward = True
+             if (distance < 0):
+                 goForward = False
+-            slideDistance = dt * self.__slideSpeed
++            slideDistance = self.__slideSpeed
+             rotation = dt * self.__rotationSpeed
+ 
+             # update pos:
+diff --git a/pirates/shipparts/DistributedBowSprit.py b/pirates/shipparts/DistributedBowSprit.py
+index b005cf1..2cfe01e 100644
+--- a/pirates/shipparts/DistributedBowSprit.py
++++ b/pirates/shipparts/DistributedBowSprit.py
+@@ -34,6 +34,9 @@ class DistributedBowSprit(DistributedShippart.DistributedShippart, DistributedDe
+         self.notify.debug('Announce Generate ' + str(self.doId))
+         DistributedShippart.DistributedShippart.announceGenerate(self)
+         DistributedDestructibleObject.DistributedDestructibleObject.announceGenerate(self)
++        self.whenLoaded(self.__setupLoadedBowSprit)
++
++    def __setupLoadedBowSprit(self):
+         if self.Hp <= 0:
+             self.prop.hideBreakAll()
+         else:
+@@ -50,10 +53,12 @@ class DistributedBowSprit(DistributedShippart.DistributedShippart, DistributedDe
+     def delete(self):
+         self.notify.debug('Delete ' + str(self.doId))
+         isRam = self.dna.prowIsRam(self.dna.prowType)
+-        if isRam:
++        if self.ship is None:
++            pass    # deleted while still waiting for its ship to arrive
++        elif isRam:
+             if self.ship.ram:
+                 self.ship.ram[1] = None
+-            
++
+         elif self.ship.bowsprit:
+             self.ship.bowsprit[1] = None
+         
+diff --git a/pirates/shipparts/DistributedCabin.py b/pirates/shipparts/DistributedCabin.py
+index d3be7be..9ac93f1 100644
+--- a/pirates/shipparts/DistributedCabin.py
++++ b/pirates/shipparts/DistributedCabin.py
+@@ -75,7 +75,7 @@ class DistributedCabin(DistributedShippart.DistributedShippart, DistributedDestr
+ 
+     def delete(self):
+         self.notify.debug('Delete ' + str(self.doId))
+-        if self.ship.cabin:
++        if self.ship is not None and self.ship.cabin:
+             self.ship.cabin[1] = None
+ 
+         del self.dna
+diff --git a/pirates/shipparts/DistributedHull.py b/pirates/shipparts/DistributedHull.py
+index ee81d74..c9f5891 100644
+--- a/pirates/shipparts/DistributedHull.py
++++ b/pirates/shipparts/DistributedHull.py
+@@ -87,6 +87,11 @@ class DistributedHull(DistributedShippart.DistributedShippart, DistributedDestru
+ 
+     def disable(self):
+         self.notify.debug('Disable ' + str(self.doId))
++        # a hull that leaves before its ship arrives must not have loadStats fire on it later
++        if self.pendingLoadStats:
++            base.cr.relatedObjectMgr.abortRequest(self.pendingLoadStats)
++            self.pendingLoadStats = None
++
+         DistributedShippart.DistributedShippart.disable(self)
+         DistributedDestructibleArray.DistributedDestructibleArray.disable(self)
+ 
+@@ -193,7 +198,8 @@ class DistributedHull(DistributedShippart.DistributedShippart, DistributedDestru
+             taskMgr.add(self.riggingConstraintTask, self.uniqueName('riggingConstraint'))
+ 
+     def loadStats(self, ship):
+-        if self.stats:
++        self.pendingLoadStats = None
++        if self.stats or getattr(self, 'dna', None) is None:
+             return
+ 
+         if not self.dna.shipClass:
+diff --git a/pirates/shipparts/DistributedMast.py b/pirates/shipparts/DistributedMast.py
+index 7d95c32..7cf82f8 100644
+--- a/pirates/shipparts/DistributedMast.py
++++ b/pirates/shipparts/DistributedMast.py
+@@ -38,7 +38,9 @@ class DistributedMast(DistributedShippart.DistributedShippart, DistributedDestru
+         self.notify.debug('Announce Generate ' + str(self.doId))
+         DistributedShippart.DistributedShippart.announceGenerate(self)
+         DistributedDestructibleArray.DistributedDestructibleArray.announceGenerate(self)
+-        breakPoint = -1
++        self.whenLoaded(self.__setupLoadedMast)
++
++    def __setupLoadedMast(self):
+         for i in range(len(self.arrayHp)):
+             if self.arrayHp[i] <= 0:
+                 for j in range(i, len(self.arrayHp)):
+@@ -72,7 +74,7 @@ class DistributedMast(DistributedShippart.DistributedShippart, DistributedDestru
+ 
+     def delete(self):
+         self.notify.debug('Delete ' + str(self.doId))
+-        if self.ship.masts.get(self.dna.posIndex, 0):
++        if self.ship is not None and self.ship.masts.get(self.dna.posIndex, 0):
+             self.ship.masts[self.dna.posIndex][1] = None
+         
+         del self.dna
+diff --git a/pirates/shipparts/DistributedSail.py b/pirates/shipparts/DistributedSail.py
+index 96d2443..1989c1e 100644
+--- a/pirates/shipparts/DistributedSail.py
++++ b/pirates/shipparts/DistributedSail.py
+@@ -43,6 +43,9 @@ class DistributedSail(DistributedShippart.DistributedShippart, DistributedDestru
+         self.notify.debug('Announce Generate ' + str(self.doId))
+         DistributedShippart.DistributedShippart.announceGenerate(self)
+         DistributedDestructibleObject.DistributedDestructibleObject.announceGenerate(self)
++        self.whenLoaded(self.__setupLoadedSail)
++
++    def __setupLoadedSail(self):
+         self.checkMastParentAlive()
+         self.updateSiegeTeam()
+     
+@@ -87,7 +90,8 @@ class DistributedSail(DistributedShippart.DistributedShippart, DistributedDestru
+ 
+     def delete(self):
+         self.notify.debug('Delete ' + str(self.doId))
+-        mast = self.ship.sails.get(self.dna.mastPosIndex)
++        # (no ship if the sail was deleted while still waiting for it to arrive)
++        mast = self.ship.sails.get(self.dna.mastPosIndex) if self.ship is not None else None
+         if mast:
+             sail = mast.get(self.dna.posIndex, 0)
+             if sail:
+diff --git a/pirates/shipparts/DistributedShipDecor.py b/pirates/shipparts/DistributedShipDecor.py
+index edb1c50..23e386c 100644
+--- a/pirates/shipparts/DistributedShipDecor.py
++++ b/pirates/shipparts/DistributedShipDecor.py
+@@ -34,6 +34,9 @@ class DistributedShipDecor(DistributedShippart.DistributedShippart, DistributedD
+         self.notify.debug('Announce Generate ' + str(self.doId))
+         DistributedShippart.DistributedShippart.announceGenerate(self)
+         DistributedDestructibleObject.DistributedDestructibleObject.announceGenerate(self)
++        self.whenLoaded(self.__setupLoadedDecor)
++
++    def __setupLoadedDecor(self):
+         if self.Hp <= 0:
+             self.prop.showBrokenState()
+     
+@@ -69,7 +72,7 @@ class DistributedShipDecor(DistributedShippart.DistributedShippart, DistributedD
+     
+     def delete(self):
+         self.notify.debug('Delete ' + str(self.doId))
+-        if self.ship.decors[self.decorIndex].get(self.dna.posIndex, 0):
++        if self.ship is not None and self.ship.decors[self.decorIndex].get(self.dna.posIndex, 0):
+             self.ship.decors[self.decorIndex][self.dna.posIndex][0].delete()
+             self.ship.decors[self.decorIndex][self.dna.posIndex][1] = None
+             del self.ship.decors[self.decorIndex][self.dna.posIndex]
+diff --git a/pirates/shipparts/DistributedShippart.py b/pirates/shipparts/DistributedShippart.py
+index 956d635..74b234d 100644
+--- a/pirates/shipparts/DistributedShippart.py
++++ b/pirates/shipparts/DistributedShippart.py
+@@ -17,6 +17,7 @@ class DistributedShippart(DistributedNode.DistributedNode):
+         self.classType = 0
+         self.lastZoneLevel = 0
+         self.ship = None
++        self._whenLoaded = []
+         self.geomParent = None
+         self.flash = None
+         self.sentReadyMessage = 0
+@@ -34,10 +35,39 @@ class DistributedShippart(DistributedNode.DistributedNode):
+     def announceGenerate(self):
+         DistributedNode.DistributedNode.announceGenerate(self)
+         #self.pendingShipRequest = base.cr.relatedObjectMgr.requestObjects([self.shipId], eachCallback=self.load)
+-        self.ship = self.cr.doId2do[self.shipId]
+-        self.load()
++        self.pendingShipRequest = None
++        self.ship = self.cr.doId2do.get(self.shipId)
++        if self.ship is not None:
++            self.load()
++        else:
++            # a part can arrive before its ship when interest opens next to other ships
++            # (seen arriving at Devil's Anvil); a KeyError here crashed the client
++            def shipArrived(ship):
++                self.pendingShipRequest = None
++                self.ship = ship
++                self.load()
++                waiting, self._whenLoaded = getattr(self, '_whenLoaded', []), []
++                for fn in waiting:
++                    fn()
++
++            self.pendingShipRequest = self.cr.relatedObjectMgr.requestObjects([self.shipId], eachCallback = shipArrived)
++
++    def whenLoaded(self, fn):
++        # Subclass set-up that needs self.ship / self.prop. While the part is
++        # still waiting for its ship (see announceGenerate) there is no prop
++        # yet, so the set-up waits too instead of crashing the client
++        # (DistributedMast 'NoneType has no mastsState', Tortuga 2026-09-22).
++        if getattr(self, 'pendingShipRequest', None) is None and self.prop is not None:
++            fn()
++        else:
++            self.__dict__.setdefault('_whenLoaded', []).append(fn)
+ 
+     def disable(self):
++        self._whenLoaded = []
++        if getattr(self, 'pendingShipRequest', None):
++            self.cr.relatedObjectMgr.abortRequest(self.pendingShipRequest)
++            self.pendingShipRequest = None
++
+         self.unload()
+         DistributedNode.DistributedNode.disable(self)
+ 
+diff --git a/pirates/shipparts/DistributedSteeringWheel.py b/pirates/shipparts/DistributedSteeringWheel.py
+index d991eee..bf1d8f3 100644
+--- a/pirates/shipparts/DistributedSteeringWheel.py
++++ b/pirates/shipparts/DistributedSteeringWheel.py
+@@ -26,6 +26,9 @@ class DistributedSteeringWheel(DistributedInteractive.DistributedInteractive, Di
+     def announceGenerate(self):
+         DistributedInteractive.DistributedInteractive.announceGenerate(self)
+         DistributedShippart.DistributedShippart.announceGenerate(self)
++        self.whenLoaded(self.__setupLoadedWheel)
++
++    def __setupLoadedWheel(self):
+         if self.proximityCollisionNodePath:
+             self.proximityCollisionNodePath.reparentTo(self.prop.propCollisions)
+ 
+@@ -110,12 +113,12 @@ class DistributedSteeringWheel(DistributedInteractive.DistributedInteractive, Di
+         self.ignore('shipSinking-' + str(self.shipId))
+ 
+     def enterUse(self):
+-        s = MiniLogSentry(self.ship.miniLog, 'SW.enterUse')
++        s = MiniLogSentry(self.ship.miniLog if self.ship else None, 'SW.enterUse')
+         DistributedInteractive.DistributedInteractive.enterUse(self)
+         self.accept('shipSinking-' + str(self.shipId), self.shipSinking)
+ 
+     def exitUse(self):
+-        s = MiniLogSentry(self.ship.miniLog, 'SW.exitUse')
++        s = MiniLogSentry(self.ship.miniLog if self.ship else None, 'SW.exitUse')
+         DistributedInteractive.DistributedInteractive.exitUse(self)
+         self.ignore('shipSinking-' + str(self.shipId))
+ 
+-- 
+2.53.0
+

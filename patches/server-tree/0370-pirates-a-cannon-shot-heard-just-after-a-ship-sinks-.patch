@@ -1,0 +1,35 @@
+From 5db1f46ea67efc29be554de069a454ef90115842 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 10:39:49 -0800
+Subject: [PATCH 370/371] pirates: a cannon shot heard just after a ship sinks
+ no longer closes the game (the sunk ship's cleanup runs Cannon.delete() on
+ its cannons, prop None, while the cannon objects still get shots; another
+ pirate's shot reached Cannon.playFireEffect, hNode.getH(None), TypeError, as
+ in MAIN50 at 10:31); Cannon.playAttack fires nothing when the cannon has no
+ model left, as server-tree patch 0454 (client patch 64, client code only, 1
+ file, no DC change, no restart)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/Cannon.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/pirates/battle/Cannon.py b/pirates/battle/Cannon.py
+index 9afeabf..950eb3e 100644
+--- a/pirates/battle/Cannon.py
++++ b/pirates/battle/Cannon.py
+@@ -263,6 +263,11 @@ class Cannon(ShipPart.ShipPart, NodePath):
+         return rope
+ 
+     def playAttack(self, skillId, ammoSkillId, projectileHitEvent, targetPos = None, wantCollisions = 0, flightTime = None, preciseHit = False, buffs = [], timestamp = None):
++        # a sunk ship's cleanup deletes its cannons' models (prop None) while the cannon
++        # objects still get shots: nothing left to fire from
++        if self.prop is None:
++            return
++
+         if base.cr.wantSpecialEffects != 0:
+             self.playFireEffect(ammoSkillId, buffs)
+         
+-- 
+2.53.0
+

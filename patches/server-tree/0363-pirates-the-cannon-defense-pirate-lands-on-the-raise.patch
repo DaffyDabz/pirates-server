@@ -1,0 +1,96 @@
+From d7f59eac50a90542ae6f200c1dbedf1ba7c938af Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 23:21:20 -0800
+Subject: [PATCH 363/371] pirates: the cannon defense pirate lands on the
+ raised cannon platform instead of falling into the sea (the defense world now
+ puts up the island's Cannon Defense platform, which this client never built),
+ as server-tree patch 0447 (client patch 60 = v503, client code only, no DC
+ change, no restart)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/DefendGlobals.py          |  4 ++++
+ pirates/minigame/DistributedDefendWorld.py | 24 ++++++++++++++++++++++
+ 2 files changed, 28 insertions(+)
+
+diff --git a/pirates/minigame/DefendGlobals.py b/pirates/minigame/DefendGlobals.py
+index 37e2011..d179c2e 100644
+--- a/pirates/minigame/DefendGlobals.py
++++ b/pirates/minigame/DefendGlobals.py
+@@ -28,6 +28,10 @@ CANNONS = (
+ CANNON_HPR = (270.0, 0.0, 0.0)
+ # where a pirate lands when he arrives: x, y, z, heading. Just behind the cannons.
+ SPAWN_PT = (537.4, -524.6, 155.5, 270.0)
++# the raised platform the cannons and the landing spot stand on: the island file's 'Cannon Defense' object. The island
++# model has no floor up there and this client never builds that object, so the world puts the platform up itself.
++PLATFORM_MODEL = 'models/buildings/pir_m_gam_can_cannonOverlay_portRoyal'
++PLATFORM_POS = (550.0, -525.0, 155.0)      # island-local, as in the island file
+ 
+ # --- the ships' sea roads, island-local x, y (the island file's own Spawn / Wait-Point / Mine / Depart nodes) ---
+ # each road: from the sea at the south, up to the gold pile (the node marked as the mine), then away to the east.
+diff --git a/pirates/minigame/DistributedDefendWorld.py b/pirates/minigame/DistributedDefendWorld.py
+index d7fd7c7..2736e81 100644
+--- a/pirates/minigame/DistributedDefendWorld.py
++++ b/pirates/minigame/DistributedDefendWorld.py
+@@ -57,6 +57,7 @@ class DistributedDefendWorld(DistributedInstanceWorld):
+         DistributedInstanceWorld.__init__(self, cr)
+         self.state = [DefendGlobals.PHASE_LOBBY, 0, 0, 0, 0, DefendGlobals.START_GOLD]
+         self.piles = []
++        self.platform = None
+         self.hudText = None
+         self.helpText = None
+         self.leaveButton = None
+@@ -71,6 +72,7 @@ class DistributedDefendWorld(DistributedInstanceWorld):
+ 
+     def announceGenerate(self):
+         DistributedInstanceWorld.announceGenerate(self)
++        self.makePlatform()
+         self.makePiles()
+         self.makeHud()
+         self.refresh()
+@@ -78,6 +80,7 @@ class DistributedDefendWorld(DistributedInstanceWorld):
+     def disable(self):
+         self.destroyHud()
+         self.removePiles()
++        self.removePlatform()
+         if self.shipVisibilitySet:
+             self.shipVisibilitySet = False
+             try:
+@@ -90,6 +93,7 @@ class DistributedDefendWorld(DistributedInstanceWorld):
+     def delete(self):
+         self.destroyHud()
+         self.removePiles()
++        self.removePlatform()
+         DistributedInstanceWorld.delete(self)
+ 
+     # --- what the world tells us ---
+@@ -105,6 +109,26 @@ class DistributedDefendWorld(DistributedInstanceWorld):
+     def leave(self):
+         self.sendUpdate('requestLeave')
+ 
++    # --- the platform under the cannons ---
++    def makePlatform(self):
++        """The cannons and the landing spot stand on a raised platform with a floor of its own (the island file's
++        'Cannon Defense' object, which this client does not build). Without it the pirate falls into the sea."""
++        self.removePlatform()
++        platform = loader.loadModel(DefendGlobals.PLATFORM_MODEL, okMissing=True)
++        if platform is None:
++            self.notify.warning('no cannon platform model %s' % DefendGlobals.PLATFORM_MODEL)
++            return
++
++        px, py, pz = DefendGlobals.PLATFORM_POS
++        platform.setPos(DefendGlobals.ISLAND_OFFSET[0] + px, DefendGlobals.ISLAND_OFFSET[1] + py, pz)
++        platform.reparentTo(self)
++        self.platform = platform
++
++    def removePlatform(self):
++        if self.platform is not None:
++            self.platform.removeNode()
++            self.platform = None
++
+     # --- the heaps of gold ---
+     def makePiles(self):
+         self.removePiles()
+-- 
+2.53.0
+

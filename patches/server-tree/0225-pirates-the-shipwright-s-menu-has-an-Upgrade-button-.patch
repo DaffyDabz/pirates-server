@@ -1,0 +1,161 @@
+From 8119f0c445302d9992610c7cbf37f3fd686ef0f3 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:47:20 -0800
+Subject: [PATCH 225/371] pirates: the shipwright's menu has an Upgrade button
+ and a ship picker for it (0264, patch 20)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/distributed/InteractGlobals.py   |  1 +
+ pirates/economy/DistributedShopKeeper.py | 66 +++++++++++++++++++++++-
+ pirates/npc/DistributedNPCTownfolk.py    |  6 ++-
+ pirates/piratesgui/ShipFrameShopping.py  |  6 +++
+ 4 files changed, 77 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/distributed/InteractGlobals.py b/pirates/distributed/InteractGlobals.py
+index 04cba36..f8d2dc6 100644
+--- a/pirates/distributed/InteractGlobals.py
++++ b/pirates/distributed/InteractGlobals.py
+@@ -148,6 +148,7 @@ __NPCInteractMenus = {
+         QUEST,
+         SHIPS,
+         REPAIR,
++        UPGRADE,
+         SELL_SHIPS,
+         BRIBE,
+         CANCEL]),
+diff --git a/pirates/economy/DistributedShopKeeper.py b/pirates/economy/DistributedShopKeeper.py
+index d2b0eba..9b2e3f3 100644
+--- a/pirates/economy/DistributedShopKeeper.py
++++ b/pirates/economy/DistributedShopKeeper.py
+@@ -217,7 +217,7 @@ class DistributedShopKeeper:
+         elif storeType == InteractGlobals.TRAIN:
+             pass
+         elif storeType == InteractGlobals.UPGRADE:
+-            pass
++            self.startUpgradeShip(storeType)
+         elif storeType == InteractGlobals.ACCESSORIES_STORE:
+             self.fadeIval = Sequence(Func(self.setTransparency, 1), self.colorScaleInterval(1.0, VBase4(1.0, 1.0, 1.0, 0.0)), Func(self.hide))
+             self.fadeIval.start()
+@@ -525,6 +525,70 @@ class DistributedShopKeeper:
+         
+         self.finishShopping()
+ 
++    def startUpgradeShip(self, storeType):
++        # patch 0264: the shipwright's Upgrade entry trades a ship in for the next one of its kind
++        self.pickShipGUI = ShipShoppingPanel(PLocalizer.UpgradeShip, doneCallback = self.confirmUpgradeShip, mode = 'upgrade')
++        for shipId in base.localAvatar.getInventory().getShipDoIdList():
++            self.pickShipGUI.addOwnShip(shipId, self.confirmUpgradeShip)
++
++    def _sailingLevel(self):
++        from pirates.reputation import ReputationGlobals
++        inventory = base.localAvatar.getInventory()
++        if not inventory:
++            return 0
++        return ReputationGlobals.getLevelFromTotalReputation(InventoryType.SailingRep, inventory.getAccumulator(InventoryType.SailingRep))[0]
++
++    def confirmUpgradeShip(self, shipId = None):
++        if not shipId:
++            return
++
++        shipOV = self.cr.getOwnerView(shipId)
++        if not shipOV:
++            return
++
++        if shipOV.state != 'Off':
++            base.localAvatar.guiMgr.createWarning(PLocalizer.ShipNotInBottleWarning, PiratesGuiGlobals.TextFG6)
++            return
++
++        upgrade = EconomyGlobals.getShipUpgrade(shipOV.shipClass)
++        if not upgrade:
++            base.localAvatar.guiMgr.createWarning(PLocalizer.UpgradeShipNoNext, PiratesGuiGlobals.TextFG6)
++            return
++
++        newClass, price = upgrade
++        names = {
++            'old': PLocalizer.ShipClassNames.get(shipOV.shipClass, ''),
++            'new': PLocalizer.ShipClassNames.get(newClass, ''),
++            'gold': price,
++            'level': EconomyGlobals.getItemMinLevel(newClass)}
++        if self._sailingLevel() < names['level']:
++            base.localAvatar.guiMgr.createWarning(PLocalizer.UpgradeShipLevelWarning % names, PiratesGuiGlobals.TextFG6)
++            return
++
++        if self._repairGold() < price:
++            base.localAvatar.guiMgr.createWarning(PLocalizer.UpgradeShipGoldWarning % names, PiratesGuiGlobals.TextFG6)
++            return
++
++        if self.confirmDialog:
++            self.confirmDialog.destroy()
++            self.confirmDialog = None
++
++        self.confirmDialog = PDialog.PDialog(text = PLocalizer.UpgradeShipConfirmDialog % names, style = OTPDialog.YesNo, command = Functor(self.sendRequestUpgradeShip, shipId))
++
++    def sendRequestUpgradeShip(self, shipId, choice):
++        if self.confirmDialog:
++            self.confirmDialog.destroy()
++            self.confirmDialog = None
++
++        if choice != 1:
++            return
++
++        self.sendUpdate('requestMakeSale', [[[EconomyGlobals.SHIP_UPGRADE_ITEM, shipId]], [], []])
++        if self.pickShipGUI:
++            self.pickShipGUI.hide()
++
++        self.finishShopping()
++
+     def startOverhaul(self, storeType):
+         self.pickShipGUI = ShipShoppingPanel(PLocalizer.ShipOverhaul, doneCallback = self.confirmOverhaulShip, mode = 'overhaul')
+         for shipId in base.localAvatar.getInventory().getShipDoIdList():
+diff --git a/pirates/npc/DistributedNPCTownfolk.py b/pirates/npc/DistributedNPCTownfolk.py
+index 7e412a1..be6a214 100644
+--- a/pirates/npc/DistributedNPCTownfolk.py
++++ b/pirates/npc/DistributedNPCTownfolk.py
+@@ -455,6 +455,7 @@ class DistributedNPCTownfolk(DistributedBattleNPC.DistributedBattleNPC, Distribu
+         shipButtonState = InteractGlobals.NORMAL
+         sellShipButtonState = InteractGlobals.NORMAL
+         repairButtonState = InteractGlobals.DISABLED
++        upgradeButtonState = InteractGlobals.DISABLED
+         healButtonState = InteractGlobals.DISABLED
+         healMojoButtonState = InteractGlobals.DISABLED
+         storeButtonState = InteractGlobals.DISABLED
+@@ -497,6 +498,9 @@ class DistributedNPCTownfolk(DistributedBattleNPC.DistributedBattleNPC, Distribu
+                 if ship:
+                     if ship.Hp < ship.maxHp:
+                         repairButtonState = InteractGlobals.NORMAL
++                    # patch 0264: Upgrade is lit when a ship can be traded up
++                    if EconomyGlobals.getShipUpgrade(ship.shipClass):
++                        upgradeButtonState = InteractGlobals.NORMAL
+ 
+             if inv.getTreasureMapsList():
+                 if sailButtonState == InteractGlobals.NORMAL:
+@@ -518,7 +522,7 @@ class DistributedNPCTownfolk(DistributedBattleNPC.DistributedBattleNPC, Distribu
+           InteractGlobals.SELL_SHIPS: sellShipButtonState,
+           InteractGlobals.TRAIN: InteractGlobals.DISABLED,
+           InteractGlobals.REPAIR: repairButtonState,
+-          InteractGlobals.UPGRADE: InteractGlobals.DISABLED,
++          InteractGlobals.UPGRADE: upgradeButtonState,
+           InteractGlobals.TRADE: InteractGlobals.DISABLED,
+           InteractGlobals.HEAL_HP: healButtonState,
+           InteractGlobals.HEAL_MOJO: healMojoButtonState,
+diff --git a/pirates/piratesgui/ShipFrameShopping.py b/pirates/piratesgui/ShipFrameShopping.py
+index d9f52e7..3a7b1a8 100644
+--- a/pirates/piratesgui/ShipFrameShopping.py
++++ b/pirates/piratesgui/ShipFrameShopping.py
+@@ -33,6 +33,12 @@ class ShipFrameShopping(ShipFrameSelect):
+             self.button['text'] = PLocalizer.InteractSellShips
+         elif self['mode'] == 'overhaul':
+             self.button['text'] = PLocalizer.InteractOverhaul
++        elif self['mode'] == 'upgrade':
++            # patch 0264: a ship with no bigger one after it cannot be traded up
++            from pirates.economy import EconomyGlobals
++            self.button['text'] = PLocalizer.InteractUpgrade
++            if not EconomyGlobals.getShipUpgrade(shipOV.shipClass):
++                self.button['state'] = DGG.DISABLED
+         
+ 
+ 
+-- 
+2.53.0
+

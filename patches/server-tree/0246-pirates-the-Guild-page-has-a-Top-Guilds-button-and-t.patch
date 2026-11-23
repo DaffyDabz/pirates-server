@@ -1,0 +1,173 @@
+From 1639a446f3ba17ff67df8d618c75b23c1f36cb71 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:58:05 -0800
+Subject: [PATCH 246/371] pirates: the Guild page has a Top Guilds button, and
+ the top ten panel works (0320, patch 22)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ otp/friends/GuildManager.py              |  5 ++-
+ pirates/piratesbase/PLocalizerEnglish.py |  5 +++
+ pirates/piratesgui/GuiManager.py         | 55 +++++++++++++++++++-----
+ pirates/piratesgui/GuildPage.py          | 17 +++++++-
+ 4 files changed, 70 insertions(+), 12 deletions(-)
+
+diff --git a/otp/friends/GuildManager.py b/otp/friends/GuildManager.py
+index 97e9892..fd7c0b9 100644
+--- a/otp/friends/GuildManager.py
++++ b/otp/friends/GuildManager.py
+@@ -219,7 +219,10 @@ class GuildManager(DistributedObjectGlobal):
+         messenger.send(OTPGlobals.GuildAcceptInviteEvent, [avatarId])
+ 
+     def leaderboardTopTen(self, stuff):
+-        base.localAvatar.guiMgr.handleTopTen(stuff)
++        # family server (0320): an answer that lands after logging out has no guiMgr to show it
++        guiMgr = getattr(getattr(base, 'localAvatar', None), 'guiMgr', None)
++        if guiMgr:
++            guiMgr.handleTopTen(stuff)
+     
+     def guildRejectInvite(self, avatarId, reason):
+         messenger.send(OTPGlobals.GuildRejectInviteEvent, [avatarId, reason])
+diff --git a/pirates/piratesbase/PLocalizerEnglish.py b/pirates/piratesbase/PLocalizerEnglish.py
+index ec8b08a..05095aa 100644
+--- a/pirates/piratesbase/PLocalizerEnglish.py
++++ b/pirates/piratesbase/PLocalizerEnglish.py
+@@ -4379,6 +4379,11 @@ GuildPageRevertGui = 'Guild Options'
+ GuildPageNameGuild = 'Request Name'
+ GuildPageShowMembers = 'Show Members'
+ GuildCodeOptions = 'Invitation Options'
++GuildPageTopGuilds = 'Top Guilds'
++GuildTopTenTitle = 'Top Guilds'
++GuildTopTenMembers = '%d pirates'
++GuildTopTenOneMember = '1 pirate'
++GuildTopTenEmpty = 'No guilds yet.\nStart one with Create Guild!'
+ GuildDefaultName = 'Pirate Guild %d'
+ GuildNoGuild = 'No Guild'
+ GuildAskLeave = 'Leave Guild?'
+diff --git a/pirates/piratesgui/GuiManager.py b/pirates/piratesgui/GuiManager.py
+index 9898cd6..0971e0d 100644
+--- a/pirates/piratesgui/GuiManager.py
++++ b/pirates/piratesgui/GuiManager.py
+@@ -420,7 +420,7 @@ class GuiManager(FSM.FSM):
+         self.targetStatusTray.destroy()
+         self.deleteLevelUpText()
+         taskMgr.remove('hidePirateCode')
+-        taskMgr.remove('clearTopTen')
++        self.dismissTopTen()
+         taskMgr.remove('titles-refresh')
+         taskMgr.remove('clearWarning')
+         taskMgr.remove('clearTitle')
+@@ -777,17 +777,52 @@ class GuiManager(FSM.FSM):
+         return None
+ 
+     def handleTopTen(self, stuff):
+-        self.topTen = DirectFrame(parent = aspect2d, relief = DGG.FLAT, frameSize = (-0.8, 0.8, -0.7, 0.6), frameColor = PiratesGuiGlobals.FrameColor, pos = (0, 0, 0), text = 'Reputation Top Ten', text_align = TextNode.ACenter, text_scale = 0.04, text_fg = (0.9, 1, 0.9, 1), text_pos = (0, 0.5, 0))
+-        count = len(stuff)
+-        for person in stuff:
+-            slot = DirectFrame(parent = self.topTen, relief = DGG.FLAT, frameSize = (-0.5, 0.5, -0.035, 0.045), frameColor = (1, 1, 1, 1), pos = (0, 0, 0.5 + -0.1 * count), text = '%10d    %s' % (person[2], person[1]), text_scale = 0.04)
+-            count -= 1
++        # family server (0320): the guild top ten (Top Guilds on the Guild page, or ~topten). The biggest guild is
++        # on top, your own guild is gold, a second open replaces the first, and no guilds says so.
++        self.dismissTopTen()
++        rows = list(stuff)[:10]
++        self.topTen = DirectFrame(parent = aspect2d, relief = DGG.FLAT, state = DGG.NORMAL, sortOrder = 50, frameSize = (-0.62, 0.62, -0.66, 0.62), frameColor = (0.15, 0.12, 0.09, 0.92), pos = (0, 0, 0), text = PLocalizer.GuildTopTenTitle, text_align = TextNode.ACenter, text_scale = PiratesGuiGlobals.TextScaleTitleSmall, text_fg = PiratesGuiGlobals.TextFG1, text_shadow = PiratesGuiGlobals.TextShadow, text_font = PiratesGlobals.getPirateOutlineFont(), text_pos = (0, 0.5))
++        myGuildId = 0
++        try:
++            myGuildId = base.localAvatar.getGuildId()
++        except AttributeError:
++            pass
++
++        if not rows:
++            DirectLabel(parent = self.topTen, relief = None, text = PLocalizer.GuildTopTenEmpty, text_align = TextNode.ACenter, text_scale = PiratesGuiGlobals.TextScaleExtraLarge, text_fg = PiratesGuiGlobals.TextFG2, text_shadow = PiratesGuiGlobals.TextShadow, pos = (0, 0, 0.05))
+ 
+-        taskMgr.doMethodLater(15.0, self.dismissTopTen, 'clearTopTen')
++        for (index, record) in enumerate(rows):
++            (guildId, name, count) = (record[0], record[1], record[2])
++            if len(name) > 24:
++                name = name[:22] + '...'
++
++            if count == 1:
++                countText = PLocalizer.GuildTopTenOneMember
++            else:
++                countText = PLocalizer.GuildTopTenMembers % count
++            if guildId and guildId == myGuildId:
++                fg = PiratesGuiGlobals.TextFG11
++                barColor = (0.45, 0.32, 0.08, 0.95)
++            else:
++                fg = PiratesGuiGlobals.TextFG2
++                barColor = ((0.3, 0.26, 0.2, 0.9), (0.24, 0.2, 0.15, 0.9))[index % 2]
++            row = DirectFrame(parent = self.topTen, relief = DGG.FLAT, frameSize = (-0.55, 0.55, -0.03, 0.055), frameColor = barColor, pos = (0, 0, 0.39 - 0.092 * index))
++            DirectLabel(parent = row, relief = None, text = '%d.' % (index + 1), text_align = TextNode.ARight, text_scale = 0.045, text_fg = fg, text_shadow = PiratesGuiGlobals.TextShadow, pos = (-0.43, 0, 0))
++            DirectLabel(parent = row, relief = None, text = name, text_align = TextNode.ALeft, text_scale = 0.045, text_fg = fg, text_shadow = PiratesGuiGlobals.TextShadow, pos = (-0.39, 0, 0))
++            DirectLabel(parent = row, relief = None, text = countText, text_align = TextNode.ARight, text_scale = 0.04, text_fg = fg, text_shadow = PiratesGuiGlobals.TextShadow, pos = (0.52, 0, 0))
++
++        DirectButton(parent = self.topTen, relief = DGG.FLAT, frameSize = (-0.13, 0.13, -0.035, 0.06), frameColor = (0.35, 0.3, 0.22, 1), text = PLocalizer.lClose, text_scale = 0.045, text0_fg = PiratesGuiGlobals.TextFG2, text2_fg = PiratesGuiGlobals.TextFG1, text_shadow = PiratesGuiGlobals.TextShadow, pos = (0, 0, -0.585), command = self.dismissTopTen)
++        taskMgr.doMethodLater(30.0, self.dismissTopTen, 'clearTopTen')
++
++    def dismissTopTen(self, task = None):
++        taskMgr.remove('clearTopTen')
++        topTen = getattr(self, 'topTen', None)
++        self.topTen = None
++        if topTen:
++            topTen.destroy()
+ 
+-    def dismissTopTen(self, task):
+-        self.topTen.hide()
+-        self.topTen.destroy()
++        if task is not None:
++            return task.done
+ 
+     def handleClickedNametag(self, avatar):
+         return self.handleAvatarDetails(avatar.getDoId())
+diff --git a/pirates/piratesgui/GuildPage.py b/pirates/piratesgui/GuildPage.py
+index dde21e4..854a0d1 100644
+--- a/pirates/piratesgui/GuildPage.py
++++ b/pirates/piratesgui/GuildPage.py
+@@ -37,6 +37,8 @@ class GuildPage(SocialPage.SocialPage):
+         self.redeemInvite = 0
+         self.manageInvite = 0
+         self.codeInviteOptions = 0
++        self.topTenButton = 0
++        self.topTenAskedAt = -10.0
+         self.aboutTokenManagement = 0
+         self.clearPermToken = 0
+         self.clearLimitedUseToken = 0
+@@ -56,7 +58,9 @@ class GuildPage(SocialPage.SocialPage):
+         self.membersList = PirateMemberList.PirateMemberList(5, self.membersFrame, 'FOOLIO HC', height = 0.5475, memberHeight = 0.1, memberWidth = 0.48, memberOffset = 0.055)
+         self.membersList.setPos(0.001, 0.0, 0.123)
+         self.mainChain = PirateButtonChain.PirateButtonChain(0.49, self.mainFrame, True)
+-        self.mainChain.setPos(-0.012, 0.0, 0.045)
++        # family server (0320): 8 buttons (Top Guilds added) fit where the 7 were when the list is drawn at 7/8 size
++        self.mainChain.setPos(0.019, 0.0, 0.045)
++        self.mainChain.baseFrame.setScale(0.875)
+         self.memberChain = PirateButtonChain.PirateButtonChain(0.49, self.membersFrame, True)
+         self.memberChain.setPos(-0.012, 0.0, 0.045)
+         self.membersFrame.hide()
+@@ -133,6 +137,9 @@ class GuildPage(SocialPage.SocialPage):
+         
+         if not self.codeInviteOptions:
+             self.codeInviteOptions = self.mainChain.premakeButton(PLocalizer.GuildCodeOptions, self.b_codeInviteOptions)
++
++        if not self.topTenButton:
++            self.topTenButton = self.mainChain.premakeButton(PLocalizer.GuildPageTopGuilds, self.showTopGuilds)
+         
+         self.mainChain.makeButtons()
+         self.determineButtonState()
+@@ -420,6 +427,14 @@ class GuildPage(SocialPage.SocialPage):
+     def load(self):
+         pass
+ 
++    def showTopGuilds(self):
++        # family server (0320): the guild top ten, which only the ~topten magic word opened before
++        now = globalClock.getFrameTime()
++        if now - self.topTenAskedAt < 2.0:
++            return
++        self.topTenAskedAt = now
++        base.cr.guildManager.requestLeaderboardTopTen()
++
+     def notifyTokenGeneratorOfRedeem(self, redeemerName):
+         msg = PLocalizer.GuildNotifyTokenCreatorOfRedeem % redeemerName
+         base.localAvatar.guiMgr.messageStack.addTextMessage(msg, seconds = 15, priority = 0, color = (0.5, 0.0, 0, 1), icon = ('friends', ''))
+-- 
+2.53.0
+

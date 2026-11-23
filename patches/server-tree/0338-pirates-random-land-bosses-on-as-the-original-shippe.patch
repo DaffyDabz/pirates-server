@@ -1,0 +1,37 @@
+From fe35c73ea5e69f8e4cde94a47557df01e8cf29bf Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 23:58:35 -0800
+Subject: [PATCH 338/371] pirates: random land bosses on, as the original
+ shipped (bulbs gap 5, AI only)
+
+The enemy spawner's own default is on (DistributedEnemySpawnerAI: config.GetBool('want-random-bosses', True)); only
+the fan repo's config/dev.prc set it off. dev.prc line 23 #f -> #t. The AI loads general.prc, dev.prc, server.prc
+(server-ctl passes no config list) and nothing else sets the flag, so the AI now sees it on. A spawned land enemy has
+a small chance to come up as the named boss of its kind (bigger, tougher, name over its head); same enemy slots, so
+no extra enemies.
+
+AI restart only; no UberDOG, no client publish (the client never reads the flag). Tests: test_random_bosses.py live
+FAIL (AI sees False) -> patched PASS; sim_bosses.py (the spawner's own pick code, 20,060 draws): off 0 bosses, on 156
+(0.78%) across 34 kinds, 37 boss types all build, PASS.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ config/dev.prc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/config/dev.prc b/config/dev.prc
+index 11ff88a..0563958 100644
+--- a/config/dev.prc
++++ b/config/dev.prc
+@@ -20,7 +20,7 @@ cache-quest-step #t
+ want-townfolk #t
+ want-enemies #t
+ want-animals #t
+-want-random-bosses #f
++want-random-bosses #t
+ 
+ # Hotkeys:
+ want-dev-hotkeys #f
+-- 
+2.53.0
+

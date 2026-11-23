@@ -1,0 +1,195 @@
+From 2e1e9a0684de522cf0c5a69cd012df08336771c7 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 20:30:12 -0800
+Subject: [PATCH 358/371] ship loader: a ship bought while his other ships load
+ can no longer lock the pirate's loader (0442)
+
+Astron's DBStateServer gives no answer to "is it up?" while the object is still loading
+(handle_get_activated returns early). A ship bought while the pirate's other ships were
+activating asked at that moment; the UberDOG job waited for good, every later ship job for
+that pirate queued behind it, and the AI job waiting on the UberDOG held the loader (no ship
+at the dock, shipwright busy) until a restart. Live 11-21 20:11 (Player2) and 20:14 (Player1).
+
+- UberDOG: ask again every 2 s until an answer comes; then() runs once; each job ends as
+  failed after 60 s; cleanup runs once and removes avatar2fsm only if it is still that job;
+  a ship with no parts ends its job.
+- AI: each job ends as failed after 90 s; cleanup runs once, same guard; a late
+  createShipResponse is ignored unless the running job is a CreateShipFSM.
+
+Boats lane; sim_shiploader.py: live 1 PASS / 5 FAIL, patched 6 PASS. No DC or client change;
+AI + UberDOG restart.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/DistributedShipLoaderAI.py | 28 ++++++++++++-
+ pirates/uberdog/DistributedShipLoaderUD.py | 47 +++++++++++++++++++++-
+ 2 files changed, 73 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/uberdog/DistributedShipLoaderAI.py b/pirates/uberdog/DistributedShipLoaderAI.py
+index 31284a0..360ccfd 100644
+--- a/pirates/uberdog/DistributedShipLoaderAI.py
++++ b/pirates/uberdog/DistributedShipLoaderAI.py
+@@ -1,12 +1,17 @@
+ from direct.distributed.DistributedObjectGlobalAI import DistributedObjectGlobalAI
+ from direct.directnotify import DirectNotifyGlobal
+ from direct.fsm.FSM import FSM
++from direct.task.TaskManagerGlobal import taskMgr
+ 
+ from pirates.ship import ShipGlobals
+ 
+ 
+ class ShipLoaderOperationFSM(FSM):
+     notify = DirectNotifyGlobal.directNotify.newCategory('ShipLoaderOperationFSM')
++    # family server (11-21): a job with no answer from the UberDOG after this long is ended as failed. Before, a ship
++    # job whose answer never came held the pirate's loader for good: no ship at his dock and the shipwright said
++    # busy until a restart. Longer than the UberDOG's own 60 s limit, so its answer normally comes first.
++    TIMEOUT = 90.0
+ 
+     def __init__(self, air, avatar, callback=None):
+         FSM.__init__(self, self.__class__.__name__)
+@@ -14,6 +19,15 @@ class ShipLoaderOperationFSM(FSM):
+         self.air = air
+         self.avatar = avatar
+         self.callback = callback
++        self.done = False
++        self.timeoutTaskName = 'shipLoaderTimeoutAI-%d-%d' % (avatar.doId, id(self))
++        taskMgr.doMethodLater(self.TIMEOUT, self._timedOut, self.timeoutTaskName)
++
++    def _timedOut(self, task):
++        self.notify.warning('%s for avatar %d got no answer in %d s, ended as failed' % (
++            self.__class__.__name__, self.avatar.doId, self.TIMEOUT))
++        self.cleanup(0)
++        return task.done
+ 
+     def enterOff(self):
+         pass
+@@ -34,7 +48,13 @@ class ShipLoaderOperationFSM(FSM):
+         pass
+ 
+     def cleanup(self, *args, **kwargs):
+-        del self.air.shipLoader.avatar2fsm[self.avatar.doId]
++        # family server (11-21): a job ends once; an answer after the time limit ended it does nothing
++        if self.done:
++            return
++        self.done = True
++        taskMgr.remove(self.timeoutTaskName)
++        if self.air.shipLoader.avatar2fsm.get(self.avatar.doId) is self:
++            del self.air.shipLoader.avatar2fsm[self.avatar.doId]
+         self.ignoreAll()
+         self.demand('Off')
+ 
+@@ -184,6 +204,12 @@ class DistributedShipLoaderAI(DistributedObjectGlobalAI):
+         if not fsm:
+             return
+ 
++        if not isinstance(fsm, CreateShipFSM):
++            # family server (11-21): a late answer for a buy the time limit ended; the job running now is another one
++            self.notify.warning('late ship create answer for avatar %d ignored (%s running)' % (
++                avatarId, fsm.__class__.__name__))
++            return
++
+         if not shipId:
+             self.notify.warning('Failed to create ship for avatar %d!' % avatarId)
+             fsm.cleanup(0)
+diff --git a/pirates/uberdog/DistributedShipLoaderUD.py b/pirates/uberdog/DistributedShipLoaderUD.py
+index 7106dc9..ea78f41 100644
+--- a/pirates/uberdog/DistributedShipLoaderUD.py
++++ b/pirates/uberdog/DistributedShipLoaderUD.py
+@@ -3,6 +3,7 @@ from direct.directnotify import DirectNotifyGlobal
+ from direct.fsm.FSM import FSM
+ from otp.distributed.MsgTypes import *
+ from direct.distributed.PyDatagram import PyDatagram
++from direct.task.TaskManagerGlobal import taskMgr
+ 
+ from pirates.ship import ShipGlobals
+ from pirates.shipparts.HullDNA import HullDNA
+@@ -13,6 +14,11 @@ from pirates.uberdog.UberDogGlobals import InventoryCategory
+ 
+ class ShipLoaderOperationFSM(FSM):
+     notify = DirectNotifyGlobal.directNotify.newCategory('ShipLoaderOperationFSM')
++    # family server (11-21): a job still running after this long is ended as failed, so the jobs waiting behind it
++    # for the same pirate run. Before, one job that never ended held every later ship of his until a restart.
++    TIMEOUT = 60.0
++    # seconds between asks when "is it up?" got no answer (see activateUnlessUp)
++    ASK_AGAIN = 2.0
+ 
+     def __init__(self, air, avatarId, callback=None):
+         FSM.__init__(self, self.__class__.__name__)
+@@ -20,6 +26,15 @@ class ShipLoaderOperationFSM(FSM):
+         self.air = air
+         self.avatarId = avatarId
+         self.callback = callback
++        self.done = False
++        self.timeoutTaskName = 'shipLoaderTimeout-%d-%d' % (avatarId, id(self))
++        taskMgr.doMethodLater(self.TIMEOUT, self._timedOut, self.timeoutTaskName)
++
++    def _timedOut(self, task):
++        self.notify.warning('%s for avatar %d did not end in %d s, ended as failed' % (
++            self.__class__.__name__, self.avatarId, self.TIMEOUT))
++        self.cleanup(0)
++        return task.done
+ 
+     def enterOff(self):
+         pass
+@@ -34,7 +49,14 @@ class ShipLoaderOperationFSM(FSM):
+         pass
+ 
+     def cleanup(self, *args, **kwargs):
+-        del self.air.shipLoader.avatar2fsm[self.avatarId]
++        # family server (11-21): a job ends once; a step that answers after the time limit ended it does nothing,
++        # and never ends the next job for that pirate in its place
++        if self.done:
++            return
++        self.done = True
++        taskMgr.remove(self.timeoutTaskName)
++        if self.air.shipLoader.avatar2fsm.get(self.avatarId) is self:
++            del self.air.shipLoader.avatar2fsm[self.avatarId]
+         self.ignoreAll()
+         self.demand('Off')
+ 
+@@ -352,6 +374,10 @@ class ActivateShipFSM(ShipLoaderOperationFSM):
+             if category == InventoryCategory.SHIP_MAINPARTS:
+                 self.loadShippart(shippartDoId)
+ 
++        # family server (11-21): a ship with no parts listed is up already; the job ended only by the time limit
++        if not self.pendingShipparts:
++            self.cleanup(True)
++
+     def loadShippart(self, shippartDoId):
+         self.pendingShipparts.append(shippartDoId)
+         self.air.dbInterface.queryObject(self.air.dbId,
+@@ -402,12 +428,31 @@ class ActivateShipFSM(ShipLoaderOperationFSM):
+         # sendActivate chases it with a move to (0, 0), and the state server then drops the AI from the ship
+         # without telling it. The AI keeps a dead copy, reuses it at the next launch and the ship has no steering
+         # wheel. A ship or part that is still up is left where it is; only the owner steps run.
++        # family server (11-21): Astron's database state server gives no answer at all to "is it up?" while the object
++        # is still loading (DBStateServer::handle_get_activated returns early). A ship bought while his other ships
++        # were activating asked at that moment, its job waited for good, and every later ship job for that pirate
++        # with it: no ship came to his dock and the shipwright said busy until a restart. Ask again until an answer
++        # comes; the job's time limit ends it if none ever does.
++        answered = []
++        askTaskName = 'shipLoaderAskUp-%d-%d' % (doId, id(self))
++
+         def _gotActivated(doId, activated):
++            if answered or self.done:
++                return
++            answered.append(activated)
++            taskMgr.remove(askTaskName)
+             if not activated:
+                 self.air.sendActivate(doId, 0, 0, dclass, fields)
+             then()
+ 
++        def _askAgain(task):
++            if answered or self.done:
++                return task.done
++            self.air.getActivated(doId, _gotActivated)
++            return task.again
++
+         self.air.getActivated(doId, _gotActivated)
++        taskMgr.doMethodLater(self.ASK_AGAIN, _askAgain, askTaskName)
+ 
+     def setOwnerAgain(self, doId, channel):
+         # family server (11-20): a pirate who goes back to the pirate chooser and picks the same pirate again comes
+-- 
+2.53.0
+

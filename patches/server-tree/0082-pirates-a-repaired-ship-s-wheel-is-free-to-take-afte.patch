@@ -1,0 +1,57 @@
+From 4cde8de15aff34d978d831ed738fb1a117dcb66d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:07:28 -0800
+Subject: [PATCH 082/371] pirates: a repaired ship's wheel is free to take
+ after it sank, with TEMP-DIAG lines for boarding and the wheel, as
+ server-tree patch 0096 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShipAI.py               | 8 ++++++++
+ pirates/shipparts/DistributedSteeringWheelAI.py | 4 ++++
+ 2 files changed, 12 insertions(+)
+
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index 7340784..f9090b4 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -531,6 +531,9 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+ 
+     def handleChildArrive(self, childObj, zoneId):
+         if isinstance(childObj, DistributedPlayerPirateAI):
++            # TEMP-DIAG (2026-11-17): crew stayed [] after a relaunch
++            self.notify.warning('TEMP-DIAG ship %s: pirate %s boarded zone %s state %s' % (
++                self.doId, childObj.doId, zoneId, self.gameState[0] if self.gameState else None))
+             self._playerBoarded(childObj)
+ 
+             # this will parent the avatar object to the ship so that
+@@ -1084,6 +1087,11 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         if self.getClientController():
+             self.b_setClientController(0)
+ 
++        # the wheel kept the sunk captain as its user, so after the repair and
++        # relaunch nobody could take it (2026-11-17, SAIL1)
++        if self.steeringWheel and self.steeringWheel.userId:
++            self.steeringWheel.b_setUserId(0)
++
+         self.b_setGameState('Sunk', 0)
+         self.b_setLocation(self.parentId, 0)
+         self.notify.warning('sunk ship %s: put away sunk, a shipwright can repair it' % self.doId)
+diff --git a/pirates/shipparts/DistributedSteeringWheelAI.py b/pirates/shipparts/DistributedSteeringWheelAI.py
+index abb2a4a..a926b86 100644
+--- a/pirates/shipparts/DistributedSteeringWheelAI.py
++++ b/pirates/shipparts/DistributedSteeringWheelAI.py
+@@ -20,6 +20,10 @@ class DistributedSteeringWheelAI(DistributedInteractiveAI, DistributedShippartAI
+         assert(self.ship is not None)
+ 
+     def handleRequestInteraction(self, avatar, interactType, instant):
++        # TEMP-DIAG (2026-11-17): after a sunk ship's relaunch nobody took the wheel
++        self.notify.warning('TEMP-DIAG wheel %s ship %s: pirate %s asks, captain %s, user %s, state %s' % (
++            self.doId, self.ship.doId, avatar.doId, self.ship.captainId, self.userId,
++            self.ship.gameState[0] if self.ship.gameState else None))
+         if avatar.doId != self.ship.captainId and self.userId > 0:
+             return self.DENY
+ 
+-- 
+2.53.0
+

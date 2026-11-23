@@ -1,0 +1,100 @@
+From 4497d1a7e0ffb67aa05aa0c53bd3602a7cc99950 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:47:19 -0800
+Subject: [PATCH 214/371] pirates: the Sea Battle's siege manager can switch
+ PvP, team joining, island regen and repair spots live (0290)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pvp/SiegeManagerAI.py | 46 +++++++++++++++++++++++++++++++++--
+ 1 file changed, 44 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/pvp/SiegeManagerAI.py b/pirates/pvp/SiegeManagerAI.py
+index 3dad374..6836189 100644
+--- a/pirates/pvp/SiegeManagerAI.py
++++ b/pirates/pvp/SiegeManagerAI.py
+@@ -16,18 +16,39 @@ class SiegeManagerAI(DistributedObjectAI):
+         self.useRepairSpots = False
+         self.useRepairKit = False
+ 
+-    # ---- required fields
++    # ---- required fields (family server 11-19, 0290: the d_/b_ setters send a change to every client, so the
++    # Sea Battle can say which teams have room and call a truce while the district runs)
+     def getPvpEnabled(self):
+         return self.pvpEnabled
+ 
+     def setPvpEnabled(self, enabled):
+         self.pvpEnabled = bool(enabled)
+ 
++    def d_setPvpEnabled(self, enabled):
++        self.sendUpdate('setPvpEnabled', [bool(enabled)])
++
++    def b_setPvpEnabled(self, enabled):
++        self.setPvpEnabled(enabled)
++        self.d_setPvpEnabled(enabled)
++
+     def getTeamsJoinable(self):
+         return self.teamsJoinable
+ 
+     def setTeamsJoinable(self, teamsJoinable):
+-        self.teamsJoinable = teamsJoinable
++        self.teamsJoinable = [[int(team), bool(joinable)] for team, joinable in teamsJoinable]
++
++    def d_setTeamsJoinable(self, teamsJoinable):
++        self.sendUpdate('setTeamsJoinable', [teamsJoinable])
++
++    def b_setTeamsJoinable(self, teamsJoinable):
++        self.setTeamsJoinable(teamsJoinable)
++        self.d_setTeamsJoinable(self.teamsJoinable)
++
++    def isTeamJoinable(self, team):
++        for teamId, joinable in self.teamsJoinable:
++            if teamId == team:
++                return joinable
++        return True
+ 
+     def getUseIslandRegen(self):
+         return self.useIslandRegen
+@@ -35,18 +56,39 @@ class SiegeManagerAI(DistributedObjectAI):
+     def setUseIslandRegen(self, value):
+         self.useIslandRegen = bool(value)
+ 
++    def d_setUseIslandRegen(self, value):
++        self.sendUpdate('setUseIslandRegen', [bool(value)])
++
++    def b_setUseIslandRegen(self, value):
++        self.setUseIslandRegen(value)
++        self.d_setUseIslandRegen(value)
++
+     def getUseRepairSpots(self):
+         return self.useRepairSpots
+ 
+     def setUseRepairSpots(self, value):
+         self.useRepairSpots = bool(value)
+ 
++    def d_setUseRepairSpots(self, value):
++        self.sendUpdate('setUseRepairSpots', [bool(value)])
++
++    def b_setUseRepairSpots(self, value):
++        self.setUseRepairSpots(value)
++        self.d_setUseRepairSpots(value)
++
+     def getUseRepairKit(self):
+         return self.useRepairKit
+ 
+     def setUseRepairKit(self, value):
+         self.useRepairKit = bool(value)
+ 
++    def d_setUseRepairKit(self, value):
++        self.sendUpdate('setUseRepairKit', [bool(value)])
++
++    def b_setUseRepairKit(self, value):
++        self.setUseRepairKit(value)
++        self.d_setUseRepairKit(value)
++
+     # ---- team chat from a pirate on a Sea Battle team
+     def _sender(self):
+         avId = self.air.getAvatarIdFromSender()
+-- 
+2.53.0
+

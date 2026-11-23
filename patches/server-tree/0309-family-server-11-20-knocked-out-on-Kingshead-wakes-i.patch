@@ -1,0 +1,77 @@
+From 27248f85b584777534051b1f59d6da29599b1ff8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 309/371] family server (11-20): knocked out on Kingshead wakes
+ in a jail cell, Garrett's and Doctor Grog's back doors are locked, and the
+ Rumrunner's Isle cellar door is at its doorway (0393)
+
+Server: Kingshead's jail has no cells, so a pirate knocked out there lay knocked out forever (Player2 17:11, "no cell
+were doors found"); he now goes to his home port's jail, else Port Royal's. The two back doors with no inside back
+door closed the game when clicked. The cellar's inside door stood at the room's middle point.
+Lane: places. Tests: test_jail_no_cells.py, test_backdoor_locked.py, test_cellar_door.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/PlayerPirateGameFSMAI.py | 10 ++++++++--
+ pirates/world/GameAreaBuilderAI.py      |  9 ++++++++-
+ 2 files changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/pirate/PlayerPirateGameFSMAI.py b/pirates/pirate/PlayerPirateGameFSMAI.py
+index 41ec560..f40b3a1 100644
+--- a/pirates/pirate/PlayerPirateGameFSMAI.py
++++ b/pirates/pirate/PlayerPirateGameFSMAI.py
+@@ -158,16 +158,22 @@ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+         # from one port town to another island: assert(island is not None) failed, setGameState swallowed it and he
+         # lay dead at 0 hp for good. Try the area he died in, the island he is on (a cave or a camp has no jail),
+         # his return port, then Port Royal.
+-        if isinstance(parentObj, DistributedGameAreaAI) and parentObj.getJailInterior():
++        # family server (11-20): a jail with no cells is skipped too. Kingshead's jail room is an empty file, so a
++        # pirate knocked out on Kingshead found no cell and lay at 0 hp for good (Player2, 11-20 17:11); he now wakes
++        # in his return port's jail, or Port Royal's.
++        if isinstance(parentObj, DistributedGameAreaAI) and self._jailHasCells(parentObj.getJailInterior()):
+             return parentObj.getJailInterior()
+ 
+         for uid in (self.avatar.getCurrentIsland(), self.avatar.getReturnLocation(), LocationIds.PORT_ROYAL_ISLAND):
+             island = self.air.uidMgr.justGetMeMeObject(uid) if uid else None
+-            if isinstance(island, DistributedGameAreaAI) and island.getJailInterior():
++            if isinstance(island, DistributedGameAreaAI) and self._jailHasCells(island.getJailInterior()):
+                 return island.getJailInterior()
+ 
+         return None
+ 
++    def _jailHasCells(self, jail):
++        return jail is not None and bool(getattr(jail, 'cellDoors', None))
++
+     def exitDeath(self):
+         pass
+ 
+diff --git a/pirates/world/GameAreaBuilderAI.py b/pirates/world/GameAreaBuilderAI.py
+index beb43ed..1bc3309 100644
+--- a/pirates/world/GameAreaBuilderAI.py
++++ b/pirates/world/GameAreaBuilderAI.py
+@@ -153,6 +153,9 @@ class GameAreaBuilderAI(ClientAreaBuilderAI):
+         'interior_shanty_guildhall': [((-3.4, -32.4, 0.0), 0.0)],
+         'interior_storage': [((-58.868, 0.406, 0.0), -90.0)],
+         'navy_jail_interior': [((50.086, -39.78, 10.921), 0.0)],
++        # family server (11-20): Rumrunner's Isle cellar; its door is in no file at all, so it stood at the
++        # room's origin (the model's door_locator is here)
++        'interior_shanty_cellar': [((6.856, -20.554, 0.0), -90.0)],
+     }
+ 
+     def addMissingInteriorDoors(self, interior, interiorFile, modelPath):
+@@ -171,7 +174,11 @@ class GameAreaBuilderAI(ClientAreaBuilderAI):
+                 continue
+ 
+             if index == 1 and (len(spots) < 2 or not interior.getInteriorFrontDoor()):
+-                self.notify.info('Room %s has no second inside door spot; its back door stays shut.' % interiorFile)
++                # family server (11-20): lock it, so the game never offers to open it. Refusing the click was not
++                # enough: the game fades out and asks for the room before the refusal arrives, then looks for a
++                # back door spot the room does not have and closes (Garrett's on Padres, Doctor Grog's on Tortuga).
++                exteriorDoor.b_setLocked(1)
++                self.notify.info('Room %s has no second inside door spot; its back door is locked.' % interiorFile)
+                 continue
+ 
+             # an inside door the file made without an outside partner was never generated; replace it
+-- 
+2.53.0
+

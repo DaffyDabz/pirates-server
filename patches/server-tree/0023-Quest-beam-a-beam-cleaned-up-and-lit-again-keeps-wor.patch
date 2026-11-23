@@ -1,0 +1,50 @@
+From c8a976f986ae3b3ac1e606198c7c0abc551951e8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 16:32:03 -0800
+Subject: [PATCH 023/371] Quest beam: a beam cleaned up and lit again keeps
+ working
+
+cleanUpEffect (90147ac) takes the beam's glow node out of the scene; a door beam
+restarted from the pool unstashed that parentless node and the client asserted
+(!is_singleton()) the moment a pirate walked up to a quest door. startLoop puts
+the node back under render first, and show/hide skip a node with no parent.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/effects/QuestIndicatorEffect.py | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/effects/QuestIndicatorEffect.py b/pirates/effects/QuestIndicatorEffect.py
+index 3aa28ad..c09d9eb 100644
+--- a/pirates/effects/QuestIndicatorEffect.py
++++ b/pirates/effects/QuestIndicatorEffect.py
+@@ -127,6 +127,10 @@ class QuestIndicatorEffect(PooledEffect, EffectController):
+ 
+     def startLoop(self, pos = Point3(0), pdPos = Point3()):
+         EffectController.startLoop(self)
++        # cleanUpEffect takes the dummy out of the scene; back under render as on creation, since unstash() on a
++        # node with no parent is an assertion (the door beam starts before it reparents the dummy)
++        if not self.particleDummy.hasParent():
++            self.particleDummy.reparentTo(render)
+         # a pooled effect that was muted (stashed) before it went back to the pool came out invisible;
+         # the owning indicator node mutes it again right after this when it is still muted
+         self.particleDummy.unstash()
+@@ -188,10 +192,13 @@ class QuestIndicatorEffect(PooledEffect, EffectController):
+         self.adjustIval = None
+ 
+     def showEffect(self):
+-        self.particleDummy.unstash()
++        # a cleaned-up beam has no dummy in the scene (and stash/unstash assert on a parentless node)
++        if self.particleDummy.hasParent():
++            self.particleDummy.unstash()
+ 
+     def hideEffect(self):
+-        self.particleDummy.stash()
++        if self.particleDummy.hasParent():
++            self.particleDummy.stash()
+     
+     def setWantBottomEffect(self, want):
+         self.wantBottomEffect = want
+-- 
+2.53.0
+

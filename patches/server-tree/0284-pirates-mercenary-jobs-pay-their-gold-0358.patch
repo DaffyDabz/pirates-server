@@ -1,0 +1,54 @@
+From bc48c72291c7cfdf79ead3eb84b5e9014bc5693a Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 15:42:40 -0800
+Subject: [PATCH 284/371] pirates: mercenary jobs pay their gold (0358)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 19 ++++++++++++++++---
+ 1 file changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index da8b0c8..4676a70 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -68,12 +68,20 @@ class CreateQuestsFSM(QuestOperationFSM):
+ 
+             return False
+ 
++        # family server: a quest with no fixed rewards (the random mercenary jobs) computes them from the pirate's
++        # level, the same as QuestOffer.create. Only getRewards() was stored, so a mercenary job paid no gold although
++        # the journal says "Reward: Gold".
++        taskStates = questDNA.getInitialTaskStates(self.avatar)
++        rewards = questDNA.getRewards()
++        if not rewards:
++            rewards = questDNA.computeRewards(taskStates, self.avatar)
++
+         fields = {
+             'setQuestId': (questId,),
+             'setGiverId': ('',),
+             'setCombineOp': (questDNA.getCombineOp(),),
+-            'setTaskStates': (questDNA.getInitialTaskStates(self.avatar),),
+-            'setRewardStructs': ([reward.getQuestRewardStruct() for reward in questDNA.getRewards()],),
++            'setTaskStates': (taskStates,),
++            'setRewardStructs': ([reward.getQuestRewardStruct() for reward in rewards],),
+         }
+ 
+         self.air.dbInterface.createObject(self.air.dbId,
+@@ -541,7 +549,12 @@ class QuestManagerAI(DirectObject):
+             # every later call (skipQuest, a talk) paid its reward again
+             return
+ 
+-        self._giveRewards(avatar, quest.getRewards())
++        rewards = quest.getRewards()
++        if not rewards:
++            # a mercenary job taken before the fix above was stored with no rewards: work its gold out now
++            rewards = questDNA.computeRewards(quest.getTaskStates(), avatar)
++
++        self._giveRewards(avatar, rewards)
+ 
+         # family server: Chapter 3's last quest ("visit Jack Sparrow" in the Tortuga tavern) is the end of the story
+         # in this build. The game's "Chapter 3 complete, stay tuned" panel was sent only when a finished quest handed
+-- 
+2.53.0
+

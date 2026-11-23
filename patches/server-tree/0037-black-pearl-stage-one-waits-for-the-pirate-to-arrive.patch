@@ -1,0 +1,143 @@
+From bf4f3c808418f14dc7c3992f43dbd06c1e064de9 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 21:32:26 -0800
+Subject: [PATCH 037/371] black pearl: stage one waits for the pirate to arrive
+ and for the island, instead of crashing the client on an empty island list
+
+The AI left WaitClientsReady after a flat 10 s, while a slow client was still teleporting in, so setState(StageOne) reached the client before its island had generated and enterStageOne raised IndexError on list(self.islands.values())[0]. The AI now waits (every 2 s, up to 90 s) until every participant is inside the instance, and the client waits for the island (and guards the other three places that used islands[0]).
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ pirates/treasuremap/TreasureMapBlackPearl.py  | 47 ++++++++++++++++---
+ .../treasuremap/TreasureMapBlackPearlAI.py    | 14 +++++-
+ 2 files changed, 54 insertions(+), 7 deletions(-)
+
+diff --git a/pirates/treasuremap/TreasureMapBlackPearl.py b/pirates/treasuremap/TreasureMapBlackPearl.py
+index 9688fc4..bbcced3 100644
+--- a/pirates/treasuremap/TreasureMapBlackPearl.py
++++ b/pirates/treasuremap/TreasureMapBlackPearl.py
+@@ -72,6 +72,7 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+ 
+     @report(types=['frameCount', 'deltaStamp', 'args'], dConfigParam='want-blackpearl-report')
+     def delete(self):
++        taskMgr.remove(self.uniqueName('waitForIsland'))
+         DistributedTreasureMapInstance.DistributedTreasureMapInstance.delete(self)
+         if self.pearl:
+             self.pearl.localAvatarExitShip()
+@@ -307,7 +308,38 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+         ShipPilot2.ShipPilot2.MAX_STRAIGHT_SAIL_BONUS = 0
+         self.stashPortCollision()
+         self.stashPearlAndGoliath()
+-        island = list(self.islands.values())[0]
++        self._whenIslandReady(self._stageOneIslandReady)
++
++    def _getIsland(self):
++        # the instance's island arrives after this instance (it is generated under it once the pirate is in), so
++        # it can be missing when a state change lands
++        for island in list(self.islands.values()):
++            return island
++
++        return None
++
++    def _whenIslandReady(self, callback, tries = 0):
++        taskName = self.uniqueName('waitForIsland')
++        taskMgr.remove(taskName)
++        if self._getIsland():
++            callback()
++            return
++
++        if tries >= 600:
++            self.notify.warning('the Black Pearl island never arrived')
++            return
++
++        def retry(task):
++            self._whenIslandReady(callback, tries + 1)
++            return task.done
++
++        taskMgr.doMethodLater(0.2, retry, taskName)
++
++    def _stageOneIslandReady(self):
++        if self.state != 'StageOne':
++            return
++
++        island = self._getIsland()
+         island.turnOn()
+         island.forceZoneLevel(0)
+         self.startCutsceneTask()
+@@ -397,9 +429,10 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+         base.cr.loadingScreen.hide()
+         self.stashGoliath()
+         base.localAvatar.guiMgr.radarGui.zoomFSM.request('Zoom2')
+-        island = list(self.islands.values())[0]
+-        island.setZoneLevel(0)
+-        island.startProcessVisibility(base.localAvatar)
++        island = self._getIsland()
++        if island:
++            island.setZoneLevel(0)
++            island.startProcessVisibility(base.localAvatar)
+         self.setupCaptureSphere(island)
+         base.transitions.fadeIn()
+         pearl = self.getPearl()
+@@ -425,7 +458,6 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+     @report(types=['frameCount', 'deltaStamp', 'args'], dConfigParam='want-blackpearl-report')
+     def enterStageTwo(self):
+         self.disableCaptureSphere()
+-        island = list(self.islands.values())[0]
+         self.unstashPearlAndGoliath()
+         self.unstashAttackShips()
+         self.attackShipsSunk = 0
+@@ -647,10 +679,13 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+         self.showRulesPanel(3)
+     
+     def setupBarricades(self):
++        if not self._getIsland():
++            return
++
+         if not list(self.barricades.keys()):
+             for key in list(TreasureMapBlackPearlGlobals.DrawbridgeCollisionDict.keys()):
+                 barricadePair = TreasureMapBlackPearlGlobals.DrawbridgeCollisionDict[key]
+-                newBarricade = FortBarricade.FortBarricade(list(self.islands.values())[0], barricadePair)
++                newBarricade = FortBarricade.FortBarricade(self._getIsland(), barricadePair)
+                 self.barricades[key] = newBarricade
+                 if key == 2 or key == 3:
+                     self.barricades[key].disableCollisions()
+diff --git a/pirates/treasuremap/TreasureMapBlackPearlAI.py b/pirates/treasuremap/TreasureMapBlackPearlAI.py
+index 7249284..2780875 100644
+--- a/pirates/treasuremap/TreasureMapBlackPearlAI.py
++++ b/pirates/treasuremap/TreasureMapBlackPearlAI.py
+@@ -65,6 +65,7 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+     # Stage timing constants
+     CUTSCENE_WAIT_TIME = 60.0  # Max time to wait for cutscene sync
+     STAGE_TWO_DELAY = 5.0  # Delay before moving to stage two
++    WAIT_CLIENTS_MAX = 90.0  # Longest WaitClientsReady lasts while a pirate is still on the way in
+     MONITOR_INTERVAL = 5.0  # How often to look for an empty instance
+     EMPTY_GRACE_TIME = 60.0  # An instance nobody is inside is torn down after this long
+ 
+@@ -930,12 +931,23 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+         self.d_setAttackShipIds(self.attackShipIds)
+ 
+         # Start a timeout to move to stage one even if not all players ready
++        self.waitClientsStart = time.time()
+         taskMgr.doMethodLater(10.0, self._waitClientsReadyTimeout,
+             self.uniqueName('waitClientsTimeout'))
+ 
+     def _waitClientsReadyTimeout(self, task):
+-        """Timeout waiting for clients, move to stage one anyway"""
++        """Move to stage one once every participant is inside the instance (a teleport into it takes a while and
++        stage one needs the island the client generates on arrival); give up waiting after 90 s"""
+         if self.state == 'WaitClientsReady':
++            waited = time.time() - getattr(self, 'waitClientsStart', time.time())
++            if waited < self.WAIT_CLIENTS_MAX:
++                missing = [avatarId for avatarId in self.participants
++                           if self.air.doId2do.get(avatarId) is not None
++                           and not self._isInside(self.air.doId2do[avatarId])]
++                if missing:
++                    task.delayTime = 2.0
++                    return task.again
++
+             self.notify.info('Wait clients ready timeout, moving to StageOne')
+             self.b_setState('StageOne')
+         return Task.done
+-- 
+2.53.0
+

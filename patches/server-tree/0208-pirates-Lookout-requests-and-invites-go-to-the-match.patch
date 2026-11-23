@@ -1,0 +1,57 @@
+From c540d6f679bf5b075752ad716d62ac3f99dd4b85 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 01:28:02 -0800
+Subject: [PATCH 208/371] pirates: Lookout requests and invites go to the match
+ maker, and logging off ends a search (0274)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/DistributedPlayerPirateAI.py | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/pirate/DistributedPlayerPirateAI.py b/pirates/pirate/DistributedPlayerPirateAI.py
+index 2b9153c..cfa3d4c 100644
+--- a/pirates/pirate/DistributedPlayerPirateAI.py
++++ b/pirates/pirate/DistributedPlayerPirateAI.py
+@@ -394,15 +394,24 @@ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI,
+         pass
+ 
+     def requestActivity(self, gameType, gameCategory, options, shipIds):
+-        # 0191: this server runs no match maker, so tell the Lookout panel at once that no match can be made
++        # family server (11-19, 0274): the Lookout's match maker finds the game (0191's "no match" answer is only
++        # left for an AI that has none)
+         if self.air.getAvatarIdFromSender() != self.doId:
+             return
++        matchMaker = getattr(self.air, 'matchMaker', None)
++        if matchMaker:
++            matchMaker.handleRequestActivity(self, gameType, gameCategory, options, shipIds)
++            return
+         self.sendUpdateToAvatarId(self.doId, 'lookoutMatchFailed', [False])
+ 
+     def requestInvites(self, inviteModes, gameCategory, gameType, options, additionalAvs):
+-        # 0191: no match maker, so no invites go out; the Lookout panel cancels its search with a message
++        # 0274: invites go out through the match maker; without one the Lookout panel cancels with a message
+         if self.air.getAvatarIdFromSender() != self.doId:
+             return
++        matchMaker = getattr(self.air, 'matchMaker', None)
++        if matchMaker:
++            matchMaker.handleRequestInvites(self, inviteModes, gameCategory, gameType, options, additionalAvs)
++            return
+         self.sendUpdateToAvatarId(self.doId, 'requestInvitesResp', [[], 0])
+ 
+     def setCurrentIsland(self, currentIsland):
+@@ -953,6 +962,11 @@ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI,
+         pvpManager = getattr(self.air, 'pvpManager', None)
+         if pvpManager:
+             pvpManager.avatarOffline(self.doId)
++
++        # 0274: his Lookout search, invite or match ends with him
++        matchMaker = getattr(self.air, 'matchMaker', None)
++        if matchMaker:
++            matchMaker.avatarOffline(self.doId)
+         self.air.targetMgr.clearAttacker(self)
+         self.air.worldGridManager.clearAvatarInterests(self)
+         inventory = self.getInventory()
+-- 
+2.53.0
+

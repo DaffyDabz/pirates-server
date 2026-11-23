@@ -1,0 +1,42 @@
+From 833037b5d0bbecfd26da6af71d4db6c4b683ce73 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 18:25:14 -0800
+Subject: [PATCH 321/371] family server (11-20): repair spots mend at the 2007
+ rate, so a parked crew no longer out-heals every enemy ship (0405)
+
+Server: DistributedShipAI._repairTick heals 10 HP every 2 s per repairer (2007 PVPGlobals.RepairRate), not 500.
+At 500 the boys parked on the spots and out-healed every enemy, so no ship ever sank them.
+Lane: shipdmg (shipdmg-0002). Test: test_ship_damage_2007.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShipAI.py | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index 4d50e1e..41ae8f6 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -59,6 +59,10 @@ REPAIR_SPOT_SHIP_CLASSES = (
+ REPAIR_SPOT_COUNT = 4  # repair_spot_0 .. repair_spot_3 on every ship model
+ # same as PVPGlobals.RepairRateMultipliers: one repairer, two, three, four
+ REPAIR_RATE_MULTIPLIERS = (1.0, 2.0, 3.0, 4.0)
++# family patch (shipdmg-0002): same as PVPGlobals.RepairRate, the 2007 repair-spot heal per RepairPeriod for one
++# repairer. It used ShipBalance.RepairRate (500, the flagship / port number), which out-healed every enemy ship, so a
++# crew could park on the repair spots and never sink.
++REPAIR_SPOT_RATE = 10.0
+ 
+ # A ram costs the rammer this share of the damage it deals
+ RAM_BACKLASH = 0.25
+@@ -1640,7 +1644,7 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         # same scale as the client's PVPGlobals: one repairer heals RepairRate per
+         # RepairPeriod, more repairers heal faster
+         multiplier = REPAIR_RATE_MULTIPLIERS[min(len(repairers), len(REPAIR_RATE_MULTIPLIERS)) - 1]
+-        self._repairByAmount(float(ShipBalance.RepairRate.getValue()) * multiplier)
++        self._repairByAmount(REPAIR_SPOT_RATE * multiplier)
+         # keep ticking while somebody stays on a spot, so damage taken after the ship
+         # was fully repaired is healed too
+         return task.again
+-- 
+2.53.0
+

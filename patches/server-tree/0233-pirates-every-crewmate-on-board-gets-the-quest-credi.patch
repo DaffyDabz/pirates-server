@@ -1,0 +1,60 @@
+From bcb10ac57a1bdee23dd64ae741175f303bb4327d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 03:53:16 -0800
+Subject: [PATCH 233/371] pirates: every crewmate on board gets the quest
+ credit when the crew sinks a ship (0288)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 15 +++++++++++++++
+ pirates/ship/NPCShipAI.py       |  8 ++++++++
+ 2 files changed, 23 insertions(+)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 1cc8e7a..251af6e 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -725,6 +725,21 @@ class QuestManagerAI(DirectObject):
+         if faction is None:
+             return
+ 
++        # family server (patch 0288): once per pirate per ship. The last shot (DistributedHullAI), a ram and the
++        # sink payout (NPCShipAI.rewardSinkers, every pirate who hurt it or sailed with a shooter) all call this.
++        credited = getattr(ship, '_questSinkCredited', None)
++        if credited is None:
++            credited = set()
++            try:
++                ship._questSinkCredited = credited
++            except AttributeError:
++                pass
++
++        if avatar.doId in credited:
++            return
++
++        credited.add(avatar.doId)
++
+         questEvent = QuestEvent.ShipDefeated()
+         questEvent.setLocation(parentObj.getUniqueId())
+         questEvent.setFaction(faction)
+diff --git a/pirates/ship/NPCShipAI.py b/pirates/ship/NPCShipAI.py
+index 01a6a10..2d81bb2 100644
+--- a/pirates/ship/NPCShipAI.py
++++ b/pirates/ship/NPCShipAI.py
+@@ -705,6 +705,14 @@ class NPCShipAI(DistributedShipAI):
+             except Exception as e:
+                 self.notify.warning('Could not pay pirate %d for sinking ship %d: %s' % (avId, self.doId, e))
+ 
++            # family server (patch 0288): the quest credit too (sink a Navy ship, ship loot, capture a captain),
++            # not only for the pirate whose shot took the last hit point. QuestManagerAI.shipDefeated gives it
++            # once per pirate per ship, so that last shot is not counted twice.
++            try:
++                self.air.questMgr.shipDefeated(avatar, self)
++            except Exception as e:
++                self.notify.warning('Could not give pirate %d quest credit for sinking ship %d: %s' % (avId, self.doId, e))
++
+         try:
+             self._givePlunder(credit, level)
+         except Exception as e:
+-- 
+2.53.0
+

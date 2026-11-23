@@ -1,0 +1,36 @@
+From eeb7f39d08b357b72e0796542618650c34dac14f Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 19:08:38 -0800
+Subject: [PATCH 325/371] family server (11-20): the Rumrunner's Isle cellar
+ has a door to walk back out by (0409, social-0006)
+
+A building with no 'Objects' of its own (the cellar is the only one on an island a pirate can reach) had its inside
+door made in createBuildingExterior from the building's island spot (-468.9, -91.0, 12.5, tilted), already partnered
+with the outside door. So 0366/0393's addMissingInteriorDoors skipped it, and the door stood about 470 ft from the
+room, where no pirate ever is: a bot (SOC-cellar, 19:02) walked in and found no way out. That line is gone, and
+addMissingInteriorDoors makes the door at the room model's door spot (6.856, -20.554, 0, facing -90).
+
+Tests: test_cellar_walkout FAIL -> PASS; test_cellar_door and test_backdoor_locked PASS on both. AI restart only.
+---
+ pirates/world/GameAreaBuilderAI.py | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/world/GameAreaBuilderAI.py b/pirates/world/GameAreaBuilderAI.py
+index 1bc3309..1473ce3 100644
+--- a/pirates/world/GameAreaBuilderAI.py
++++ b/pirates/world/GameAreaBuilderAI.py
+@@ -132,7 +132,10 @@ class GameAreaBuilderAI(ClientAreaBuilderAI):
+         objectList = objectData.get('Objects', {})
+         if not objectList:
+             exteriorLocatorNode = self.createDoorLocatorNode(self.parent, objKey, exteriorUid, objectData, wantTruePosHpr=False)
+-            interiorLocatorNode = interior.builder.createDoorLocatorNode(self.parent, objKey, objKey, objectData)
++            # family server (11-20): the inside door was made here from the building's own island spot, so it stood
++            # hundreds of feet away inside the room, in a part of it nobody is ever in, and a pirate who walked in
++            # could not walk out (the Rumrunner's Isle cellar). addMissingInteriorDoors below makes it at the room
++            # model's door spot instead
+         else:
+             self.air.worldCreator.loadObjectDict(objectList, self.parent, objKey, True)
+ 
+-- 
+2.53.0
+

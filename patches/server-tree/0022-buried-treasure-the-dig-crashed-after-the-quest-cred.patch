@@ -1,0 +1,55 @@
+From a40a250cc8a53a01d020ae6b4690e86e2e3eed3d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 16:28:36 -0800
+Subject: [PATCH 022/371] buried treasure: the dig crashed after the quest
+ credit and never showed the chest
+
+DistributedBuriedTreasureAI was copied from the searchable container and kept its names:
+questProgressionCallback called d_startSearching and scheduled resetChest, neither of which
+this class has, so every quest dig raised AttributeError right after the credit was applied.
+It also never set currentUser, so the dig task stopped on its first tick and other pirates
+were never kept off a spot in use. Now: currentUser set, d_startDigging, depth counts down
+once a second, stopDigging + showTreasure at 0, resetDigSpot 5 s later.
+
+Blocks 12 MainStory chapter 3 RecoverTreasureItem quests (c3r3r3r9r8.8recoverKey, ...).
+Proof: offline test t_dig.py (old code: AttributeError; new: dig runs, spot resets).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/treasuremap/DistributedBuriedTreasureAI.py | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/treasuremap/DistributedBuriedTreasureAI.py b/pirates/treasuremap/DistributedBuriedTreasureAI.py
+index 85c6946..a7528dd 100644
+--- a/pirates/treasuremap/DistributedBuriedTreasureAI.py
++++ b/pirates/treasuremap/DistributedBuriedTreasureAI.py
+@@ -33,19 +33,23 @@ class DistributedBuriedTreasureAI(DistributedInteractiveAI):
+             return
+ 
+         def performChestDig(task):
+-            self.b_setCurrentDepth(max(self.getCurrentDepth() - 1, 0))
+             if not self.currentUser:
+                 return task.done
+ 
++            self.b_setCurrentDepth(max(self.getCurrentDepth() - 1, 0))
+             if self.currentDepth <= 0:
+                 self.d_stopDigging(avatar.doId, quest.getProgress())
+                 self.d_showTreasure(avatar.doId)
+-                taskMgr.doMethodLater(5, self.resetChest, '%s-digResetTask' % self.doId)
++                taskMgr.doMethodLater(5, self.resetDigSpot, '%s-digResetTask' % self.doId)
+                 return task.done
+ 
+             return task.again
+ 
+-        self.d_startSearching(avatar.doId)
++        # copied from the searchable container: it called d_startSearching and resetChest, which this class
++        # does not have (the dig crashed after the quest credit, and the chest never came up), and never set
++        # currentUser, so the dig task stopped on its first tick
++        self.currentUser = avatar.doId
++        self.d_startDigging(avatar.doId)
+         taskMgr.doMethodLater(1, performChestDig, self.uniqueName('avatarDiggingTask-%d' % avatar.doId))
+ 
+     def resetDigSpot(self, task):
+-- 
+2.53.0
+

@@ -1,0 +1,298 @@
+From 493e9a300701230c7ee8effbabceea625ce5bd67 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 13:03:36 -0800
+Subject: [PATCH 006/371] pirates: client - Panda 1.11 fixes (Sept 2026
+ family-server fixes)
+
+- PiratesClientRepository: handle the avatarZoneChanged message Panda3D 1.11's
+  grid sends, and open interest on the surrounding cells so players one cell
+  apart can see each other.
+- SeaPatch: call update() on the patch node, not the NodePath.
+- GameOptions, PiratesBase: always open a borderless window the size of the
+  desktop, never exclusive fullscreen.
+- Cutscene, CutsceneActor: keep a soft fill light when ENV_OFF leaves the
+  scene black; put the pirate back safely when the grid cell he stood in was
+  removed during the cutscene; LeaveTunnel counts like EnterTunnel.
+- MuzzleFlame: a pooled flame that would reparent into a cycle no longer
+  kills the interval loop and crashes the game.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/cutscene/Cutscene.py                  | 12 +++++-
+ pirates/cutscene/CutsceneActor.py             | 19 +++++++--
+ .../distributed/PiratesClientRepository.py    | 21 ++++++++++
+ pirates/effects/MuzzleFlame.py                | 14 ++++++-
+ pirates/piratesbase/PiratesBase.py            |  8 +++-
+ pirates/piratesgui/GameOptions.py             | 40 ++++++++++++++-----
+ pirates/seapatch/SeaPatch.py                  |  3 +-
+ 7 files changed, 97 insertions(+), 20 deletions(-)
+
+diff --git a/pirates/cutscene/Cutscene.py b/pirates/cutscene/Cutscene.py
+index 614be7a..4300f0e 100644
+--- a/pirates/cutscene/Cutscene.py
++++ b/pirates/cutscene/Cutscene.py
+@@ -71,7 +71,12 @@ class Cutscene(NodePath, DirectObject):
+                 self.cr.timeOfDayManager.setEnvironment(TODGlobals.ENV_OFF)
+                 for currLight in self.gameArea.dynamicLights:
+                     currLight.turnOn()
+-                
++                # ENV_OFF drops the day/night ambient and Tia's lantern never spawns, so
++                # the clearing is black. Keep a soft moonlit fill for the scene.
++                self.fillLight = render.attachNewNode(AmbientLight('cut22Fill'))
++                self.fillLight.node().setColor(Vec4(0.32, 0.36, 0.4, 1))
++                render.setLight(self.fillLight)
++
+             else:
+                 self.oldTodState = base.pe.todManager.getTimeOfDayState()
+                 base.pe.disableTOD()
+@@ -251,6 +256,11 @@ class Cutscene(NodePath, DirectObject):
+         
+         base.sfxManagerList[0].stopAllSounds()
+         aspect2d.show()
++        fillLight = getattr(self, 'fillLight', None)
++        if fillLight is not None and not fillLight.isEmpty():
++            render.clearLight(fillLight)
++            fillLight.removeNode()
++        self.fillLight = None
+         if self.oldTodState:
+             if self.cr:
+                 self.cr.timeOfDayManager.setEnvironment(self.oldTodState)
+diff --git a/pirates/cutscene/CutsceneActor.py b/pirates/cutscene/CutsceneActor.py
+index 6bf4de8..52b8ecb 100644
+--- a/pirates/cutscene/CutsceneActor.py
++++ b/pirates/cutscene/CutsceneActor.py
+@@ -1326,6 +1326,7 @@ class CutLocalPirate(CutsceneActor):
+         self.oldParams = ScratchPad()
+         self.oldParams.parent = self.localAvatar.getParent()
+         self.oldParams.trans = self.localAvatar.getTransform()
++        self.oldParams.renderTrans = self.localAvatar.getTransform(render)
+         self.oldParams.bodyScale = self.localAvatar.getGlobalScale()
+         if hasattr(self.localAvatar, 'gameFSM'):
+             if self.oldAvState:
+@@ -1379,9 +1380,19 @@ class CutLocalPirate(CutsceneActor):
+ 
+     def finishCutscene(self):
+         self.localAvatar.faceAwayFromViewer()
+-        self.localAvatar.wrtReparentTo(self.oldParams.parent)
+-        self.localAvatar.setTransform(self.oldParams.trans)
+-        self.localAvatar.setPrevTransform(self.oldParams.trans)
++        parent = self.oldParams.parent
++        if parent.isEmpty() or parent.getTop() != render:
++            # The grid cell the pirate stood in was removed during the cutscene.
++            fallback = self.localAvatar.getParentObj()
++            if not isinstance(fallback, NodePath) or fallback.isEmpty():
++                fallback = render
++            self.localAvatar.reparentTo(fallback)
++            self.localAvatar.setTransform(render, self.oldParams.renderTrans)
++            self.localAvatar.setPrevTransform(self.localAvatar.getTransform())
++        else:
++            self.localAvatar.wrtReparentTo(parent)
++            self.localAvatar.setTransform(self.oldParams.trans)
++            self.localAvatar.setPrevTransform(self.oldParams.trans)
+         if self.posFromPose:
+             self.localAvatar.setPos(render, self.posFromPose)
+             self.localAvatar.setH(render, self.hprFromPose[0])
+@@ -1401,7 +1412,7 @@ class CutLocalPirate(CutsceneActor):
+         if hasattr(self.localAvatar, 'gameFSM'):
+             self.localAvatar.enableMixing()
+             self.localAvatar.gameFSM.lockFSM = False
+-            if self.oldParams.gameState == 'EnterTunnel' or self.oldParams.gameState == 'DoorInteract':
++            if self.oldParams.gameState in ('EnterTunnel', 'LeaveTunnel', 'DoorInteract'):
+                 self.localAvatar.b_setGameState('LandRoam')
+             else:
+                 self.localAvatar.b_setGameState(self.oldParams.gameState)
+diff --git a/pirates/distributed/PiratesClientRepository.py b/pirates/distributed/PiratesClientRepository.py
+index 7133f03..f1eb84b 100644
+--- a/pirates/distributed/PiratesClientRepository.py
++++ b/pirates/distributed/PiratesClientRepository.py
+@@ -100,8 +100,29 @@ class PiratesClientRepository(OTPClientRepository):
+     GameGlobalsId = OTP_DO_ID_PIRATES
+     StopVisibilityEvent = 'pirates-stop-visibility'
+ 
++    def __handleAvatarZoneChanged(self, av, gridDoId, zoneId):
++        # Family patch: Panda3D 1.11's direct DistributedCartesianGrid sends this message instead of
++        # calling handleAvatarZoneChange, so without it the avatar never joins a grid zone.
++        grid = self.doId2do.get(gridDoId)
++        if grid is None:
++            return
++        grid.handleAvatarZoneChange(av, zoneId)
++        # Disney's grid also opened interest on the concentric cells around the avatar; the stock
++        # Panda3D grid only watches the avatar's own cell, so players a cell apart never see each other.
++        if av.isLocal() and hasattr(grid, 'getConcentricZones'):
++            zones = set([zoneId])
++            for radius in (1, 2, 3):
++                zones.update(grid.getConcentricZones(zoneId, radius))
++            zones = sorted(zones)
++            if getattr(grid, 'gridVisContext', None):
++                self.alterInterest(grid.gridVisContext, gridDoId, zones)
++            else:
++                grid.gridVisContext = self.addInterest(gridDoId, zones, grid.uniqueName('visibility'))
++            grid.visZone = zoneId
++
+     def __init__(self, serverVersion, launcher=None):
+         OTPClientRepository.__init__(self, serverVersion, launcher, playGame=PlayGame.PlayGame)
++        self.accept('avatarZoneChanged', self.__handleAvatarZoneChanged)
+         self.createAvatarClass = DistributedPlayerPirate.DistributedPlayerPirate
+         self.tradeManager = None
+         self.pvpManager = None
+diff --git a/pirates/effects/MuzzleFlame.py b/pirates/effects/MuzzleFlame.py
+index e023fc4..77588a1 100644
+--- a/pirates/effects/MuzzleFlame.py
++++ b/pirates/effects/MuzzleFlame.py
+@@ -92,10 +92,22 @@ class MuzzleFlame(PooledEffect, EffectController):
+         fadeBlast = self.flash.colorScaleInterval(0.2, Vec4(0, 0, 0, 0), startColorScale = self.startCol, blendType = 'easeOut')
+         scaleBlast = self.flash.scaleInterval(0.2, 10, blendType = 'easeIn')
+         self.playFlash = Sequence(Func(self.flash.show), Parallel(fadeBlast, scaleBlast), Func(self.flash.hide), Func(self.flash.setScale, 25), Func(self.flash.setColorScale, Vec4(1, 1, 1, 1)))
+-        self.startEffect = Sequence(Func(self.p0.setBirthRate, 0.01), Func(self.p0.clearToInitial), Func(self.f.start, self, self.particleDummy))
++        self.startEffect = Sequence(Func(self.p0.setBirthRate, 0.01), Func(self.p0.clearToInitial), Func(self._startParticles))
+         self.endEffect = Sequence(Func(self.p0.setBirthRate, 100), Wait(1.5), Func(self.cleanUpEffect))
+         self.track = Parallel(Sequence(self.startEffect, Wait(0.15), self.endEffect), self.playFlash)
+     
++    def _startParticles(self):
++        # a pooled flame reused while still attached elsewhere can make this reparent
++        # form a scene-graph cycle (seen when a Navy ship fires its broadside); an
++        # assertion here used to kill the whole interval loop, i.e. crash the game
++        try:
++            self.f.start(self, self.particleDummy)
++        except AssertionError:
++            try:
++                self.f.detachNode()
++            except Exception:
++                pass
++
+     def cleanUpEffect(self):
+         self.ignore('timeOfDayChange')
+         self.detachNode()
+diff --git a/pirates/piratesbase/PiratesBase.py b/pirates/piratesbase/PiratesBase.py
+index de4709c..1234181 100644
+--- a/pirates/piratesbase/PiratesBase.py
++++ b/pirates/piratesbase/PiratesBase.py
+@@ -143,7 +143,9 @@ class PiratesBase(OTPBase):
+         else:
+             wp = WindowProperties()
+             wp.setSize(options.getWidth(), options.getHeight())
+-            wp.setFullscreen(options.getFullscreen())
++            wp.setFullscreen(0)
++            wp.setUndecorated(1)
++            wp.setOrigin(0, 0)
+             self.openDefaultWindow(props = wp)
+         if not self.isMainWindowOpen():
+             
+@@ -426,7 +428,9 @@ class PiratesBase(OTPBase):
+         
+         embedded.hideMainWindow()
+         self.detachedWP.setSize(self.options.getWidth(), self.options.getHeight())
+-        self.detachedWP.setFullscreen(self.options.fullscreen)
++        self.detachedWP.setFullscreen(0)
++        self.detachedWP.setUndecorated(1)
++        self.detachedWP.setOrigin(0, 0)
+         messenger.send('access-changed')
+         return self.openDefaultWindow(props = self.detachedWP, gsg = base.win, keepCamera = True)
+ 
+diff --git a/pirates/piratesgui/GameOptions.py b/pirates/piratesgui/GameOptions.py
+index c280f28..45ee800 100644
+--- a/pirates/piratesgui/GameOptions.py
++++ b/pirates/piratesgui/GameOptions.py
+@@ -22,6 +22,26 @@ from pirates.piratesgui import GameOptionsMatrix
+ from pirates.piratesgui.GameOptionsGui import *
+ from libotp import NametagGlobals
+ 
++
++def desktopSize():
++    # The game never goes exclusive fullscreen (family rule 2026-09-22): it always opens a borderless
++    # window the size of the desktop, so clicking or alt-tabbing never flips it to fullscreen and back.
++    try:
++        import ctypes
++        user32 = ctypes.windll.user32
++        user32.SetProcessDPIAware()
++        w, h = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
++        if w > 0 and h > 0:
++            return (w, h)
++    except Exception:
++        pass
++    try:
++        if base.pipe and base.pipe.getDisplayWidth() > 0:
++            return (base.pipe.getDisplayWidth(), base.pipe.getDisplayHeight())
++    except Exception:
++        pass
++    return (1280, 720)
++
+ try:
+     import embedded
+ except:
+@@ -422,19 +442,13 @@ class Options(OptionSpace):
+         config_variable.setValue(self.textureCompressionRuntime)
+ 
+     def getWidth(self):
+-        if self.fullscreen_runtime:
+-            return self.fullscreen_width
+-        else:
+-            return self.window_width
++        return desktopSize()[0]
+ 
+     def getHeight(self):
+-        if self.fullscreen_runtime:
+-            return self.fullscreen_height
+-        else:
+-            return self.window_height
++        return desktopSize()[1]
+ 
+     def getFullscreen(self):
+-        return self.fullscreen_runtime
++        return 0
+ 
+     def pipeOptionsToPrcData(self):
+         string = None
+@@ -449,6 +463,7 @@ class Options(OptionSpace):
+         string = ''
+         string = string + 'win-size ' + self.getWidth().__repr__() + ' ' + self.getHeight().__repr__() + '\n'
+         string = string + 'fullscreen ' + self.getFullscreen().__repr__() + '\n'
++        string = string + 'undecorated 1\nwin-origin 0 0\n'
+         if self.textureCompressionRuntime:
+             string = string + 'compressed-textures 1\n'
+         else:
+@@ -5058,7 +5073,8 @@ class GameOptions(BorderFrame):
+ 
+             state = True
+         else:
+-            fullscreen = options.fullscreen_runtime
++            fullscreen = 0
++            width, height = desktopSize()
+             self.current_pipe = base.pipe
+             self.current_properties = WindowProperties(base.win.getProperties())
+             if self.debug:
+@@ -5074,7 +5090,9 @@ class GameOptions(BorderFrame):
+             else:
+                 properties = WindowProperties()
+                 properties.setSize(width, height)
+-                properties.setFullscreen(fullscreen)
++                properties.setFullscreen(0)
++                properties.setUndecorated(1)
++                properties.setOrigin(0, 0)
+                 if self.resetDisplayProperties(pipe, properties):
+                     if self.debug:
+                         print('DISPLAY CHANGE SET')
+diff --git a/pirates/seapatch/SeaPatch.py b/pirates/seapatch/SeaPatch.py
+index 7fa98f9..9bc8705 100644
+--- a/pirates/seapatch/SeaPatch.py
++++ b/pirates/seapatch/SeaPatch.py
+@@ -46,6 +46,7 @@ class SeaPatch(Water):
+ 
+         patchNode = SeaPatchNode('seapatch', self.patch)
+         patchNode.setWantReflect(0)
++        self.patchNode = patchNode
+         self.patchNP = NodePath(patchNode)
+         shader_file_path = None
+         if base.config.GetBool('want-shaders', 1) and base.win and base.win.getGsg() and base.win.getGsg().getShaderModel() >= GraphicsStateGuardian.SM20:
+@@ -348,7 +349,7 @@ class SeaPatch(Water):
+         # per frame. Panda3D's normal cull-callback mechanism can't be
+         # used here since set_cull_callback() isn't exposed to Python
+         # subclasses of PandaNode (see SeaPatchNode.cullCallback()).
+-        self.patchNP.node().update(self.patchNP)
++        self.patchNode.update(self.patchNP)
+         todMgr = self.getTodMgr()
+         if self.shader and todMgr:
+             self.clear_color = todMgr.fog.getColor()
+-- 
+2.53.0
+

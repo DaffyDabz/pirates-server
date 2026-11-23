@@ -1,0 +1,100 @@
+From 34a2f26f7463dc89e20599261abf99c551e5e454 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 21:36:14 -0800
+Subject: [PATCH 333/371] pirates: logging out on a ship no longer closes the
+ game; logout now puts the ship away before his pirate (crew-0004, client
+ only)
+
+The 4th crash on logging out aboard a ship (relog 21:22:06 on v482): the ship's zones are not under the district
+interests logout closes, so the ship, its parts and whoever is aboard stayed loaded. _deleteLocalAv deleted his
+pirate (LocalPirate.delete removes localAvatar, LocalAvatar.delete pops base.cTrav back to 0), and only then did the
+server's disables for the ship arrive: DistributedShip.cleanupRammingCollisions ran base.cTrav.removeCollider on 0.
+
+- PiratesClientRepository._deleteLocalAv starts with _disableShipsBeforeLocalAv: every DistributedShip on the client
+  plus everything parented under one (wheel, cannons, repair spots, avatars aboard, never his own pirate) is disabled
+  deepest first while localAvatar and base.cTrav still exist. The server's later disables find nothing. This is the
+  same code as a ship going away while he is aboard (it sinks or is docked).
+- Back-stop: cleanupRammingCollisions checks base.cTrav first, as cleanupAggroCollisions does.
+- The 0414-0416 guards stay behind this.
+
+Client files only; no AI or UberDOG file imports them. Test: test_logout_order.py (the real _deleteLocalAv,
+disableDoId, pushCTrav/popCTrav and a real CollisionTraverser): live FAIL (AttributeError 'int' object has no
+attribute 'removeCollider', the live crash), patched PASS in the real order, with cTrav=0 alone, and with the
+back-stop alone; test_ship_teardown 19/19, crew-0002 4/4, crew-0001 3/3 still pass.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../distributed/PiratesClientRepository.py    | 33 +++++++++++++++++++
+ pirates/ship/DistributedShip.py               |  6 +++-
+ 2 files changed, 38 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/distributed/PiratesClientRepository.py b/pirates/distributed/PiratesClientRepository.py
+index 20c4ed3..32a9f73 100644
+--- a/pirates/distributed/PiratesClientRepository.py
++++ b/pirates/distributed/PiratesClientRepository.py
+@@ -842,12 +842,45 @@ class PiratesClientRepository(OTPClientRepository):
+             self.removeShardInterest(callback)
+ 
+     def _deleteLocalAv(self):
++        self._disableShipsBeforeLocalAv()
+         self.sendSetAvatarIdMsg(0)
+         self._removeAllOV()
+         self.disableDoId(localAvatar.doId)
+         self.cache.turnOn()
+         self.loginFSM.request(self._closeShardLoginState)
+ 
++    def _disableShipsBeforeLocalAv(self):
++        # family client (11-20, crew-0004): logging out aboard a ship closed the game four times (0414, 0415, 0416, then
++        # base.cTrav). The ships' zones are not under the district interests _removeShardObjects closes, so a ship, its
++        # parts and whoever is aboard stayed generated, and the server's disables for them arrived after the line below
++        # had deleted localAvatar (LocalPirate.delete) and popped base.cTrav back to 0 (LocalAvatar.delete). Take them
++        # down here first, deepest first, while localAvatar and its traverser still exist; the server's later disables
++        # then find nothing ("Disable failed ... not in dictionary"). The 0414-0416 guards stay behind this.
++        from pirates.ship.DistributedShip import DistributedShip
++        tree = set(doId for doId, do in list(self.doId2do.items()) if isinstance(do, DistributedShip))
++        if not tree:
++            return
++        avId = getattr(getattr(base, 'localAvatar', None), 'doId', None)
++        grew = True
++        while grew:
++            grew = False
++            for doId, do in list(self.doId2do.items()):
++                if doId not in tree and doId != avId and getattr(do, 'parentId', None) in tree:
++                    tree.add(doId)
++                    grew = True
++
++        def depth(doId):
++            n = 0
++            do = self.doId2do.get(doId)
++            while do is not None and getattr(do, 'parentId', None) in tree and n < 50:
++                n += 1
++                do = self.doId2do.get(do.parentId)
++            return n
++
++        for doId in sorted(tree, key=depth, reverse=True):
++            if doId in self.doId2do:
++                self.disableDoId(doId)
++
+     def enterNoConnection(self):
+         OTPClientRepository.enterNoConnection(self)
+         if hasattr(base, 'localAvatar'):
+diff --git a/pirates/ship/DistributedShip.py b/pirates/ship/DistributedShip.py
+index c5c8a62..02f1095 100644
+--- a/pirates/ship/DistributedShip.py
++++ b/pirates/ship/DistributedShip.py
+@@ -2085,7 +2085,11 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+         self.ignore(exitCollEvent)
+         if not stash:
+             if self.collHandler:
+-                base.cTrav.removeCollider(self.rammingSphereNodePath)
++                # family client (11-20, crew-0004): logging out pops base.cTrav back to 0 (LocalAvatar.delete). Logout now
++                # takes his ship down first (PiratesClientRepository._disableShipsBeforeLocalAv); a ship that still goes
++                # away after that has no traverser left to leave.
++                if base.cTrav:
++                    base.cTrav.removeCollider(self.rammingSphereNodePath)
+                 self.collHandler = None
+ 
+             if self.rammingSphereNodePath:
+-- 
+2.53.0
+

@@ -1,0 +1,37 @@
+From 4dedd4dde2a792253193c5224b854180195e5cb4 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 14:32:50 -0800
+Subject: [PATCH 350/371] pirates: leaving the Black Pearl voyage after the
+ forts no longer closes the game; a fort that is already gone skips its island
+ setup (client patch 47, no DC change, no restart)
+
+Boats' BPFORT8 (claude2, 14:25:10): the pirate left the Black Pearl after the barricade forts and the game closed with
+AttributeError 'NoneType' object has no attribute 'distributedDistrict' in DistributedFort.__setupIslandDependentObjects.
+A fort whose drawbridges had not loaded keeps a post-load call waiting; leaving deleted the fort (cr None) and the next
+area's post-load calls ran it. Boats' sim (sim_fort_left.py, real method from the tree): live tree FAIL with the same
+AttributeError, with this patch PASS. The server never runs this file; this keeps /opt equal to the client copy.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedFort.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/pirates/world/DistributedFort.py b/pirates/world/DistributedFort.py
+index 64c13f0..fea4b54 100644
+--- a/pirates/world/DistributedFort.py
++++ b/pirates/world/DistributedFort.py
+@@ -97,6 +97,11 @@ class DistributedFort(DistributedBattleAvatar.DistributedBattleAvatar):
+             self.cr.distributedDistrict.worldCreator.registerPostLoadCall(self.__setupIslandDependentObjects)
+     
+     def __setupIslandDependentObjects(self):
++        # a fort whose drawbridges had not loaded keeps a post-load call waiting; when the pirate left the Black Pearl
++        # the fort was deleted (cr None) and the next area's post-load calls ran it and closed the game (boats'
++        # BPFORT8, 11-21). A fort that is gone has nothing to set up.
++        if self.cr is None or self.isDisabled():
++            return
+         self.notify.debug('setupIslandDependentObjects')
+         if not self.areDrawbridgesLoaded():
+             self.cr.distributedDistrict.worldCreator.registerPostLoadCall(self.__setupIslandDependentObjects)
+-- 
+2.53.0
+

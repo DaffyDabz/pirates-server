@@ -1,0 +1,159 @@
+From da307cd1e40b3ad02c6e8b9834ee9d4c435aa7a8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:04:41 -0800
+Subject: [PATCH 235/371] pirates: the dinghy offers a pirate his guild's ships
+ (0300)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedDinghyAI.py | 116 +++++++++++++++++++++++++--
+ 1 file changed, 109 insertions(+), 7 deletions(-)
+
+diff --git a/pirates/world/DistributedDinghyAI.py b/pirates/world/DistributedDinghyAI.py
+index 600f817..c22e99d 100644
+--- a/pirates/world/DistributedDinghyAI.py
++++ b/pirates/world/DistributedDinghyAI.py
+@@ -39,13 +39,30 @@ class DistributedDinghyAI(DistributedInteractiveAI):
+ 
+         return shipInfo
+ 
+-    def getOfferPublicOptions(self):
++    def getOfferPublicOptions(self, avatar=None):
++        # family server (11-19, 0300): the list held full ships, ships still
++        # launching and the pirate's own ship (clicking one did nothing), and a
++        # ship whose captain had gone raised on getPublicShipInfo's assert, so
++        # the crew, friend and guild lists were never sent either
+         publicOptions = []
+         for ship in self.air.shipManager.getPlayerShips():
+-            if not ship.getAllowPublicState():
+-                continue
++            try:
++                if not ship.getAllowPublicState():
++                    continue
++
++                captainId = ship.getCaptainId()
++                if not captainId or self.air.doId2do.get(captainId) is None:
++                    continue
++
++                if avatar is not None and captainId == avatar.doId:
++                    continue
++
++                if not self.canSelectShip(ship):
++                    continue
+ 
+-            publicOptions.append(self.getPublicShipInfo(ship.doId))
++                publicOptions.append(self.getPublicShipInfo(ship.doId))
++            except Exception as e:
++                self.notify.warning('public ship offer: ship %s left out: %r' % (getattr(ship, 'doId', 0), e))
+ 
+         return publicOptions
+ 
+@@ -161,17 +178,102 @@ class DistributedDinghyAI(DistributedInteractiveAI):
+ 
+         self.sendAvatarToShip(avatar, ship)
+ 
++    # family server (11-19, 0300): guildmates' ships. The client has the Guild
++    # tick in the Boarding Permissions panel, a Guild list at the dinghy and
++    # the dc fields, but the AI never offered guild ships nor handled
++    # selectGuildShip, so the tick did nothing (guilds work since 0255). A
++    # guild ship is one whose captain is in this pirate's guild, with "Guild"
++    # ticked.
++    def guildIdOf(self, av):
++        getGuildId = getattr(av, 'getGuildId', None) if av is not None else None
++        if getGuildId is None:
++            return 0
++
++        try:
++            return int(getGuildId() or 0)
++        except Exception:
++            return 0
++
++    def sameGuild(self, avatar, otherId):
++        guildId = self.guildIdOf(avatar)
++        return guildId != 0 and guildId == self.guildIdOf(self.air.doId2do.get(otherId))
++
++    def allowsGuild(self, ship):
++        getAllowGuildState = getattr(ship, 'getAllowGuildState', None)
++        return getAllowGuildState is not None and bool(getAllowGuildState())
++
++    def getOfferGuildOptions(self, avatar, skipShipIds=()):
++        guildOptions = []
++        for ship in self.air.shipManager.getPlayerShips():
++            # a ship already offered in another list would get a second frame
++            if ship.doId in skipShipIds:
++                continue
++
++            captainId = ship.getCaptainId()
++            if not captainId or captainId == avatar.doId:
++                continue
++
++            if not self.sameGuild(avatar, captainId):
++                continue
++
++            if not self.allowsGuild(ship) or not self.canSelectShip(ship):
++                continue
++
++            captain = self.air.doId2do.get(captainId)
++            guildOptions.append([
++                captainId,
++                ship.doId,
++                ship.getHp(),
++                ship.getSp(),
++                len(ship.getCargo()),
++                len(ship.getCrew()),
++                1,
++                ship.getShipClass(),
++                ship.getName(),
++                ship.getSiegeTeam(),
++                captain and captain.getName() or ''
++            ])
++
++        return guildOptions
++
++    def d_offerGuildOptions(self, avatarId, guildOptions):
++        self.sendUpdateToAvatarId(avatarId, 'offerGuildOptions', [guildOptions])
++
++    def selectGuildShip(self, shipDoId):
++        avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
++        if not avatar:
++            return
++
++        ship = self.air.doId2do.get(shipDoId)
++        if not ship or not self.canSelectShip(ship):
++            self.d_sendAvatarToShip(avatar.doId, 0)
++            return
++
++        captainId = ship.getCaptainId()
++        if not captainId or captainId == avatar.doId or not self.sameGuild(avatar, captainId) or not self.allowsGuild(ship):
++            self.d_sendAvatarToShip(avatar.doId, 0)
++            return
++
++        self.sendAvatarToShip(avatar, ship)
++
+     def handlePostRequestInteraction(self, avatar):
+-        publicOptions = self.getOfferPublicOptions()
++        publicOptions = self.getOfferPublicOptions(avatar)
+         bandOptions = self.getOfferBandOptions(avatar)
+         self.d_offerPublicOptions(avatar.doId, publicOptions)
+         self.d_offerBandOptions(avatar.doId, bandOptions)
++        offered = set(info[1] for info in publicOptions + bandOptions)
+         try:
+-            offered = set(info[1] for info in publicOptions + bandOptions)
+-            self.d_offerFriendOptions(avatar.doId, self.getOfferFriendOptions(avatar, offered))
++            friendOptions = self.getOfferFriendOptions(avatar, offered)
++            self.d_offerFriendOptions(avatar.doId, friendOptions)
++            offered.update(info[1] for info in friendOptions)
+         except Exception as e:
+             self.notify.warning('friend ship offer for %s failed: %r' % (avatar.doId, e))
+ 
++        try:
++            self.d_offerGuildOptions(avatar.doId, self.getOfferGuildOptions(avatar, offered))
++        except Exception as e:
++            self.notify.warning('guild ship offer for %s failed: %r' % (avatar.doId, e))
++
+     def handleRequestExit(self, avatar):
+         return self.ACCEPT
+ 
+-- 
+2.53.0
+

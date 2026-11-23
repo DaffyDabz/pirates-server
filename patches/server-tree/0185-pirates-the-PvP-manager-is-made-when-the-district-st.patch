@@ -1,0 +1,37 @@
+From ab784db3cf60a7ab945fdaab4283ef4ea6784bf9 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:57:29 -0800
+Subject: [PATCH 185/371] pirates: the PvP manager is made when the district
+ starts (0243)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ai/PiratesAIRepository.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/pirates/ai/PiratesAIRepository.py b/pirates/ai/PiratesAIRepository.py
+index 6c2beb3..2979e80 100644
+--- a/pirates/ai/PiratesAIRepository.py
++++ b/pirates/ai/PiratesAIRepository.py
+@@ -31,6 +31,7 @@ from pirates.world.WorldCreatorAI import WorldCreatorAI
+ from pirates.battle.BattleManagerAI import BattleManagerAI
+ from pirates.band.DistributedCrewMatchAI import DistributedCrewMatchAI
+ from pirates.band.DistributedPirateBandManagerAI import DistributedPirateBandManagerAI
++from pirates.pvp.PVPManagerAI import PVPManagerAI
+ from pirates.tutorial.PiratesTutorialManagerAI import PiratesTutorialManagerAI
+ from pirates.world.WorldGridManagerAI import WorldGridManagerAI
+ from pirates.ship.ShipManagerAI import ShipManagerAI
+@@ -160,6 +161,10 @@ class PiratesAIRepository(PiratesInternalRepository):
+         self.bandManager = DistributedPirateBandManagerAI(self)
+         self.bandManager.generateWithRequired(OTP_ZONE_ID_MANAGEMENT)
+ 
++        # family server (11-18): Skirmish challenges between friends (the panel button turns on once this exists)
++        self.pvpManager = PVPManagerAI(self)
++        self.pvpManager.generateWithRequired(OTP_ZONE_ID_MANAGEMENT)
++
+         self.tutorialManager = PiratesTutorialManagerAI(self)
+         self.tutorialManager.generateWithRequired(OTP_ZONE_ID_MANAGEMENT)
+ 
+-- 
+2.53.0
+

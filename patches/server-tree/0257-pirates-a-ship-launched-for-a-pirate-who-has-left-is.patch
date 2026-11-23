@@ -1,0 +1,36 @@
+From 1adaa56ca738fbb4a60e8dd690b87faf04aa0307 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 07:31:25 -0800
+Subject: [PATCH 257/371] pirates: a ship launched for a pirate who has left is
+ put away (0344)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedDinghyAI.py | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/pirates/world/DistributedDinghyAI.py b/pirates/world/DistributedDinghyAI.py
+index 7368f39..639a76c 100644
+--- a/pirates/world/DistributedDinghyAI.py
++++ b/pirates/world/DistributedDinghyAI.py
+@@ -423,6 +423,17 @@ class DistributedDinghyAI(DistributedInteractiveAI):
+                 self.d_sendAvatarToShip(avatar.doId, 0)
+                 return
+ 
++            # family server (11-19, 0344): he logged off or crashed while the ship was launching. Put it away
++            # again, as when the last pirate leaves a ship; it sailed empty, and nobody ever boarded it to bring
++            # it home.
++            if self.air.doId2do.get(avatar.doId) is not avatar:
++                self.notify.warning('ship %d launched for avatar %d, who is gone: put away' % (shipId, avatar.doId))
++                if ship.gameState[0] not in ('Sinking', 'Sunk', 'PutAway'):
++                    ship.b_setGameState('PutAway', 0)
++                    ship._leaveOceanGrid()
++                    ship.b_setLocation(ship.parentId, 0)
++                return
++
+             self.air.bandManager.updateShipInfo(avatar.doId, ship)
+             # Sea Battle: a ship launched from a team's dock sails for that team
+             seaBattle = getattr(self.air, 'seaBattleMgr', None)
+-- 
+2.53.0
+

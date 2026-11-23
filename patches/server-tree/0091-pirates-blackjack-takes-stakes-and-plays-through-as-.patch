@@ -1,0 +1,250 @@
+From 501fdcdb5312cc5558fc5efd38d761a97b4aaeb3 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:54:30 -0800
+Subject: [PATCH 091/371] pirates: blackjack takes stakes and plays through, as
+ server-tree patch 0105 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../minigame/DistributedBlackjackTableAI.py   | 110 +++++++++++++++---
+ 1 file changed, 92 insertions(+), 18 deletions(-)
+
+diff --git a/pirates/minigame/DistributedBlackjackTableAI.py b/pirates/minigame/DistributedBlackjackTableAI.py
+index f2245fb..7977865 100644
+--- a/pirates/minigame/DistributedBlackjackTableAI.py
++++ b/pirates/minigame/DistributedBlackjackTableAI.py
+@@ -24,6 +24,7 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+         # Per-seat state: each seat has a list of hands (for splits)
+         self._allHands = [[[]] for _ in range(self._availableSeats + 1)]
+         self._bids = {}       # seatIndex -> bid amount
++        self._stakes = {}     # seatIndex -> gold already taken from a human's pocket
+         # Client updateStacks always indexes 0..NumSeats-1 (and pot may use +1),
+         # so keep a full-length chips vector from generation onward.
+         self._chipsCount = [0] * (self._availableSeats + 1)
+@@ -37,6 +38,7 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+     def delete(self):
+         taskMgr.remove(self.uniqueName('bj-bid'))
+         taskMgr.remove(self.uniqueName('bj-deal'))
++        taskMgr.remove(self.uniqueName('bj-dealnow'))
+         taskMgr.remove(self.uniqueName('bj-action'))
+         taskMgr.remove(self.uniqueName('bj-start'))
+         DistributedGameTableAI.delete(self)
+@@ -102,11 +104,38 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+ 
+     def avatarStand(self, avatar, seatIndex):
+         DistributedGameTableAI.avatarStand(self, avatar, seatIndex)
+-        self._bids.pop(seatIndex, None)
+-        self._waitingBids.discard(seatIndex)
+         if seatIndex < len(self._chipsCount):
+             self._chipsCount[seatIndex] = 0
+         self.d_setTableState()
++        self._seatLeft(seatIndex)
++
++    def _avatarUnexpectedExit(self, avatar):
++        seatIndex = self.getAvatarSeatIndex(avatar)
++        DistributedGameTableAI._avatarUnexpectedExit(self, avatar)
++        if seatIndex is not None:
++            if seatIndex < len(self._chipsCount):
++                self._chipsCount[seatIndex] = 0
++            self._seatLeft(seatIndex)
++
++    def _seatLeft(self, seatIndex):
++        # A player left (stood up or logged out). His bid is forfeited (the stake is
++        # already out of his pocket) and the round must not wait for him.
++        self._bids.pop(seatIndex, None)
++        self._stakes.pop(seatIndex, None)
++        wasWaiting = seatIndex in self._waitingBids
++        self._waitingBids.discard(seatIndex)
++        wasHead = bool(self._actionQueue) and self._actionQueue[0] == seatIndex
++        self._actionQueue = [s for s in self._actionQueue if s != seatIndex]
++        if wasWaiting:
++            self._checkAllBidsIn()
++        elif wasHead:
++            self._nextPlayerAction()
++
++    def _hasHuman(self):
++        for seat in self.seats:
++            if seat is not None and seat not in (0, 1):
++                return True
++        return False
+ 
+     # ------------------------------------------------------------------
+     # Game lifecycle
+@@ -142,14 +171,14 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+         """Start a round once seats are occupied and no hand is running."""
+         if self._roundActive:
+             return
+-        if not self._getOccupiedPlayerSeats():
++        if not self._getOccupiedPlayerSeats() or not self._hasHuman():
+             return
+         taskMgr.remove(self.uniqueName('bj-start'))
+         taskMgr.doMethodLater(delay, self._startRoundTask,
+             self.uniqueName('bj-start'), appendTask=True)
+ 
+     def _startRoundTask(self, task=None):
+-        if not self._roundActive and self._getOccupiedPlayerSeats():
++        if not self._roundActive and self._getOccupiedPlayerSeats() and self._hasHuman():
+             self._startRound()
+         return Task.done
+ 
+@@ -177,6 +206,7 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+ 
+         self._waitingBids = set(occupied)
+         self._bids = {}
++        self._stakes = {}
+         bidAmount = self._getTableBidAmount()
+ 
+         for seatIndex in occupied:
+@@ -203,6 +233,8 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+         return Task.done
+ 
+     def _receiveBid(self, seatIndex, amount):
++        if seatIndex not in self._waitingBids:
++            return  # not asked for a bid (or already bid this round)
+         bid = max(self._getTableBidAmount(), amount)
+         inv = None
+         seat = self.seats[seatIndex]
+@@ -210,12 +242,17 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+             inv = self.air.inventoryManager.getInventory(seat.doId)
+ 
+         if inv and inv.getGoldInPocket() < bid:
+-            # Can't afford - stand them up
++            # Can't afford - stand them up (avatarStand also clears the waiting set
++            # and moves the round on)
+             self.avatarStand(seat, seatIndex)
+-            self._waitingBids.discard(seatIndex)
+-            self._checkAllBidsIn()
+             return
+ 
++        if inv:
++            # Take the stake now, so standing up mid-round cannot dodge a loss
++            gold = inv.getGoldInPocket()
++            inv.setGoldInPocket(gold - bid)
++            self._stakes[seatIndex] = bid
++            self._chipsCount[seatIndex] = gold - bid
+         self._bids[seatIndex] = bid
+         self._waitingBids.discard(seatIndex)
+         self.sendUpdate('setEvent', [seatIndex, [PlayingCardGlobals.Bid, bid]])
+@@ -226,8 +263,13 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+             return
+ 
+         taskMgr.remove(self.uniqueName('bj-bid'))
++        if not self._bids:
++            # Everybody left before the deal
++            self._roundActive = False
++            return
++        taskMgr.remove(self.uniqueName('bj-dealnow'))
+         taskMgr.doMethodLater(PlayingCardGlobals.DealDelay,
+-            self._dealTask, self.uniqueName('bj-deal'), appendTask=True)
++            self._dealTask, self.uniqueName('bj-dealnow'), appendTask=True)
+ 
+     def _dealTask(self, task=None):
+         self._dealCards()
+@@ -311,21 +353,43 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+         if seatIndex is None:
+             return
+ 
+-        taskMgr.remove(self.uniqueName('bj-action'))
+-
+         actionCode = action[0] if action else PlayingCardGlobals.Stay
+         amount = action[1] if len(action) > 1 else 0
+ 
+         if actionCode == PlayingCardGlobals.Bid:
+             self._receiveBid(seatIndex, amount)
+-        else:
+-            self._applyBlackjackAction(seatIndex, actionCode, amount)
++            return
++
++        if not self._actionQueue or self._actionQueue[0] != seatIndex:
++            return  # not his turn: leave the running action timer alone
++        taskMgr.remove(self.uniqueName('bj-action'))
++        self._applyBlackjackAction(seatIndex, actionCode, amount)
+ 
+     def _applyBlackjackAction(self, seatIndex, actionCode, amount):
+         if not self._actionQueue or self._actionQueue[0] != seatIndex:
+             return
+ 
+         hand = self._getCurrentHand(seatIndex)
++
++        if actionCode in (PlayingCardGlobals.DoubleDown, PlayingCardGlobals.Split):
++            # Both cost one more bid. Doubling is only for a single two-card hand.
++            inv = self._humanInv(seatIndex)
++            extra = self._bids.get(seatIndex, 0)
++            ok = len(hand) == 2
++            if actionCode == PlayingCardGlobals.DoubleDown and len(self._allHands[seatIndex]) != 1:
++                ok = False
++            if ok and inv and inv.getGoldInPocket() < extra:
++                ok = False
++            if not ok:
++                # Refused: ask the same player again
++                taskMgr.doMethodLater(0.5, self._nextPlayerAction, self.uniqueName('bj-action'))
++                return
++            if inv:
++                gold = inv.getGoldInPocket()
++                inv.setGoldInPocket(gold - extra)
++                self._stakes[seatIndex] = self._stakes.get(seatIndex, 0) + extra
++                self._chipsCount[seatIndex] = gold - extra
++
+         self.sendUpdate('setEvent', [seatIndex, [actionCode, amount]])
+ 
+         if actionCode == PlayingCardGlobals.Hit:
+@@ -369,6 +433,12 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+             self._actionQueue.pop(0)
+             self._nextPlayerAction()
+ 
++    def _humanInv(self, seatIndex):
++        seat = self.seats[seatIndex]
++        if seat is None or seat in (0, 1):
++            return None
++        return self.air.inventoryManager.getInventory(seat.doId)
++
+     def _getCurrentHand(self, seatIndex):
+         hands = self._allHands[seatIndex]
+         # Current hand: last hand with fewer than 2 final cards, or first hand
+@@ -411,7 +481,7 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+         dealerBlackjack = self._isBlackjack(self._allHands[dealerSeat][0])
+         results = [0] * self._availableSeats
+ 
+-        for seatIndex, bid in self._bids.items():
++        for seatIndex, bid in list(self._bids.items()):
+             seat = self.seats[seatIndex]
+             totalWin = 0
+ 
+@@ -440,10 +510,13 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+             if seat and seat not in (0, 1):
+                 inv = self.air.inventoryManager.getInventory(seat.doId)
+                 if inv:
+-                    # Deduct bid then apply result
+-                    inv.setGoldInPocket(inv.getGoldInPocket() - bid)
+-                    if totalWin > 0:
+-                        inv.addGoldInPocket(bid + totalWin)
++                    # The stake (bid, plus the extra bid of a double or split) left his
++                    # pocket when it was placed; give back stake plus result. A push
++                    # returns the stake. setGoldInPocket, not addGoldInPocket, which
++                    # would double the payout on a gold holiday.
++                    refund = max(0, self._stakes.get(seatIndex, 0) + totalWin)
++                    if refund:
++                        inv.setGoldInPocket(inv.getGoldInPocket() + refund)
+ 
+                     if totalWin > 0:
+                         # Quest hook
+@@ -466,6 +539,7 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+                 if self._chipsCount[seatIndex] < self._getTableBidAmount():
+                     self._chipsCount[seatIndex] = self.AIStartingChips
+ 
++        self._stakes = {}
+         self._chipsCount = self._normalizeChipsCount(self._chipsCount)
+         self.sendUpdate('setHandResults', [results])
+         self._broadcastTableState()
+@@ -476,7 +550,7 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+ 
+     def _nextRoundTask(self, task=None):
+         occupied = self._getOccupiedPlayerSeats()
+-        if occupied:
++        if occupied and self._hasHuman():
+             self._startRound()
+         else:
+             self._roundActive = False
+-- 
+2.53.0
+

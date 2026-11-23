@@ -1,0 +1,350 @@
+From 12832a1d0d37bed4338b88bdb25a1479df3b4c36 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 21:29:17 -0800
+Subject: [PATCH 036/371] tutorial: a brand-new pirate plays the opening with
+ Jack Sparrow again
+
+A new pirate never saw the jail cutscene: dev.prc skipped the tutorial,
+force-tutorial-complete marked every pirate finished, and nothing on the
+server started the first quest's scene.
+
+- dev.prc: skip-tutorial off; force-tutorial-complete (HumanDNA.getTutorial,
+  DistributedPlayerPirate.getTutorialState) now only applies to pirates past
+  the Jolly Roger, which is every pirate made before this.
+- Tutorial AI: on Act0 it gives Chapter1.rung1 and plays the jail scene;
+  Make-A-Pirate and cannon practice send the events the next scenes wait on.
+- QuestManagerAI: a cutscene always ends on quest-finalize (the old
+  '<sendEvent>-<id>' never fired); the two tutorial waitEvents hold a scene;
+  an object visit (Stumpy's boat) counts for a visit task.
+- Login teleport does not send a new pirate out of the tutorial; a pirate
+  still in the tutorial does not get the Chapter 2 opener.
+- Client tutorial: Dan's scene starts once his quest arrives, the boat waits
+  for the sea chest, a missing inventory no longer crashes.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ config/dev.prc                                |  4 +-
+ pirates/instance/DistributedTeleportMgrAI.py  |  3 +-
+ pirates/pirate/DistributedPlayerPirate.py     |  4 +-
+ pirates/pirate/HumanDNA.py                    |  3 +-
+ pirates/quest/QuestManagerAI.py               | 26 ++++++---
+ .../tutorial/DistributedPiratesTutorial.py    | 43 +++++++++++----
+ .../tutorial/DistributedPiratesTutorialAI.py  | 53 +++++++++++++++++++
+ pirates/uberdog/PirateInventoryAI.py          |  5 ++
+ 8 files changed, 122 insertions(+), 19 deletions(-)
+
+diff --git a/config/dev.prc b/config/dev.prc
+index d7b85c4..11ff88a 100644
+--- a/config/dev.prc
++++ b/config/dev.prc
+@@ -29,7 +29,9 @@ want-dev-hotkeys #f
+ want-avatar-physics-indicator #f
+ 
+ # Tutorial:
+-skip-tutorial #t
++# family server: a brand-new pirate plays the opening (Jack Sparrow); force-tutorial-complete only skips
++# it for pirates already past the Jolly Roger (every pirate made before this)
++skip-tutorial #f
+ force-tutorial #f
+ force-tutorial-complete #t
+ 
+diff --git a/pirates/instance/DistributedTeleportMgrAI.py b/pirates/instance/DistributedTeleportMgrAI.py
+index f423e02..8f1e9bd 100644
+--- a/pirates/instance/DistributedTeleportMgrAI.py
++++ b/pirates/instance/DistributedTeleportMgrAI.py
+@@ -142,7 +142,8 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+ 
+         # check to see which island the avatar exited last at,
+         # then ensure this is their login teleport; not a normal teleport request...
+-        if returnLocation and not currentIsland:
++        # family server: not into the tutorial (a new pirate has a return location already)
++        if returnLocation and not currentIsland and instanceType != PiratesGlobals.INSTANCE_TUTORIAL:
+             locationUid = returnLocation
+ 
+         gameArea = avatar.getParentObj()
+diff --git a/pirates/pirate/DistributedPlayerPirate.py b/pirates/pirate/DistributedPlayerPirate.py
+index b0c21d5..ef92b2f 100644
+--- a/pirates/pirate/DistributedPlayerPirate.py
++++ b/pirates/pirate/DistributedPlayerPirate.py
+@@ -1536,7 +1536,9 @@ class DistributedPlayerPirate(DistributedPirateBase, DistributedPlayer, Distribu
+             self.guiMgr.messageStack.addTextMessage(PLocalizer.LookoutInviteFail % numFailed, icon = ('lookout', None))
+ 
+     def getTutorialState(self):
+-        if config.GetBool('force-tutorial-complete', 0):
++        # family server: never for a pirate still in the opening (new pirates play it)
++        if config.GetBool('force-tutorial-complete', 0) and getattr(getattr(self, 'style', None), 'tutorial',
++                PiratesGlobals.TUT_FINISHED) >= PiratesGlobals.TUT_MET_JOLLY_ROGER:
+             return PiratesGlobals.TUT_FINISHED
+         return self.tutorialState
+ 
+diff --git a/pirates/pirate/HumanDNA.py b/pirates/pirate/HumanDNA.py
+index 89646e8..9e8fb89 100644
+--- a/pirates/pirate/HumanDNA.py
++++ b/pirates/pirate/HumanDNA.py
+@@ -1217,7 +1217,8 @@ class HumanDNA(AvatarDNA.AvatarDNA):
+         return self.jewelryZone8
+ 
+     def getTutorial(self):
+-        if config.GetBool('force-tutorial-complete', 0):
++        # family server: never for a pirate still in the opening (new pirates play it)
++        if config.GetBool('force-tutorial-complete', 0) and self.tutorial >= PiratesGlobals.TUT_MET_JOLLY_ROGER:
+             return PiratesGlobals.TUT_FINISHED
+         return self.tutorial
+ 
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index adbd974..fa96d9e 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -788,13 +788,22 @@ class QuestManagerAI(DirectObject):
+                 else:
+                     giverId = 0
+ 
+-                sendEvent = finalizeStateInfo.get('sendEvent', '')
+-                if not sendEvent:
+-                    self.acceptOnce('quest-finalize-%d' % quest.doId, finalizeCallback)
+-                else:
+-                    self.acceptOnce('%s-%d' % (sendEvent, quest.doId), finalizeCallback)
++                # family server: the client always ends a scene with doneFinalizeScene ('quest-finalize-<id>');
++                # a sendEvent is a client-side event it sends too (e.g. 'doneJackIntro'), never '<sendEvent>-<id>'
++                # here, so waiting on that stalled every tutorial quest after its first scene.
++                self.acceptOnce('quest-finalize-%d' % quest.doId, finalizeCallback)
++
++                # tutorial scenes that must wait for the player (Make-A-Pirate done, cannon practice done)
++                waitEvent = finalizeStateInfo.get('waitEvent')
++                seen = avatar.__dict__.get('finalizeEventsSeen', ())
++                if waitEvent in ('makeAPirateComplete', 'tutorialJROnStage') and waitEvent not in seen:
++                    def startCutscene(giverId=giverId):
++                        if quest.doId in self.air.doId2do:
++                            quest.d_startFinalizeScene(finalizeIndex, giverId)
+ 
+-                quest.d_startFinalizeScene(finalizeIndex, giverId)
++                    self.acceptOnce(avatar.uniqueName(waitEvent), startCutscene)
++                else:
++                    quest.d_startFinalizeScene(finalizeIndex, giverId)
+             elif finalizeType == 'dialog':
+                 if npc is None:
+                     self.notify.warning('Failed to handle interact callback with unknown npc for avatar %d '
+@@ -848,6 +857,11 @@ class QuestManagerAI(DirectObject):
+             questEvent.setLocation(parentObj.getUniqueId())
+             questEvent.setNpcId(npc.getUniqueId())
+             questEvent.setAvId(avatar.doId)
++        elif hasattr(npc, 'getUniqueId'):
++            # family server: an object the quest visits (the tutorial's Stumpy boat, Chapter1.rung3)
++            questEvent = QuestEvent.ObjectVisited()
++            questEvent.setObjectId(npc.getUniqueId())
++            questEvent.setAvId(avatar.doId)
+         else:
+             self.notify.warning('Avatar %d failed to request interact for npc %d, '
+                 'invalid npc type!' % (avatar.doId, npc.doId))
+diff --git a/pirates/tutorial/DistributedPiratesTutorial.py b/pirates/tutorial/DistributedPiratesTutorial.py
+index c695280..d40008b 100644
+--- a/pirates/tutorial/DistributedPiratesTutorial.py
++++ b/pirates/tutorial/DistributedPiratesTutorial.py
+@@ -195,6 +195,7 @@ class DistributedPiratesTutorial(DistributedObject.DistributedObject, FSM.FSM):
+         localAvatar.guiMgr.ignoreAllKeys = True
+         localAvatar.guiMgr.hideTrays()
+         self._leftJail = 0
++        self._danIntroStarted = False
+         self.map = 0
+         base.cr.tutorialObject = self
+     
+@@ -243,6 +244,7 @@ class DistributedPiratesTutorial(DistributedObject.DistributedObject, FSM.FSM):
+             self.pendingIslandRequest = None
+         
+         taskMgr.remove(self.taskName('handleAct0Tutorial'))
++        taskMgr.remove(self.taskName('checkDanQuest'))
+         self._stopFog()
+         self._stopInteriorCannonballHitEffects()
+         self._stopTutorialInteriorEffects()
+@@ -364,6 +366,9 @@ class DistributedPiratesTutorial(DistributedObject.DistributedObject, FSM.FSM):
+     def handleWalkedOutToIsland(self):
+         if not self._leftJail:
+             self._leftJail = 1
++            # family server: Dan's quest (Chapter1.rung2) arrives after Make-A-Pirate asked for it, so look again
++            # once the pirate is outside and start Dan's scene when it is there
++            taskMgr.doMethodLater(1.0, self._checkDanQuest, self.taskName('checkDanQuest'))
+             base.cr.centralLogger.writeClientEvent('LEAVING_JAIL')
+             UserFunnel.logSubmit(0, 'LEAVING_JAIL')
+             UserFunnel.logSubmit(1, 'LEAVING_JAIL')
+@@ -393,20 +398,22 @@ class DistributedPiratesTutorial(DistributedObject.DistributedObject, FSM.FSM):
+         stumpyBoat = base.cr.doId2do[self.BoatStumpyDoId]
+         
+         def setupTalkToDan(talkToDan):
+-            if talkToDan == False:
+-                self.notify.debug('stumpyBoat: talkToDan is False')
+-                self.accept(stumpyBoat.proximityCollisionEnterEvent, self.triggerBoBeckCut)
+-                self.acceptOnce('enableBoatBoarding', self.enableBoatBoarding)
+-                self.notify.debug('stumpyBoat:waiting for stumpy %s' % self.StumpyDoId)
+-                self.pendingStumpyRequest = base.cr.relatedObjectMgr.requestObjects([
+-                    self.StumpyDoId], eachCallback = self.doStumpyIntro)
+-            else:
+-                self.notify.debug('stumpyBoat:talkToDan is True')
++            # family server: always arm the boat; triggerBoBeckCut waits until Dan has given the sea chest
++            self.notify.debug('stumpyBoat: talkToDan is %s' % talkToDan)
++            self.accept(stumpyBoat.proximityCollisionEnterEvent, self.triggerBoBeckCut)
++            self.acceptOnce('enableBoatBoarding', self.enableBoatBoarding)
++            self.notify.debug('stumpyBoat:waiting for stumpy %s' % self.StumpyDoId)
++            self.pendingStumpyRequest = base.cr.relatedObjectMgr.requestObjects([
++                self.StumpyDoId], eachCallback = self.doStumpyIntro)
+ 
+         self.playerNeedsToTalkToDan(setupTalkToDan)
+         stumpyBoat.hideName()
+ 
+     def triggerBoBeckCut(self, collEntry):
++        if localAvatar.style.getTutorial() != PiratesGlobals.TUT_GOT_SEACHEST:
++            # not Stumpy's turn yet (Dan first); keep listening
++            return
++
+         self.notify.debug('triggerBoBeckCut')
+         stumpyBoat = base.cr.doId2do[self.BoatStumpyDoId]
+         self.ignore(stumpyBoat.proximityCollisionEnterEvent)
+@@ -650,6 +657,19 @@ class DistributedPiratesTutorial(DistributedObject.DistributedObject, FSM.FSM):
+     def setupNavyBoat(self, object):
+         object.hideName()
+     
++    def _checkDanQuest(self, task):
++        if self._danIntroStarted or localAvatar.style.getTutorial() >= PiratesGlobals.TUT_GOT_SEACHEST:
++            return Task.done
++
++        if getattr(self, 'NPCDan', None):
++            def _talk(talkToDan):
++                if talkToDan and not self._danIntroStarted:
++                    self.doneDanIntro(None)
++
++            self.playerNeedsToTalkToDan(_talk)
++
++        return Task.again
++
+     def playerNeedsToTalkToDan(self, callback):
+         if localAvatar.style.getTutorial() >= 2:
+             callback(False)
+@@ -658,6 +678,7 @@ class DistributedPiratesTutorial(DistributedObject.DistributedObject, FSM.FSM):
+         def talkToDanCallback(inventory):
+             if not inventory:
+                 callback(False)
++                return
+             
+             talkToDan = False
+             for currQuest in inventory.getQuestList():
+@@ -670,6 +691,10 @@ class DistributedPiratesTutorial(DistributedObject.DistributedObject, FSM.FSM):
+         DistributedInventoryBase.DistributedInventoryBase.getInventory(localAvatar.inventoryId, talkToDanCallback)
+     
+     def doneDanIntro(self, collEntry):
++        if self._danIntroStarted:
++            return
++
++        self._danIntroStarted = True
+         self.notify.debug('Done Introducing Doggerel Dan')
+         self.NPCDan.setAllowInteract(False)
+         self.request('Act2FindDan')
+diff --git a/pirates/tutorial/DistributedPiratesTutorialAI.py b/pirates/tutorial/DistributedPiratesTutorialAI.py
+index 26c9aeb..c96f37f 100644
+--- a/pirates/tutorial/DistributedPiratesTutorialAI.py
++++ b/pirates/tutorial/DistributedPiratesTutorialAI.py
+@@ -1,6 +1,7 @@
+ from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from direct.directnotify import DirectNotifyGlobal
+ from direct.fsm.FSM import FSM
++from direct.task import Task
+ 
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.tutorial import TutorialGlobals
+@@ -15,6 +16,12 @@ class DistributedPiratesTutorialAI(DistributedObjectAI, FSM):
+         FSM.__init__(self, 'DistributedPiratesTutorialAI')
+ 
+         self.avatarId = None
++        self._jackIntroStarted = False
++        self._jackIntroTries = 0
++
++    def delete(self):
++        taskMgr.remove(self.uniqueName('jackIntro'))
++        DistributedObjectAI.delete(self)
+ 
+     def setAvatarId(self, avatarId):
+         self.avatarId = avatarId
+@@ -41,6 +48,46 @@ class DistributedPiratesTutorialAI(DistributedObjectAI, FSM):
+ 
+         self.notify.info('Avatar %d entered Act0Tutorial' % self.avatarId)
+         self.request('Act0Tutorial')
++        # family server: nothing started the first quest's jail scene (Jack Sparrow), so a new pirate sat in the
++        # dark jail forever. Give Chapter1.rung1 and play its first finalize scene; the client's
++        # 'doneJackIntro' (the scene's sendEvent) then opens Make-A-Pirate.
++        if avatar.getTutorial() == PiratesGlobals.TUT_STARTED and not self._jackIntroStarted:
++            self._jackIntroStarted = True
++            taskMgr.doMethodLater(1.0, self._startJackIntro, self.uniqueName('jackIntro'))
++
++    def _startJackIntro(self, task):
++        avatar = self.getAvatar()
++        if not avatar:
++            return Task.done
++
++        questMgr = self.air.questMgr
++        self._jackIntroTries += 1
++        if not avatar.getInventory() or avatar.doId in questMgr.avatar2fsm:
++            # the inventory or another quest job is not ready yet
++            if self._jackIntroTries > 60:
++                self.notify.warning('Avatar %d: gave up starting the Jack Sparrow intro' % avatar.doId)
++                return Task.done
++
++            return Task.again
++
++        def _play(quest):
++            if not quest:
++                self.notify.warning('Avatar %d: no %s quest for the Jack Sparrow intro' % (
++                    avatar.doId, TutorialGlobals.FIRST_QUEST))
++                return
++
++            self.notify.info('Avatar %d: playing the Jack Sparrow intro (quest %d)' % (avatar.doId, quest.doId))
++            # give the client a moment to generate its copy of the quest
++            taskMgr.doMethodLater(2.0, lambda task: questMgr.finalizeCutscene(avatar, quest, 0, npc=None),
++                self.uniqueName('jackIntro'))
++
++        quest = questMgr.getQuest(avatar, questId=TutorialGlobals.FIRST_QUEST)
++        if quest:
++            _play(quest)
++        else:
++            questMgr.createQuest(avatar, TutorialGlobals.FIRST_QUEST, callback=_play)
++
++        return Task.done
+ 
+     def makeAPirateComplete(self):
+         """Client finished the Make-A-Pirate customization screen.
+@@ -57,6 +104,9 @@ class DistributedPiratesTutorialAI(DistributedObjectAI, FSM):
+ 
+         # Mark customisation complete so later logins skip this step.
+         avatar.b_setTutorial(PiratesGlobals.TUT_MADE_PIRATE)
++        # the rung1 jail scene '1.1.2' waits for this (QuestManagerAI finalizeCutscene waitEvent)
++        avatar.__dict__.setdefault('finalizeEventsSeen', set()).add('makeAPirateComplete')
++        messenger.send(avatar.uniqueName('makeAPirateComplete'))
+ 
+         # Give the first tutorial quest (Jack Sparrow jail-break storyline).
+         if not self.air.questMgr.hasQuest(avatar, questId=TutorialGlobals.FIRST_QUEST):
+@@ -131,6 +181,9 @@ class DistributedPiratesTutorialAI(DistributedObjectAI, FSM):
+ 
+         self.notify.info('Avatar %d finished target practice' % self.avatarId)
+         self.request('TargetPracticeDone')
++        # the rung3 Jolly Roger scene '1.3' waits for this (QuestManagerAI finalizeCutscene waitEvent)
++        avatar.__dict__.setdefault('finalizeEventsSeen', set()).add('tutorialJROnStage')
++        messenger.send(avatar.uniqueName('tutorialJROnStage'))
+ 
+     # --------------------------------------------------
+     # AI -> Client messages
+diff --git a/pirates/uberdog/PirateInventoryAI.py b/pirates/uberdog/PirateInventoryAI.py
+index 2f28823..8c35af1 100644
+--- a/pirates/uberdog/PirateInventoryAI.py
++++ b/pirates/uberdog/PirateInventoryAI.py
+@@ -168,6 +168,11 @@ class PirateInventoryAI(DistributedInventoryAI):
+                 self.notify.warning('boss quest treasure map for avatar %d failed:\n%s' % (
+                     avatar.doId, traceback.format_exc()))
+ 
++            # family server: a pirate still in the tutorial gets its Chapter 1 quests from the tutorial, which
++            # leads into Chapter 2 itself
++            if avatar.getTutorial() < PiratesGlobals.TUT_MET_JOLLY_ROGER:
++                return
++
+             if self.getQuestList() or avatar.getQuestHistory() or avatar.getQuestLadderHistory():
+                 return
+             self.notify.info('first quest: giving c2_visit_will_turner to avatar %d' % avatar.doId)
+-- 
+2.53.0
+

@@ -1,0 +1,39 @@
+From 151532a2fb6f7e87cd8231e713f581924ebbf0f1 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 21:48:52 -0800
+Subject: [PATCH 126/371] pirates: finishing a dig at a treasure spot or
+ searching a crate no longer closes the game server, as server-tree patch 0140
+ (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/DistributedQuestAI.py | 13 +++++++++++++
+ 1 file changed, 13 insertions(+)
+
+diff --git a/pirates/quest/DistributedQuestAI.py b/pirates/quest/DistributedQuestAI.py
+index 4251acd..0082b4e 100644
+--- a/pirates/quest/DistributedQuestAI.py
++++ b/pirates/quest/DistributedQuestAI.py
+@@ -77,6 +77,19 @@ class DistributedQuestAI(DistributedObjectAI, QuestBase, Quest):
+     def getTaskStates(self):
+         return self.taskStates
+ 
++    def getProgress(self):
++        # pir-test 11-17 (0140): the dig spot and the searchable container send this to the client's stopDigging /
++        # stopSearching; the method was missing, so the AI closed when a dig finished. The client only checks for 0
++        # ("did not find the quest item"), and both callers run only when the quest moved on, so it is never under 1.
++        total = 0
++        for ts in getattr(self, "taskStates", None) or []:
++            try:
++                p = ts.getProgress() if hasattr(ts, 'getProgress') else getattr(ts, 'progress', 0)
++                total += int(p or 0)
++            except Exception:
++                pass
++        return max(1, min(total, 65535))
++
+     def d_setRewardStructs(self, rewardStructs):
+         self.sendUpdate('setRewardStructs', [rewardStructs])
+ 
+-- 
+2.53.0
+

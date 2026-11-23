@@ -1,0 +1,37 @@
+From 7f63cfa3850fe8fb274ca2d448c9a9fb1eeb19da Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 299/371] family server (11-20): picking a quest's "How do
+ I..." SpeedChat line no longer closes the game (0383)
+
+Game: the line sent d_setSCEmote('') (Player2 16:37:31). Lane: boats (shops-0001 is the same fix). Test: test_boats.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/chat/PChatInputSpeedChat.py | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/chat/PChatInputSpeedChat.py b/pirates/chat/PChatInputSpeedChat.py
+index 8ee1f17..2316bed 100644
+--- a/pirates/chat/PChatInputSpeedChat.py
++++ b/pirates/chat/PChatInputSpeedChat.py
+@@ -365,11 +365,14 @@ class PChatInputSpeedChat(DirectObject.DirectObject):
+     
+     def sendChatByMode(self, msgType, textId, questInt = 0, taskNum = 0, questFlag = 0):
+         messenger.send('sentSpeedChat')
+-        if msgType == SPEEDCHAT_EMOTE:
++        # family server (11-20): a quest line's msgType is the quest message kind (0 summary, 1 where is, 2 how to),
++        # not a chat type. "How to" is 2, the same number as SPEEDCHAT_EMOTE, so it was sent as an emote with no
++        # emote id (setSCEmote('')) and closed the game
++        if msgType == SPEEDCHAT_EMOTE and not questFlag:
+             base.chatAssistant.sendAvatarOpenSpeedChat(msgType, textId)
+             return
+         
+-        if msgType == GMCHAT:
++        if msgType == GMCHAT and not questFlag:
+             gmHandler = SpeedChatGMHandler.SpeedChatGMHandler()
+             base.chatAssistant.sendAvatarOpenTypedChat(gmHandler.getPhrase(textId))
+             return
+-- 
+2.53.0
+

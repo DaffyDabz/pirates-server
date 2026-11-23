@@ -1,0 +1,48 @@
+From 90429d80a0973065eb5abec3ae5ff0e17dab6039 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:56:11 -0800
+Subject: [PATCH 165/371] pirates: the Black Pearl fight's enemy ships fight
+ again, server-tree patch 0202
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/treasuremap/TreasureMapBlackPearlAI.py | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/pirates/treasuremap/TreasureMapBlackPearlAI.py b/pirates/treasuremap/TreasureMapBlackPearlAI.py
+index 305e272..97f17c9 100644
+--- a/pirates/treasuremap/TreasureMapBlackPearlAI.py
++++ b/pirates/treasuremap/TreasureMapBlackPearlAI.py
+@@ -415,6 +415,9 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+         try:
+             # Use NPCShipAI for now since BlackPearlShipAI may have issues
+             self.blackPearl = NPCShipAI(self.air)
++            # Family fix 0202: this ocean uses main-world numbers, so the
++            # starter-waters rule (0164/0166) would freeze the fight ships
++            self.blackPearl._starterExempt = True
+         except Exception as e:
+             self.notify.error('Failed to create Black Pearl ship: %s' % e)
+             return
+@@ -474,6 +477,9 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+         self.notify.info('Creating Goliath ship...')
+ 
+         self.goliath = NPCShipAI(self.air)
++        # Family fix 0202: this ocean uses main-world numbers, so the
++        # starter-waters rule (0164/0166) would freeze the fight ships
++        self.goliath._starterExempt = True
+         self.goliath.setBaseTeam(ShipGlobals.UNDEAD_TEAM)
+         self.goliath.setLevel(50)
+         self.goliath.setShipClass(ShipGlobals.GOLIATH)
+@@ -537,6 +543,9 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+             shipClass = attackShipClasses[i] if i < len(attackShipClasses) else ShipGlobals.WARSHIP_L2
+ 
+             ship = NPCShipAI(self.air)
++            # Family fix 0202: this ocean uses main-world numbers, so the
++            # starter-waters rule (0164/0166) would freeze the fight ships
++            ship._starterExempt = True
+             ship.setBaseTeam(ShipGlobals.NAVY_TEAM)
+             ship.setLevel(30 + i * 5)
+             ship.setShipClass(shipClass)
+-- 
+2.53.0
+

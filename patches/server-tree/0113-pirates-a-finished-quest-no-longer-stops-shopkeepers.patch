@@ -1,0 +1,31 @@
+From f9fccd9ed8a7de59af3f6e41e283c78af098ec88 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:53:21 -0800
+Subject: [PATCH 113/371] pirates: a finished quest no longer stops shopkeepers
+ and trainers from opening their menu, as server-tree patch 0127 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index a52f92b..7d5b5c8 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -609,8 +609,11 @@ class QuestManagerAI(DirectObject):
+                     # done earlier, only the hand-in left: that belongs to the quest's own NPC. Any NPC the
+                     # pirate talked to used to play the first finished quest's scene, and the visit this
+                     # talk was for never got its credit.
++                    # A finished quest with no known return NPC was handed in when it finished (waitsForHandIn), so
++                    # it never takes a talk: it used to take every NPC's, the hand-in was refused and the shop or
++                    # trainer menu never opened (a Gypsy said nothing to a pirate holding "sink a Navy ship").
+                     owners = self.getReturnNpcUids(quest)
+-                    if owners and npc.getUniqueId() not in owners:
++                    if not owners or npc.getUniqueId() not in owners:
+                         continue
+ 
+                 if npc is None and self.waitsForHandIn(quest):
+-- 
+2.53.0
+

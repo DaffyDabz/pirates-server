@@ -1,0 +1,32 @@
+From 7781ed1d8289e9040db5a3b192edc8fe628a489b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 10:46:54 -0800
+Subject: [PATCH 271/371] pirates: a volley still in the air when a ship sinks
+ or docks no longer hits it (0363)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedShipBroadsideAI.py | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/pirates/battle/DistributedShipBroadsideAI.py b/pirates/battle/DistributedShipBroadsideAI.py
+index f6f17e4..4fc23a8 100644
+--- a/pirates/battle/DistributedShipBroadsideAI.py
++++ b/pirates/battle/DistributedShipBroadsideAI.py
+@@ -224,6 +224,13 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+                 # Check if target still exists and is valid
+                 if not targetShip or targetShip.isEmpty():
+                     return task.done
++
++                # a volley still in the air when the ship sank or was put away at the dock does no damage: it
++                # used to sink a docked ship (so he paid for repairs he never earned) or start a sinking ship
++                # sinking again
++                state = (getattr(targetShip, 'gameState', None) or [''])[0]
++                if state in ('Sinking', 'Sunk', 'PutAway', 'Off') or targetShip.getHp() <= 0:
++                    return task.done
+                 
+                 # Get attacker ship for damage calculation
+                 ship = self.getShip()
+-- 
+2.53.0
+

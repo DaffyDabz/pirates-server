@@ -1,0 +1,135 @@
+From 1001575a2ad885eee3aeceeb338d59381ca5864f Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 21:57:18 -0800
+Subject: [PATCH 042/371] black pearl client: the stage two and stage four
+ cutscenes and the reward camera no longer crash when a ship or the Black
+ Pearl is not there, or the pirate is on foot
+
+The stage two camera looked its first attack ship up with doId2do[...] (KeyError when it is not on this client yet,
+IndexError with none). The stage four cutscene read localAvatar.ship.clientController, which is None for a pirate on
+foot, and left input silenced; it and the reward camera also used the Black Pearl and the Goliath unchecked.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ pirates/treasuremap/TreasureMapBlackPearl.py | 55 ++++++++++++++------
+ 1 file changed, 38 insertions(+), 17 deletions(-)
+
+diff --git a/pirates/treasuremap/TreasureMapBlackPearl.py b/pirates/treasuremap/TreasureMapBlackPearl.py
+index bbcced3..16d1a35 100644
+--- a/pirates/treasuremap/TreasureMapBlackPearl.py
++++ b/pirates/treasuremap/TreasureMapBlackPearl.py
+@@ -490,8 +490,13 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+             return self.defaultFilter(request, args)
+ 
+     def getCameraMove1(self):
+-        firstShipId = self.attackShipIds[0]
+-        firstShip = self.cr.doId2do[firstShipId]
++        # the first attack ship may not be on this client yet, or there may be none: look at the Black Pearl then
++        firstShip = None
++        if self.attackShipIds:
++            firstShip = self.cr.doId2do.get(self.attackShipIds[0])
++
++        if firstShip is None or firstShip.isEmpty():
++            firstShip = self.getPearl() or localAvatar
+         
+         def lerpLookAtAttackShip(t):
+             if firstShip and not firstShip.isEmpty():
+@@ -530,6 +535,9 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+         return ival
+     
+     def startPearlAndGoliathCopy(self):
++        if not self.pearl or not self.goliath:
++            return
++
+         pearlStartPos = Point3(-483, -5813, 0)
+         pearlStartHpr = Point3(354, 0, 0)
+         pearlEndPos = Point3(-815, -8200, 0)
+@@ -586,8 +594,10 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+                 self.goliath.wake.startAnimate(self.goliath)
+     
+     def startStageFourCutscene(self):
+-        if localAvatar.ship.clientController == localAvatar.doId:
+-            localAvatar.ship.controlManager.disable()
++        # a pirate on foot has no ship (localAvatar.ship is None)
++        ship = getattr(localAvatar, 'ship', None)
++        if ship and ship.clientController == localAvatar.doId:
++            ship.controlManager.disable()
+         
+         base.silenceInput()
+         self.cameraState = localAvatar.cameraFSM.state
+@@ -597,10 +607,12 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+             self.cameraSubject = localAvatar.cameraFSM.orbitCamera.subject
+         
+         self.stageFourCutscene = True
+-        if localAvatar.ship.steeringAvId == localAvatar.doId:
+-            localAvatar.ship.stopPosHprBroadcast()
++        if ship and ship.steeringAvId == localAvatar.doId:
++            ship.stopPosHprBroadcast()
+         
+-        self.pearl.setLockSails(True)
++        if self.pearl:
++            self.pearl.setLockSails(True)
++
+         self.pearlCopy = render.attachNewNode('rootDummy')
+         self.goliathCopy = render.attachNewNode('rootDummy')
+         f = render.getFog()
+@@ -613,14 +625,19 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+ 
+     def stopStageFourCutscene(self):
+         base.reviveInput()
+-        if localAvatar.ship.clientController == localAvatar.doId:
+-            localAvatar.ship.controlManager.enable()
++        ship = getattr(localAvatar, 'ship', None)
++        if ship and ship.clientController == localAvatar.doId:
++            ship.controlManager.enable()
+         
+-        self.pearl.show()
+-        self.goliath.show()
++        if self.pearl:
++            self.pearl.show()
++
++        if self.goliath:
++            self.goliath.show()
++
+         self.stageFourCutscene = False
+-        if localAvatar.ship.steeringAvId == localAvatar.doId:
+-            localAvatar.ship.startPosHprBroadcast()
++        if ship and ship.steeringAvId == localAvatar.doId:
++            ship.startPosHprBroadcast()
+         
+         self.stopPearlAndGoliathCopy()
+         base.transitions.fadeIn()
+@@ -745,7 +762,9 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+         
+         base.localAvatar.gameFSM.request('Cutscene')
+         pearl = self.getPearl()
+-        pearl.hideStatusDisplay()
++        if pearl:
++            pearl.hideStatusDisplay()
++
+         if self.camIval:
+             self.camIval.pause()
+             self.camIval = None
+@@ -763,14 +782,16 @@ class TreasureMapBlackPearl(DistributedTreasureMapInstance.DistributedTreasureMa
+     
+     def getCameraMoveReward(self):
+         
++        target = self.pearl or localAvatar
++
+         def lerpLookAtAttackShip(t):
+-            camera.lookAt(self.pearl)
++            camera.lookAt(target)
+ 
+         startPos = Vec3(150, 300, 80)
+         endPos = Vec3(400, -550, 110)
+-        dummyNode = self.pearl.attachNewNode('cameraDummy')
++        dummyNode = target.attachNewNode('cameraDummy')
+         dummyNode.setPos(0, 0, 0)
+-        dummyNode.lookAt(self.pearl)
++        dummyNode.lookAt(target)
+         camera.reparentTo(dummyNode)
+         camera.setPos(150, 300, 80)
+         ival = Sequence(Func(base.transitions.letterboxOn), Parallel(LerpPosInterval(camera, 12.0, endPos, startPos = startPos, blendType = 'easeInOut'), LerpFunc(lerpLookAtAttackShip, 12.0), Sequence(Wait(12.0), Func(base.transitions.fadeOut, 2))))
+-- 
+2.53.0
+

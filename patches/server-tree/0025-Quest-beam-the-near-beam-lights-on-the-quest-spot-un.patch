@@ -1,0 +1,65 @@
+From 2b0a8d79a85cc3cf03d4cf4df33df33b6deb0821 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 18:09:33 -0800
+Subject: [PATCH 025/371] Quest beam: the near beam lights on the quest spot
+ until the NPC is in view
+
+Within 150 ft of a quest NPC the indicator switches to its near beam and puts it on the NPC. The
+NPC object comes into view closer than that (IND8: Darby not loaded at 92 ft), and with no NPC
+yet the beam stayed under render at the world origin: no beam on the target, and a glowing beam
+somewhere else in the town. Until the NPC (or quest ship) arrives the beam now goes on the
+indicator node, which already stands on the quest spot; stepObjArrived moves it onto the NPC.
+
+Client files (QuestIndicatorNodeNPC, QuestIndicatorNodeShip).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestIndicatorNodeNPC.py  | 10 ++++++----
+ pirates/quest/QuestIndicatorNodeShip.py | 10 ++++++----
+ 2 files changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/pirates/quest/QuestIndicatorNodeNPC.py b/pirates/quest/QuestIndicatorNodeNPC.py
+index 31cf558..684ae0c 100644
+--- a/pirates/quest/QuestIndicatorNodeNPC.py
++++ b/pirates/quest/QuestIndicatorNodeNPC.py
+@@ -75,10 +75,12 @@ class QuestIndicatorNodeNPC(QuestIndicatorGridNode):
+         self.nearEffect = QuestIndicatorEffect.getEffect()
+         self.nearEffect.setWantBottomEffect(self.wantBottomEffect)
+         self.nearEffect.startLoop()
+-        if self.stepObj:
+-            self.nearEffect.particleDummy.reparentTo(self.stepObj)
+-            self.nearEffect.reparentTo(self.stepObj)
+-        
++        # the NPC comes into view closer than the 150 ft near zone: until it does, the beam goes on this node, which
++        # stands on the quest spot (left under render it lit at the world origin). stepObjArrived lights it on the NPC.
++        target = self.stepObj if self.stepObj else self
++        self.nearEffect.particleDummy.reparentTo(target)
++        self.nearEffect.reparentTo(target)
++
+         if self.muted:
+             self.hideEffect()
+ 
+diff --git a/pirates/quest/QuestIndicatorNodeShip.py b/pirates/quest/QuestIndicatorNodeShip.py
+index 73c99ae..136f858 100644
+--- a/pirates/quest/QuestIndicatorNodeShip.py
++++ b/pirates/quest/QuestIndicatorNodeShip.py
+@@ -79,10 +79,12 @@ class QuestIndicatorNodeShip(QuestIndicatorGridNode):
+         self.nearEffect = QuestIndicatorEffect.getEffect()
+         self.nearEffect.setWantBottomEffect(self.wantBottomEffect)
+         self.nearEffect.startLoop()
+-        if self.stepObj:
+-            self.nearEffect.particleDummy.reparentTo(self.stepObj)
+-            self.nearEffect.reparentTo(self.stepObj)
+-        
++        # as for an NPC: until the ship comes into view the beam goes on this node, on the quest spot (left under
++        # render it lit at the world origin). stepObjArrived lights it on the ship.
++        target = self.stepObj if self.stepObj else self
++        self.nearEffect.particleDummy.reparentTo(target)
++        self.nearEffect.reparentTo(target)
++
+         if self.muted:
+             self.hideEffect()
+ 
+-- 
+2.53.0
+

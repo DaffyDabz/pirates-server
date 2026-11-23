@@ -1,0 +1,34 @@
+From f4970a12928187f10cb0d125ac5e41ee151c1a15 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:04:41 -0800
+Subject: [PATCH 237/371] pirates: a team dock's dinghy offers only its own
+ team's ships (0312)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedDinghyAI.py | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/pirates/world/DistributedDinghyAI.py b/pirates/world/DistributedDinghyAI.py
+index c22e99d..7368f39 100644
+--- a/pirates/world/DistributedDinghyAI.py
++++ b/pirates/world/DistributedDinghyAI.py
+@@ -285,6 +285,15 @@ class DistributedDinghyAI(DistributedInteractiveAI):
+         if ship.getParentObj() is None:
+             return False
+ 
++        # family server (0312): a team dock's dinghy (Sea Battle) offers and boards only ships of its own team or
++        # of no team. A friend's, guildmate's, crewmate's or public ship of the other team was offered there too,
++        # and boarding it put the pirate on the other side. Every list and every select comes through here.
++        dinghyTeam = self.getSiegeTeam()
++        getShipTeam = getattr(ship, 'getSiegeTeam', None)
++        shipTeam = getShipTeam() if getShipTeam is not None else 0
++        if dinghyTeam and shipTeam and shipTeam != dinghyTeam:
++            return False
++
+         # check to see if the ship is full
+         if len(ship.getCrew()) >= ship.getMaxCrew():
+             return False
+-- 
+2.53.0
+

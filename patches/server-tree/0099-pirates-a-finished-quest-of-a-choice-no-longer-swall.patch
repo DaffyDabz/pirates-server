@@ -1,0 +1,78 @@
+From 1726dfce90f9ba905f266c51aee539fce5c14c3a Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:12:28 -0800
+Subject: [PATCH 099/371] pirates: a finished quest of a choice no longer
+ swallows the kills and visits of its other quests, as server-tree patch 0113
+ (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 36 +++++++++++++++++++++++++++++----
+ 1 file changed, 32 insertions(+), 4 deletions(-)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 7d222d4..a52f92b 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -533,9 +533,23 @@ class QuestManagerAI(DirectObject):
+         if checkPoint != -1 and avatar.getTutorial() < checkPoint:
+             avatar.b_setTutorial(checkPoint)
+ 
+-        questStub.handleQuestComplete(quest, questHistory)
++        if not questStub.handleQuestComplete(quest, questHistory):
++            # handed in already: a quest choice keeps a finished quest until its other quests are done too, and
++            # every later call (skipQuest, a talk) paid its reward again
++            return
++
+         self._giveRewards(avatar, quest.getRewards())
+ 
++        # family server: a quest choice (Joshamee's "sink a Navy ship" and "defeat Navy guards") hands out all its
++        # quests and keeps the finished one until the rest are done. The tracked quest stayed on the finished one,
++        # which has no goal, so there was no arrow or beam. Track an unfinished quest of the same choice.
++        if self.getQuest(avatar, questDoId=quest.doId) is quest and avatar.getActiveQuest() == quest.getQuestId():
++            for questId in avatar.questStatus.getSiblingQuestIds(quest.getQuestId()):
++                sibling = self.getQuest(avatar, questId=questId)
++                if sibling is not None and not sibling.isComplete():
++                    avatar.b_setActiveQuest(questId)
++                    break
++
+     def getReturnNpcUids(self, quest):
+         # the NPCs a finished quest is handed in to: the quest's return givers, its tasks' (a visit task's NPC),
+         # then whoever gave it
+@@ -574,6 +588,23 @@ class QuestManagerAI(DirectObject):
+             # check to see if the quest event has been completed,
+             # if so then handle the callback we set...
+             if quest.isComplete():
++                if wasComplete:
++                    # family server: a quest choice keeps its finished quest until the other quests are done.
++                    # That held quest took every later kill, sinking, chest, bribe and talk for itself (the loop
++                    # stopped there), so "defeat Navy guards" never counted after "sink a Navy ship", a bribe
++                    # charged gold for nothing and every event paid the held quest's reward again.
++                    questStub = avatar.questStatus.getQuestStub(quest.getQuestId())
++                    if questStub is not None and questStub.getComplete():
++                        continue
++
++                    if npc is None:
++                        # not handed in this session (the server restarted): hand it back to its ladder, which
++                        # pays nothing, and let the event go on to the other quests
++                        if questStub is not None and not self.waitsForHandIn(quest):
++                            questStub.handleQuestComplete(quest, avatar.getQuestHistory())
++
++                        continue
++
+                 if wasComplete and npc is not None:
+                     # done earlier, only the hand-in left: that belongs to the quest's own NPC. Any NPC the
+                     # pirate talked to used to play the first finished quest's scene, and the visit this
+@@ -588,9 +619,6 @@ class QuestManagerAI(DirectObject):
+                     # quest log never said where to go back and the NPC's hand-in was skipped. It now waits, done,
+                     # for that NPC (the beam points there); talking to him hands it in. It must not swallow
+                     # other quests' events while it waits.
+-                    if wasComplete:
+-                        continue
+-
+                     if callback is not None:
+                         callback(quest)
+ 
+-- 
+2.53.0
+

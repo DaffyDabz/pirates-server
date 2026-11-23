@@ -1,0 +1,109 @@
+From 12f2d713c0f5f79f64677c41cbd389174195439b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 04:10:39 -0800
+Subject: [PATCH 143/371] pirates: big enemy ships stay out of the sea between
+ Port Royal and Tortuga too, so a new pirate's ship is not sunk on the Chapter
+ 3 voyage
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/StarterWaters.py | 43 ++++++++++++++++++++++++++++++++++-
+ 1 file changed, 42 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/ship/StarterWaters.py b/pirates/ship/StarterWaters.py
+index 9e791fa..9a1d43f 100644
+--- a/pirates/ship/StarterWaters.py
++++ b/pirates/ship/StarterWaters.py
+@@ -10,6 +10,14 @@ first (Port Royal and Tortuga). Enemy ships there stay at starter levels:
+   those waters, or a straight course through them;
+ - a starter ship that spawned there keeps its patrol points there.
+ 
++The waters are a circle round each island plus, since 2026-11-18 (patch
++0157), the strip between them: every point within the radius of the straight
++course from one starter island to the next. Port Royal and Tortuga are 21,400
++ft apart, so two 9,000 ft circles left a 3,400 ft gap right on the Chapter 3
++voyage to Tortuga (c3visitJack). Level 29-44 ships sat in that gap and sank a
++new pirate's level-1 ship there (NEWP8-NP2: an EITC Juggernaut lv44 at
++(2477, 8848), an EITC Corsair lv37 near (6967, 8360)).
++
+ The open-source spawn code drew any of its 27 regular classes (levels 2-44)
+ anywhere on the ocean and sent each ship to random points anywhere, so a new
+ pirate leaving Port Royal met mostly level 16-44 ships (SMOKE-shipfight
+@@ -17,7 +25,7 @@ pirate leaving Port Royal met mostly level 16-44 ships (SMOKE-shipfight
+ 
+ Configs: npcship-starter-islands (island uids, space separated), npcship-
+ starter-radius (feet from each island's centre; 0 turns the rule off),
+-npcship-starter-level-max.
++npcship-starter-level-max, npcship-starter-corridor (0 = circles only).
+ """
+ import math
+ 
+@@ -31,6 +39,7 @@ ISLANDS = config.GetString('npcship-starter-islands',
+                            '1150922126.8dzlu 1156207188.95dzlu').split()
+ RADIUS = config.GetFloat('npcship-starter-radius', 9000.0)
+ LEVEL_MAX = config.GetInt('npcship-starter-level-max', 12)
++CORRIDOR = config.GetBool('npcship-starter-corridor', True)
+ 
+ _centers = None
+ 
+@@ -71,12 +80,24 @@ def starterClasses(classes):
+     return [c for c in classes if isStarterClass(c)]
+ 
+ 
++def corridors(air):
++    """The straight course from each starter island to the next, as
++    (x0, y0, x1, y1). Empty when npcship-starter-corridor is 0."""
++    c = centers(air)
++    if not CORRIDOR:
++        return []
++    return [(c[i][0], c[i][1], c[i + 1][0], c[i + 1][1]) for i in range(len(c) - 1)]
++
++
+ def inStarterWaters(air, x, y):
+     if not enabled():
+         return False
+     for cx, cy in centers(air):
+         if math.hypot(x - cx, y - cy) < RADIUS:
+             return True
++    for x0, y0, x1, y1 in corridors(air):
++        if _segDist(x, y, x0, y0, x1, y1) < RADIUS:
++            return True
+     return False
+ 
+ 
+@@ -87,12 +108,32 @@ def _segDist(px, py, x0, y0, x1, y1):
+     return math.hypot(px - (x0 + t * dx), py - (y0 + t * dy))
+ 
+ 
++def _segsCross(ax, ay, bx, by, cx, cy, dx, dy):
++    def side(px, py, qx, qy, rx, ry):
++        return (qx - px) * (ry - py) - (qy - py) * (rx - px)
++    d1 = side(cx, cy, dx, dy, ax, ay)
++    d2 = side(cx, cy, dx, dy, bx, by)
++    d3 = side(ax, ay, bx, by, cx, cy)
++    d4 = side(ax, ay, bx, by, dx, dy)
++    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
++
++
++def _segSegDist(ax, ay, bx, by, cx, cy, dx, dy):
++    if _segsCross(ax, ay, bx, by, cx, cy, dx, dy):
++        return 0.0
++    return min(_segDist(ax, ay, cx, cy, dx, dy), _segDist(bx, by, cx, cy, dx, dy),
++               _segDist(cx, cy, ax, ay, bx, by), _segDist(dx, dy, ax, ay, bx, by))
++
++
+ def crossesStarterWaters(air, x0, y0, x1, y1):
+     if not enabled():
+         return False
+     for cx, cy in centers(air):
+         if _segDist(cx, cy, x0, y0, x1, y1) < RADIUS:
+             return True
++    for a, b, c, d in corridors(air):
++        if _segSegDist(x0, y0, x1, y1, a, b, c, d) < RADIUS:
++            return True
+     return False
+ 
+ 
+-- 
+2.53.0
+

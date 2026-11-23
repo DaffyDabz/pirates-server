@@ -1,0 +1,76 @@
+From 969074385ba9e232a1933fa783fda54aaf0627cc Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:53:20 -0800
+Subject: [PATCH 107/371] pirates: random named bosses come back after they are
+ killed, as server-tree patch 0121 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedEnemySpawnerAI.py | 23 ++++++++++++++++++---
+ 1 file changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/battle/DistributedEnemySpawnerAI.py b/pirates/battle/DistributedEnemySpawnerAI.py
+index 60c11b2..f64256e 100644
+--- a/pirates/battle/DistributedEnemySpawnerAI.py
++++ b/pirates/battle/DistributedEnemySpawnerAI.py
+@@ -36,6 +36,8 @@ class SpawnNodeBase:
+         self._parent = parent
+         self._objKey = objKey
+         self._npc = None
++        # family server: the random boss this node is showing, given back when it dies
++        self._randomBoss = None
+ 
+         # allow our logger to send notify messages...
+         self.notify.setInfo(True)
+@@ -114,6 +116,18 @@ class SpawnNodeBase:
+ 
+     def __died(self, npc):
+         npc.requestDelete()
++        self._releaseRandomBoss()
++
++    def _releaseRandomBoss(self):
++        # family server: a random boss (5% of spawns) is kept in randomBosses so only one of each walks the
++        # district at a time, but nothing ever took it out again: each random boss appeared once per server run
++        # and never again. Give it back when this node's npc goes away.
++        if self._randomBoss is None:
++            return
++        randomBosses = self.air.enemySpawner.randomBosses
++        if self._randomBoss in randomBosses:
++            randomBosses.remove(self._randomBoss)
++        self._randomBoss = None
+ 
+     def __respawn(self, task):
+         if not self._npc:
+@@ -124,12 +138,13 @@ class SpawnNodeBase:
+ 
+         self._npc.requestDelete()
+         self._npc = None
++        self._releaseRandomBoss()
+ 
+         respawns = self.objectData.get('Respawns', True)
+         if not respawns:
+-            #TODO: is this the proper way of handling this?
+-            removeSpawnNode(self.objType, self)
+-            return
++            # family server: this called a bare removeSpawnNode (NameError inside a task, which ends the district)
++            self.air.enemySpawner.removeSpawnNode(self.objType, self)
++            return task.done
+ 
+         #TODO: Is this a constant?
+         spawnTimer = 20
+@@ -381,10 +396,12 @@ class EnemySpawnNode(SpawnNodeBase):
+                 if bossType not in self.air.enemySpawner.randomBosses:
+                     self.air.enemySpawner.randomBosses.append(bossType)
+                     avatarType = bossType
++                    self._randomBoss = bossType
+             elif config.GetBool('force-random-bosses', False):
+                 if bossType not in self.air.enemySpawner.randomBosses:
+                     self.air.enemySpawner.randomBosses.append(bossType)
+                     avatarType = bossType
++                    self._randomBoss = bossType
+ 
+         return avatarType
+ 
+-- 
+2.53.0
+

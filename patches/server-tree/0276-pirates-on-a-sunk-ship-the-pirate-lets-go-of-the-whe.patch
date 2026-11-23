@@ -1,0 +1,71 @@
+From 4cd44186816ef0d5b19e43f1cff20deb1161f6f1 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 10:46:54 -0800
+Subject: [PATCH 276/371] pirates: on a sunk ship the pirate lets go of the
+ wheel or cannon and goes ashore, or home if the island is not loaded (0365,
+ patch 25)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShip.py | 44 +++++++++++++++++++++++++++------
+ 1 file changed, 37 insertions(+), 7 deletions(-)
+
+diff --git a/pirates/ship/DistributedShip.py b/pirates/ship/DistributedShip.py
+index f021d94..ead81e8 100644
+--- a/pirates/ship/DistributedShip.py
++++ b/pirates/ship/DistributedShip.py
+@@ -3889,14 +3889,44 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+ 
+     @report(types=['frameCount', 'deltaStamp', 'args'], dConfigParam='want-shipboard-report')
+     def sendCrewToIsland(self, islandId, posH):
++        # family server (11-19, 0365): a sunk ship sends each pirate on its deck ashore, and since 0364 asks again
++        # every 10 s until he goes. Before, a pirate at the wheel, on a cannon or talking to someone was moved
++        # while still holding it, and an island missing from his game raised, so he stayed on the deck. Now he
++        # lets go first, a repeat after he left is ignored, his own teleport is left to finish, and anything that
++        # goes wrong sends him to his return island with a normal teleport.
++        if getattr(self, '_crewSentAshore', False) and localAvatar.parentId != self.doId:
++            return
++
++        if base.cr.teleportMgr.amInTeleport():
++            return
++
++        self._crewSentAshore = True
++        try:
++            currInteractive = base.cr.interactionMgr.getCurrentInteractive()
++            if currInteractive:
++                currInteractive.requestExit()
++        except Exception as e:
++            self.notify.warning('sendCrewToIsland: could not let go of what he was using: %s' % e)
++
+         island = base.cr.doId2do.get(islandId)
+-        localAvatar.removeFromShip(self)
+-        posHpr = posH + (0, 0)
+-        islandUid = island.getUniqueId()
+-        base.cr.loadingScreen.showTarget(islandUid)
+-        base.cr.loadingScreen.showHint(islandUid)
+-        base.cr.loadingScreen.show()
+-        base.cr.teleportMgr.localTeleportPos(posHpr, island)
++        if island is not None:
++            try:
++                localAvatar.removeFromShip(self)
++                posHpr = tuple(posH) + (0, 0)
++                islandUid = island.getUniqueId()
++                base.cr.loadingScreen.showTarget(islandUid)
++                base.cr.loadingScreen.showHint(islandUid)
++                base.cr.loadingScreen.show()
++                base.cr.teleportMgr.localTeleportPos(posHpr, island)
++                return
++            except Exception as e:
++                self.notify.warning('sendCrewToIsland: could not land on %s: %s' % (islandId, e))
++        else:
++            self.notify.warning('sendCrewToIsland: island %s is not in this game' % islandId)
++
++        from pirates.quest.QuestConstants import LocationIds
++        base.cr.teleportMgr.initiateTeleport(PiratesGlobals.INSTANCE_MAIN, 'mainWorld',
++            locationUid=localAvatar.returnLocation or LocationIds.PORT_ROYAL_ISLAND, doEffect=False)
+ 
+     def getShipInfo(self):
+         return [self.doId, self.getName(), self.shipClass, [ [dMast.getMastType(), dMast.getPosIndex(), dMast.getSailConfig()] for mast, dMast in self.masts.values() if dMast ]]
+-- 
+2.53.0
+

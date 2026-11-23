@@ -1,0 +1,54 @@
+From a3778823f1c3d463f261f5fd49f4b2d1d500beef Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 13:05:12 -0800
+Subject: [PATCH 278/371] pirates client: the sword, pistol, ship-name and
+ stop-talking quest steps do nothing once the trainer is gone (0327)
+
+---
+ pirates/npc/DistributedNPCTownfolk.py | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/pirates/npc/DistributedNPCTownfolk.py b/pirates/npc/DistributedNPCTownfolk.py
+index e55e275..a39eac2 100644
+--- a/pirates/npc/DistributedNPCTownfolk.py
++++ b/pirates/npc/DistributedNPCTownfolk.py
+@@ -191,6 +191,9 @@ class DistributedNPCTownfolk(DistributedBattleNPC.DistributedBattleNPC, Distribu
+     
+     def requestStopInteract(self):
+         messenger.send('stop interact', [])
++        # Quest scripts call this from an interval; the NPC may be gone by then.
++        if getattr(self, 'cr', None) is None:
++            return
+         self.requestExit()
+     
+     def startInteract(self, av):
+@@ -638,10 +641,16 @@ class DistributedNPCTownfolk(DistributedBattleNPC.DistributedBattleNPC, Distribu
+         self.ignore('makeSale')
+ 
+     def swordTutorialPt1(self):
++        # Quest scripts call this from an interval; the NPC may be gone by then.
++        if getattr(self, 'cr', None) is None:
++            return
+         self.sendUpdate('swordTutorialPt1', [localAvatar.getDoId()])
+         localAvatar.cameraFSM.request('FPS')
+     
+     def pistolTutorialPt1(self):
++        # Quest scripts call this from an interval; the NPC may be gone by then.
++        if getattr(self, 'cr', None) is None:
++            return
+         self.sendUpdate('pistolTutorialPt1', [localAvatar.getDoId()])
+     
+     def setHp(self, hitPoints, quietly):
+@@ -711,6 +720,9 @@ class DistributedNPCTownfolk(DistributedBattleNPC.DistributedBattleNPC, Distribu
+         self.shipNamePanel.destroy()
+         self.shipNamePanel = None
+         avId = localAvatar.getDoId()
++        # The name panel can outlive the NPC (it left while the kid was choosing).
++        if getattr(self, 'cr', None) is None:
++            return
+         self.sendUpdate('shipTutorialPt1', [avId, shipName])
+     
+     def playDialogMovie(self, dialogId, doneCallback = None, oldLocalAvState = None):
+-- 
+2.53.0
+

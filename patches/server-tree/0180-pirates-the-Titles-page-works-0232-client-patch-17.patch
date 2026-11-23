@@ -1,0 +1,229 @@
+From eb8e489ccd7247d1e32243a489018a0f2f2825f8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:27:12 -0800
+Subject: [PATCH 180/371] pirates: the Titles page works (0232, client, patch
+ 17)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/DistributedPlayerPirate.py | 26 ++++----
+ pirates/pirate/LocalPirate.py             |  2 +-
+ pirates/piratesgui/TitlesPage.py          | 73 ++++++++++++++++++-----
+ pirates/ship/DistributedShip.py           |  2 +-
+ 4 files changed, 75 insertions(+), 28 deletions(-)
+
+diff --git a/pirates/pirate/DistributedPlayerPirate.py b/pirates/pirate/DistributedPlayerPirate.py
+index bb146a1..d49e8a1 100644
+--- a/pirates/pirate/DistributedPlayerPirate.py
++++ b/pirates/pirate/DistributedPlayerPirate.py
+@@ -376,14 +376,14 @@ class DistributedPlayerPirate(DistributedPirateBase, DistributedPlayer, Distribu
+ 
+     def setBadgeIcon(self, titleId, rank):
+         self.badge = (titleId, rank)
+-        if titleId < 0 or rank < 0:
++        if titleId <= 0 or rank <= 0:  # family server (0232): the database's (0, 0) is no badge
+             self.badge = None
+ 
+         self.refreshName()
+ 
+     def setShipBadgeIcon(self, titleId, rank):
+         self.shipBadge = (titleId, rank)
+-        if titleId < 0 or rank < 0:
++        if titleId <= 0 or rank <= 0:  # family server (0232): the database's (0, 0) is no badge
+             self.shipBadge = None
+ 
+     def sendRequestSetBadgeIcon(self, titleId, rank):
+@@ -457,17 +457,21 @@ class DistributedPlayerPirate(DistributedPirateBase, DistributedPlayer, Distribu
+             else:
+                 text = '%s%s  \x01smallCaps\x01%s%s%s\x05%s\x05\x02\x02\n\x01guildName\x01%s\x02' % (self.title, self.name, levelColor, PLocalizer.Lv, level, x2XPTempAwardIndicator, guildName)
+             nameText['text'] = text
+-            if not base.config.GetBool('want-titles-page', 0):
+-                if Freebooter.getPaidStatus(self.doId):
+-                    if self.getFounder():
+-                        nameText['fg'] = (1, 1, 1, 1)
+-                        nameText['font'] = PiratesGlobals.getPirateOutlineFont()
+-                        nameText['text'] = '\x05goldFounderIcon\x05 \x01goldFounder\x01%s\x02' % text
++            # family server (0232): the name colours stay when the Titles page is on;
++            # only the gold coin goes when he already shows the Founder badge
++            if Freebooter.getPaidStatus(self.doId):
++                if self.getFounder():
++                    nameText['fg'] = (1, 1, 1, 1)
++                    nameText['font'] = PiratesGlobals.getPirateOutlineFont()
++                    if base.config.GetBool('want-titles-page', 0) and self.badge and self.badge[0] == TitleGlobals.FounderTitle:
++                        nameText['text'] = '\x01goldFounder\x01%s\x02' % text
+                     else:
+-                        nameText['fg'] = (0.4, 0.3, 0.95, 1)
+-                        nameText['font'] = PiratesGlobals.getPirateOutlineFont()
++                        nameText['text'] = '\x05goldFounderIcon\x05 \x01goldFounder\x01%s\x02' % text
+                 else:
+-                    nameText['fg'] = (0.5, 0.5, 0.5, 1)
++                    nameText['fg'] = (0.4, 0.3, 0.95, 1)
++                    nameText['font'] = PiratesGlobals.getPirateOutlineFont()
++            else:
++                nameText['fg'] = (0.5, 0.5, 0.5, 1)
+ 
+             prefix = ''
+             if self.isAFK:
+diff --git a/pirates/pirate/LocalPirate.py b/pirates/pirate/LocalPirate.py
+index 04d266d..bc68d85 100644
+--- a/pirates/pirate/LocalPirate.py
++++ b/pirates/pirate/LocalPirate.py
+@@ -1862,7 +1862,7 @@ class LocalPirate(DistributedPlayerPirate, LocalAvatar):
+ 
+     def setBadgeIcon(self, titleId, rank):
+         DistributedPlayerPirate.setBadgeIcon(self, titleId, rank)
+-        if self.guiMgr.titlesPage:
++        if getattr(self, 'guiMgr', None) and getattr(self.guiMgr, 'titlesPage', None):  # family server (0232)
+             self.guiMgr.titlesPage.initLandTitleActive(titleId)
+         self.refreshName()
+ 
+diff --git a/pirates/piratesgui/TitlesPage.py b/pirates/piratesgui/TitlesPage.py
+index 86efa47..0efe3a4 100644
+--- a/pirates/piratesgui/TitlesPage.py
++++ b/pirates/piratesgui/TitlesPage.py
+@@ -31,7 +31,7 @@ class TitlePanel(DirectFrame):
+         self.seaActive = 0
+         self.panelIndex = panelIndex
+         self.titlesPage = titlesPage
+-        self.titleNameFrame = DirectFrame(parent = self, relief = None, pos = (0.38, 0, 0.01), text = TitleGlobals.getTitleName(self.titleId, self.expPoints), text_align = TextNode.ALeft, text_scale = 0.032, text_pos = (0, -0.01), text_fg = PiratesGuiGlobals.TextFG2, text_wordwrap = 15, text_shadow = (0, 0, 0, 1), textMayChange = 1, text_font = PiratesGlobals.getInterfaceFont())
++        self.titleNameFrame = DirectFrame(parent = self, relief = None, pos = (0.38, 0, 0.01), text = TitleGlobals.getTitleName(self.titleId), text_align = TextNode.ALeft, text_scale = 0.032, text_pos = (0, -0.01), text_fg = PiratesGuiGlobals.TextFG2, text_wordwrap = 15, text_shadow = (0, 0, 0, 1), textMayChange = 1, text_font = PiratesGlobals.getInterfaceFont())
+         self.titleDescFrame = DirectFrame(parent = self, relief = None, pos = (0.385, 0, -0.095), text = TitleGlobals.getTitleDesc(self.titleId), text_align = TextNode.ALeft, text_scale = 0.03, text_pos = (0, -0.01), text_fg = PiratesGuiGlobals.TextFG2, text_wordwrap = 15, text_shadow = (0, 0, 0, 1), textMayChange = 1, text_font = PiratesGlobals.getInterfaceFont())
+         shipcard = loader.loadModelOnce('models/gui/ship_battle')
+         tex = shipcard.find('**/ship_battle_speed_bar*')
+@@ -45,7 +45,12 @@ class TitlePanel(DirectFrame):
+     def refresh(self):
+         inv = localAvatar.getInventory()
+         if inv:
+-            self.expPoints = inv.getStackQuantity(TitleGlobals.getInventoryType(self.titleId))
++            invType = TitleGlobals.getInventoryType(self.titleId)
++            if invType is None:
++                # family server (0232): the Founder title has no inventory count
++                self.expPoints = 1 if localAvatar.getFounder() else 0
++            else:
++                self.expPoints = inv.getStackQuantity(invType)
+             self.rank = TitleGlobals.getRank(self.titleId, self.expPoints)
+             self.maxRank = TitleGlobals.getMaxRank(self.titleId)
+             self.expTarget = TitleGlobals.getBreakpoints(self.titleId)[min(self.rank + 1, self.maxRank)]
+@@ -54,7 +59,7 @@ class TitlePanel(DirectFrame):
+             print('No Inventory')
+         print('TitleID ', self.titleId, ' has ', self.expPoints, ' exp')
+         if self.titleNameFrame:
+-            self.titleNameFrame['text'] = TitleGlobals.getTitleName(self.titleId, self.expPoints)
++            self.titleNameFrame['text'] = TitleGlobals.getTitleName(self.titleId)
+         
+         if self.expMeter:
+             value = 0
+@@ -75,7 +80,12 @@ class TitlePanel(DirectFrame):
+             self.expMeterText['text'] = text
+         
+         if self.iconFrame:
+-            self.iconFrame['image'] = self.iconModel.find('**/' + TitleGlobals.getIconName(self.titleId, self.rank))
++            # family server (0232): rank 0 has no icon (it crashed here); show the first, greyed
++            self.iconFrame['image'] = self.iconModel.find('**/' + TitleGlobals.getIconName(self.titleId, max(self.rank, 1)))
++            if self.rank < 1:
++                self.iconFrame.setColorScale(0.4, 0.4, 0.4, 1)
++            else:
++                self.iconFrame.clearColorScale()
+         
+         if self.landButton:
+             self.landButton['image'] = [
+@@ -111,6 +121,9 @@ class TitlePanel(DirectFrame):
+         DirectFrame.destroy(self)
+     
+     def landToggle(self, notifyParent = 1):
++        if notifyParent and not self.landActive and self.rank < 1:
++            return  # family server (0232): nothing to show until he earns rank 1
++
+         print('Toggling land')
+         self.landActive = 1 - self.landActive
+         print('Land', self.panelIndex, ' is ', self.landActive)
+@@ -121,6 +134,9 @@ class TitlePanel(DirectFrame):
+             self.titlesPage.setLandActive(self.panelIndex, self.landActive)
+ 
+     def seaToggle(self, notifyParent = 1):
++        if notifyParent and not self.seaActive and self.rank < 1:
++            return  # family server (0232): nothing to show until he earns rank 1
++
+         print('Toggling sea')
+         self.seaActive = 1 - self.seaActive
+         print('Sea ', self.seaActive)
+@@ -182,7 +198,17 @@ class TitlesPage(InventoryPage.InventoryPage):
+         self.titles = None
+         InventoryPage.InventoryPage.destroy(self)
+ 
++    def refresh(self):
++        # family server (0232): GuiManager.showTitlesPanel (the B key) calls this; it was missing
++        for panel in self.titles or []:
++            panel.refresh()
++
+     def show(self):
++        # family server (0232): switch on the badges he has saved
++        badge = getattr(localAvatar, 'badge', None)
++        self.initLandTitleActive(badge[0] if badge else -1)
++        shipBadge = getattr(localAvatar, 'shipBadge', None)
++        self.initSeaTitleActive(shipBadge[0] if shipBadge else -1)
+         for panel in self.titles:
+             panel.refresh()
+         
+@@ -235,17 +261,34 @@ class TitlesPage(InventoryPage.InventoryPage):
+             
+             self.selectedSeaIndex = panelIndex
+ 
++        # family server (0232): the sea badge is sent too (it flies on his ship)
++        if self.selectedSeaIndex < 0:
++            localAvatar.sendRequestSetShipBadgeIcon(-1, -1)
++        else:
++            titlePanel = self.titles[self.selectedSeaIndex]
++            localAvatar.sendRequestSetShipBadgeIcon(titlePanel.titleId, titlePanel.rank)
++
+     def initLandTitleActive(self, titleId):
+-        if titleId < 0:
+-            return
+-        
+-        if self.selectedLandIndex >= 0:
+-            return
+-        
+-        for panel in self.titles:
+-            if panel.titleId == titleId:
+-                if not panel.landActive:
+-                    panel.landToggle()
+-        
++        # family server (0232): the server says which badge is saved (after every
++        # request too, so a refused one is switched back off); match the page to it
++        self.selectedLandIndex = self.syncActive(titleId, 'landActive', 'landButton')
++
++    def initSeaTitleActive(self, titleId):
++        # family server (0232): LocalPirate.setShipBadgeIcon calls this; it was missing
++        self.selectedSeaIndex = self.syncActive(titleId, 'seaActive', 'seaButton')
++
++    def syncActive(self, titleId, activeName, buttonName):
++        selected = -1
++        for index, panel in enumerate(self.titles or []):
++            active = int(titleId > 0 and panel.titleId == titleId)
++            setattr(panel, activeName, active)
++            button = getattr(panel, buttonName, None)
++            if button:
++                button['image'] = [
++                    panel.iconInvisible,
++                    panel.iconVisible][active]
+ 
++            if active:
++                selected = index
+ 
++        return selected
+diff --git a/pirates/ship/DistributedShip.py b/pirates/ship/DistributedShip.py
+index b154160..b6d7c1c 100644
+--- a/pirates/ship/DistributedShip.py
++++ b/pirates/ship/DistributedShip.py
+@@ -2597,7 +2597,7 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+         return self.getTeam()
+ 
+     def setBadge(self, titleId, rank):
+-        if titleId < 0 or rank < 0:
++        if titleId <= 0 or rank <= 0:  # family server (0232): a new ship's (0, 0) is no badge
+             self.badge = None
+         else:
+             self.badge = (titleId, rank)
+-- 
+2.53.0
+

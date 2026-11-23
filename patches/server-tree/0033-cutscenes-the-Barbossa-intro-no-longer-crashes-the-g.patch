@@ -1,0 +1,102 @@
+From 35a3e452b2fd41c0b01eec33615ab4a177c1942b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 20:53:44 -0800
+Subject: [PATCH 033/371] cutscenes: the Barbossa intro no longer crashes the
+ game
+
+Walking out of the tunnel into Barbossa's cave starts the intro cutscene while the cave area is still arriving.
+The cutscene hides Jack the monkey with NodePath.stash(), and a node whose parent area is not here yet is a lone
+node, so stash() asserted and the game closed. Cutscenes and quest dialog scenes now stash or unstash a character
+only when it is attached; a lone node is not drawn anyway.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/cutscene/CutsceneActor.py |  4 ++--
+ pirates/cutscene/CutsceneIvals.py | 26 +++++++++++++++-----------
+ pirates/quest/QuestParser.py      |  7 +++----
+ 3 files changed, 20 insertions(+), 17 deletions(-)
+
+diff --git a/pirates/cutscene/CutsceneActor.py b/pirates/cutscene/CutsceneActor.py
+index 52b8ecb..91fb642 100644
+--- a/pirates/cutscene/CutsceneActor.py
++++ b/pirates/cutscene/CutsceneActor.py
+@@ -52,7 +52,7 @@ class CutsceneActor:
+         if 'localAvatar' in __builtins__:
+             base.cr.uidMgr.addUidCallback(self.Uid, self.foundIt, timeout = 0)
+         
+-        if self.modelLoaded and not self.modelLoaded.isEmpty():
++        if self.modelLoaded and not self.modelLoaded.isEmpty() and not self.modelLoaded.isSingleton():
+             self.modelLoaded.stash()
+ 
+     def foundIt(self, npc):
+@@ -77,7 +77,7 @@ class CutsceneActor:
+         
+         del self._cutsceneName
+         del self._csComponents
+-        if self.Uid and self.modelLoaded:
++        if self.Uid and self.modelLoaded and not self.modelLoaded.isEmpty() and not self.modelLoaded.isSingleton():
+             self.modelLoaded.unstash()
+ 
+     @staticmethod
+diff --git a/pirates/cutscene/CutsceneIvals.py b/pirates/cutscene/CutsceneIvals.py
+index 70994c4..4cbe79a 100644
+--- a/pirates/cutscene/CutsceneIvals.py
++++ b/pirates/cutscene/CutsceneIvals.py
+@@ -51,21 +51,25 @@ def SetTimeOfDay(tod, time = 0):
+         return Wait(0.001)
+ 
+ 
++def setStashedIfAttached(nodePath, stashed):
++    # family server: an object whose parent area has not arrived yet is a lone node, and stash() asserts on it
++    # (the Barbossa intro crashed hiding the monkey while the cave was still loading); a lone node is not drawn anyway
++    if nodePath.isEmpty() or nodePath.isSingleton():
++        return
++    if stashed:
++        nodePath.stash()
++    else:
++        nodePath.unstash()
++
++
+ def setObjectVisibleByUid(uid, hide = True):
+     existingObjectId = base.cr.uidMgr.getDoId(uid)
+     existingObject = base.cr.doId2do.get(existingObjectId)
+     if existingObject:
+-        if hide:
+-            funcRef = existingObject.stash
+-            if hasattr(existingObject, 'setAllowInteract'):
+-                existingObject.setAllowInteract(False)
+-            
+-        else:
+-            funcRef = existingObject.unstash
+-            if hasattr(existingObject, 'setAllowInteract'):
+-                existingObject.setAllowInteract(True)
+-            
+-        hideObjectFunc = Func(funcRef)
++        if hasattr(existingObject, 'setAllowInteract'):
++            existingObject.setAllowInteract(not hide)
++
++        hideObjectFunc = Func(setStashedIfAttached, existingObject, hide)
+     else:
+         
+         def dummyFunc():
+diff --git a/pirates/quest/QuestParser.py b/pirates/quest/QuestParser.py
+index ab73ae6..d6b86b1 100644
+--- a/pirates/quest/QuestParser.py
++++ b/pirates/quest/QuestParser.py
+@@ -980,10 +980,9 @@ class NPCMoviePlayer(DirectObject.DirectObject):
+         for currUid in uids:
+             node = base.cr.uidMgr.justGetMeMeObject(currUid)
+             if node:
+-                if stash:
+-                    track.append(Func(node.stash))
+-                else:
+-                    track.append(Func(node.unstash))
++                # family server: an NPC whose area has not arrived yet is a lone node and stash() asserts on it
++                from pirates.cutscene.CutsceneIvals import setStashedIfAttached
++                track.append(Func(setStashedIfAttached, node, stash))
+             else:
+                 notify.warning('could not find object with uid %s' % currUid)
+             
+-- 
+2.53.0
+

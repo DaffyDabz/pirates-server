@@ -1,0 +1,564 @@
+From b308d0bd587a227ce6882f79c875d2b4ad5e2c90 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 13:18:36 -0800
+Subject: [PATCH 009/371] client: island preload + no requests import (were
+ only in the installed client, 09-16/09-18)
+
+IslandPreload loads every island model on the loader thread while the pirate
+chooser is up. ClientServicesManager drops 'from requests import get' (the
+Panda3D python on the family PCs has no requests; its only caller is commented out).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../distributed/PiratesClientRepository.py    |   2 +
+ pirates/uberdog/ClientServicesManager.py      |   2 +-
+ pirates/world/IslandPreload.py                |  29 ++
+ pirates/world/IslandPreload.txt               | 474 ++++++++++++++++++
+ 4 files changed, 506 insertions(+), 1 deletion(-)
+ create mode 100644 pirates/world/IslandPreload.py
+ create mode 100644 pirates/world/IslandPreload.txt
+
+diff --git a/pirates/distributed/PiratesClientRepository.py b/pirates/distributed/PiratesClientRepository.py
+index f1eb84b..b18a9b8 100644
+--- a/pirates/distributed/PiratesClientRepository.py
++++ b/pirates/distributed/PiratesClientRepository.py
+@@ -235,6 +235,8 @@ class PiratesClientRepository(OTPClientRepository):
+         self.avChoice.load()
+         self.avChoice.enter()
+         self.accept(self.avChoiceDoneEvent, self.__handleAvatarChooserDone)
++        from pirates.world import IslandPreload
++        IslandPreload.start()
+ 
+     def __handleAvatarChooserDone(self, doneStatus):
+         done = doneStatus['mode']
+diff --git a/pirates/uberdog/ClientServicesManager.py b/pirates/uberdog/ClientServicesManager.py
+index d27c828..3d0f3d4 100644
+--- a/pirates/uberdog/ClientServicesManager.py
++++ b/pirates/uberdog/ClientServicesManager.py
+@@ -6,7 +6,7 @@ from otp.distributed.PotentialAvatar import PotentialAvatar
+ from otp.otpbase import OTPGlobals
+ from pirates.pirate.HumanDNA import HumanDNA
+ from pirates.piratesgui import PiratesGuiGlobals
+-from requests import get
++# Family patch: requests is not in the kids' Panda3D python and the only caller (ipify) is commented out.
+ 
+ 
+ class ClientServicesManager(DistributedObjectGlobal):
+diff --git a/pirates/world/IslandPreload.py b/pirates/world/IslandPreload.py
+new file mode 100644
+index 0000000..8315ca1
+--- /dev/null
++++ b/pirates/world/IslandPreload.py
+@@ -0,0 +1,29 @@
++import os
++from direct.directnotify import DirectNotifyGlobal
++notify = DirectNotifyGlobal.directNotify.newCategory('IslandPreload')
++_started = False
++_models = None
++
++def start():
++    # Load every island model on the loader thread while the pirate chooser is up, so the island
++    # generates that follow hit the ModelPool instead of reading ~460 bam files on the main thread.
++    global _started
++    if _started:
++        return
++    _started = True
++    try:
++        fn = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'IslandPreload.txt')
++        with open(fn) as f:
++            paths = [l.strip() for l in f if l.strip() and not l.startswith('#')]
++    except Exception as e:
++        notify.warning('no preload list: %s' % e)
++        return
++    if not paths:
++        return
++    notify.info('preloading %d island models' % len(paths))
++    base.loader.loadModel(paths, callback=_done)
++
++def _done(*models):
++    global _models
++    _models = models
++    notify.info('preloaded %d island models' % len([m for m in models if m]))
+diff --git a/pirates/world/IslandPreload.txt b/pirates/world/IslandPreload.txt
+new file mode 100644
+index 0000000..d569c48
+--- /dev/null
++++ b/pirates/world/IslandPreload.txt
+@@ -0,0 +1,474 @@
++# Models every island generate loads (from profile runs); preloaded in the background at
++# the pirate chooser by IslandPreload.py. Regenerate with genmanifest.py.
++models/textureCards/sailLogo
++models/shipparts/shipwreck_fore
++models/shipparts/shipwreck_aft
++models/buildings/shanty_npc_house_combo_I
++models/props/crates_group_1
++models/props/crate_04
++models/vegetation/bush_a
++models/shipparts/dingy-geometry_High
++models/props/barrel_grey
++models/props/barrel_sideways
++models/props/Log_stack_a
++models/vegetation/palm_hi
++models/vegetation/palm_med
++models/vegetation/palm_low
++models/vegetation/palm_idle
++models/vegetation/palm_zero_coll
++models/props/rock_group_1_sphere
++models/props/rock_group_3_sphere
++models/misc/coll_plane_barrier
++models/misc/coll_cube_barrier
++models/props/rock_group_2_sphere
++models/islands/wild_island_a_worldmap
++models/gui/compass_gui
++models/gui/toplevel_gui
++models/textureCards/icons
++models/gui/general_frame_f
++models/islands/wild_island_c_worldmap
++models/buildings/shanty_repairshop_exterior
++models/buildings/shanty_guildhall_exterior
++models/props/prop_group_A
++models/props/prop_group_B
++models/props/prop_group_C
++models/props/cannonball_stack_triangle
++models/props/cannonball_stack_square
++models/props/cannon_stack_01
++models/props/cannon_stack_02
++models/props/rock_group_5_floor
++models/vegetation/palm_tree_a
++models/vegetation/palm_tree_b
++models/vegetation/palm_tree_d
++models/vegetation/palm_tree_e
++models/props/rock_group_3_floor
++models/props/rock_group_4_floor
++models/props/mound_light_med
++models/props/mound_light_med2
++models/props/mound_light_lrg
++models/buildings/shanty_tent_house_body
++models/buildings/shanty_tavern_exterior
++models/buildings/sign1_shanty_a_frame
++models/buildings/sign1_shanty_a_icon_tavern
++models/props/shanty_rope_bridge
++models/props/shanty_rope_bridge_post
++models/buildings/shanty_signpost
++models/vegetation/palm_tree_c
++models/vegetation/palm_tree_f
++models/props/rock_group_4_sphere
++models/props/rock_group_2_floor
++models/vegetation/bush_c
++models/vegetation/bush_d
++models/props/mound_light_small
++models/vegetation/bush_f
++models/vegetation/bush_g
++models/vegetation/gen_tree_canopy
++models/props/rock_group_5_sphere
++models/props/rock_3_sphere
++models/buildings/stone_ramp_quadruple
++models/buildings/landing_double
++models/vegetation/bush_e
++models/vegetation/bush_b
++models/props/prop_group_D
++models/props/flag_hanging_french
++models/vegetation/jungle_fern_a
++models/vegetation/gen_tree_b
++models/vegetation/gen_tree_g
++models/vegetation/gen_tree_h
++models/vegetation/fern_tree_a
++models/vegetation/fern_tree_e
++models/vegetation/fern_tree_d
++models/vegetation/fern_tree_b
++models/vegetation/fern_tree_c
++models/vegetation/bush_leaves
++models/vegetation/gen_tree_trunk_only
++models/misc/coll_sphere_barrier
++models/props/rock_group_1_floor
++models/props/rock_4_floor
++models/props/rock_1_floor
++models/props/rock_4_sphere
++models/buildings/shanty_leanto_B
++models/props/bed_shanty
++models/props/chair_shanty
++models/props/table_shanty_2
++models/props/dirt_pile_cave_volcano
++models/props/rock_2_floor
++models/vegetation/fern_hi
++models/vegetation/fern_med
++models/vegetation/fern_low
++models/vegetation/fern_idle
++models/vegetation/fern_zero_coll
++models/vegetation/fern_short_hi
++models/vegetation/fern_short_med
++models/vegetation/fern_short_low
++models/vegetation/fern_short_idle
++models/vegetation/fern_short_zero_coll
++models/props/rock_2_sphere
++models/vegetation/bush_h
++models/buildings/woodfence_20
++models/vegetation/grass_18feet
++models/props/rock_3_floor
++models/vegetation/bush_half_d
++models/buildings/woodfence_60
++models/vegetation/grass_8feet
++models/vegetation/bush_half_a
++models/props/beerstein
++models/props/bottle_brown
++models/props/bottle_tan
++models/props/candle_holder
++models/misc/coll_tube_barrier
++models/props/rock_1_sphere
++models/props/stool_shanty
++models/props/table_shanty
++models/props/jar
++models/props/bottle_green
++models/props/waterpitcher
++models/props/winebottle_B
++models/props/bottle_red
++models/props/cup_tin
++models/props/pot_B
++models/props/pot_A
++models/props/rope_pile
++models/props/pan
++models/props/dirt_pile
++models/vegetation/gen_log02
++models/vegetation/gen_log03
++models/props/fishbasket
++models/props/package_sack
++models/props/Sack
++models/props/largejug_A2
++models/props/jug
++models/islands/pvp_a_worldmap
++models/vegetation/gen_tree_a
++models/buildings/shanty_npc_house_combo_G
++models/vegetation/bush_half_c
++models/tunnels/tunnelcap_beach_cave_terrain
++models/tunnels/tunnelcap_beach_cave_caves
++models/tunnels/tunnelcap_beach_cave_veg
++models/tunnels/tunnelcap_beach_cave_rocks
++models/vegetation/gen_tree_d
++models/islands/wild_island_b_worldmap
++models/islands/wild_island_e_worldmap
++models/vegetation/gen_tree_c
++models/vegetation/bush_i
++models/vegetation/gen_log01
++models/vegetation/gen_log_group01
++models/vegetation/gen_log_group02
++models/vegetation/gen_log_group03
++models/vegetation/tree_b_hi
++models/vegetation/tree_b_med
++models/vegetation/tree_b_low
++models/vegetation/tree_b_idle
++models/vegetation/tree_b_zero_coll
++models/vegetation/gen_tree_trunk_only_tall
++models/buildings/shanty_cellar_door
++models/islands/rum_runner_worldmap
++models/vegetation/swamp_tree_roots
++models/vegetation/swamp_tree_a
++models/vegetation/swamp_tree_b
++models/vegetation/swamp_tree_thin
++models/vegetation/swamp_bush_a
++models/vegetation/swamp_tree_roots_canopy
++models/vegetation/swamp_tree_canopy
++models/props/swamp_boat
++models/props/zz_dont_use_rocks_Dk_group_2F
++models/buildings/jail_exterior
++models/props/wellA
++models/props/trellis_d
++models/props/swamp_bench
++models/buildings/sign1_shanty_a_icon_tailor
++models/buildings/shanty_npc_house_combo_J
++models/buildings/sign1_shanty_a_icon_tattoo
++models/buildings/shanty_npc_house_combo_D
++models/props/crate
++models/misc/drop_shadow
++models/buildings/stone_stairs_double
++models/islands/cuba_worldmap
++models/buildings/spanish_npc_house_c_exterior
++models/buildings/sign1_spanish_a_frame
++models/buildings/sign1_spanish_a_icon_doctor
++models/buildings/spanish_npc_house_o_exterior
++models/buildings/spanish_npc_house_n_exterior
++models/buildings/spanish_npc_house_k_exterior
++models/buildings/spanish_tavern_exterior
++models/buildings/sign1_spanish_c_frame
++models/buildings/sign1_spanish_c_icon_tavern
++models/buildings/TallWallStucco_20
++models/buildings/TallWallStucco_60
++models/buildings/TallWallStucco_Broken20
++models/props/pigtrough
++models/props/trellisB
++models/buildings/spanish_archB
++models/buildings/spanish_npc_house_e_exterior
++models/buildings/sign1_spanish_a_icon_weapons
++models/buildings/spanish_npc_house_p_exterior
++models/props/bucket
++models/props/ChickenCage
++models/buildings/sign1_spanish_a_icon_tailor
++models/props/pig_pen_b
++models/props/haystack
++models/props/well_Bstucco
++models/props/sack_18stack
++models/props/cart_broken
++models/buildings/sign1_shanty_a_icon_blacksmith
++models/buildings/TallWallStucco_100
++models/buildings/shanty_npc_house_combo_H
++models/buildings/sign1_shanty_a_icon_barber
++models/buildings/shanty_npc_house_combo_E
++models/buildings/shanty_npc_house_combo_C
++models/buildings/sign1_shanty_a_icon_jeweler
++models/buildings/sign1_shanty_a_icon_weapons
++models/buildings/3shanty_tents
++models/buildings/shanty_gypsywagon_exterior
++models/props/zz_dont_use_rock_Dk_2F
++models/props/zz_dont_use_rocks_Dk_group_1F
++models/props/pig_pen
++models/props/Log_stack_c
++models/buildings/TallWallStucco_Corner
++models/props/LaundryRope
++models/props/barrel_worn
++models/props/barrel_group_1
++models/props/largejug_A
++models/props/largejug_B
++models/props/cart_flat
++models/buildings/WellStucco
++models/props/bench
++models/props/paddle_B
++models/buildings/woodfence_B
++models/props/zz_dont_use_rock_Dk_1F
++models/props/zz_dont_use_rock_Dk_3F
++models/props/sack_6stack
++models/vegetation/gen_tree_e
++models/props/barrel
++models/islands/pier_platform
++models/islands/pier_walkway
++models/props/crate_group_net
++models/props/Crane_A
++models/props/barrel_group_2
++models/props/zz_dont_use_rock_Dk_4F
++models/props/zz_dont_use_rock_Lt_4F
++models/tunnels/tunnelcap_jungle
++models/props/horse_trough
++models/buildings/LowWallStone_10
++models/props/bench_shanty_1
++models/buildings/TallWallStucco_Column
++models/props/stool_bar
++models/props/crates_group_2
++models/props/crab_pot
++models/props/basket_rope
++models/props/winebottle_A
++models/props/ham
++models/props/bread_group1
++models/props/breadbasket
++models/props/sausage
++models/props/Trunk_rounded_2
++models/props/cauldron
++models/vegetation/gen_log07
++models/props/rake
++models/handheld/writing_paper
++models/props/pir_m_prp_foo_barbecuefire
++models/props/pir_m_prp_foo_bonfire
++models/props/torch_no_glow
++models/islands/tortuga_worldmap
++models/buildings/english_corner_b
++models/buildings/burned_gate
++models/buildings/english_corner_c
++models/buildings/english_b
++models/buildings/english_d
++models/buildings/english_k
++models/buildings/english_i
++models/buildings/sign1_eng_b_frame
++models/buildings/sign1_eng_b_icon_tailor
++models/buildings/english_g
++models/buildings/english_l
++models/buildings/english_j
++models/buildings/english_e
++models/buildings/sign1_eng_b_icon_barber
++models/buildings/english_corner_a
++models/buildings/sign1_eng_c_frame
++models/buildings/sign1_eng_c_icon_tavern
++models/buildings/english_f
++models/buildings/english_corner_d
++models/buildings/sign1_eng_c_icon_blacksmith
++models/buildings/sign1_eng_c_icon_weapons
++models/buildings/english_corner_e
++models/buildings/english_corner_c2
++models/buildings/6shanty_tents
++models/buildings/english_wall_100
++models/buildings/english_wall_60
++models/buildings/english_wall_20
++models/buildings/english_k_tutorial
++models/buildings/sign1_eng_c_icon_storage
++models/buildings/english_arch_a
++models/props/cart_reg
++models/buildings/english_c
++models/islands/pier_port_royal_1deck
++models/props/crate_net
++models/props/barrel_group_3
++models/buildings/fort_charles
++models/islands/pier_gallows
++models/islands/pier_scaffold_1long
++models/islands/pier_scaffold_end
++models/props/Crane_B
++models/props/prop_group_E
++models/props/interior_wall_fort_brick
++models/props/interior_wall_fort
++models/props/chair_fancy
++models/props/Map_03
++models/props/rug_oriental
++models/props/Map_02
++models/props/Trunk_rounded
++models/props/interior_column_fort
++models/islands/pier_scaffold_landing
++models/props/prop_group_G
++models/props/bookshelf_fancy
++models/props/cabinet_fancy_tall
++models/buildings/english_wall_col
++models/props/spanishtown_fountain
++models/buildings/english_a
++models/buildings/sign1_eng_a_frame
++models/buildings/sign1_eng_a_icon_tattoo
++models/buildings/sign1_eng_a_icon_jeweler
++models/buildings/bridge_port_royal
++models/buildings/english_m
++models/buildings/english_n
++models/buildings/wall_mossy_stone
++models/buildings/wall_corner_mossy_stone
++models/buildings/english_wall_gate_l
++models/buildings/english_wall_gate_r
++models/buildings/english_chimney
++models/buildings/english_wall_no_col_60
++models/props/zz_dont_use_rocks_LT_group_2F
++models/islands/pier_bridge
++models/islands/pier_port_royal_2deck
++models/char/seagull_hi
++models/props/Crane
++models/props/Log_stack_b
++models/props/zz_dont_use_rocks_Dk_group_3F
++models/props/zz_dont_use_rocks_LT_group_3F
++models/props/zz_dont_use_rocks_LT_group_1F
++models/props/trellisA
++models/props/planter
++models/props/planter_straight
++models/props/FountainSmall
++models/buildings/stone_stairs_quadruple
++models/buildings/english_wall_10
++models/props/TreeBase
++models/props/bench_stone
++models/buildings/english_mansion
++models/props/trellis_e
++models/vegetation/hedge_12
++models/buildings/fort_door
++models/vegetation/hedge_6
++models/vegetation/jungle_fern_c
++models/buildings/LowWallStone_60
++models/buildings/LowWallStone_Column
++models/buildings/LowWallStone_20
++models/buildings/TallWallStone_60
++models/props/2cranes
++models/buildings/1shanty_tents_empty
++models/props/headstonesGroup1
++models/props/crypt2
++models/props/crypt1
++models/props/headstonesGroup4
++models/props/headstonesGroup3
++models/props/headstonesGroup2
++models/buildings/stone_stairs
++models/islands/pier_scaffold_stairs
++models/buildings/fort_tower
++models/vegetation/grass_3feet
++models/islands/port_royal_worldmap
++models/islands/pvp_rock_sml_worldmap
++models/islands/pvp_rock_big_worldmap
++models/islands/pvp_rock_med_worldmap
++models/buildings/shanty_leanto_A
++models/props/prop_group02
++models/props/cannon_broken_prop
++models/props/anchor
++models/props/wheel_wallprop
++models/vegetation/jungle_tree_a
++models/vegetation/jungle_tree_b
++models/vegetation/jungle_plant_d
++models/vegetation/jungle_plant_c
++models/vegetation/jungle_plant_b
++models/vegetation/jungle_fern_b
++models/props/cliff_jungle_high
++models/props/cliff_jungle_low
++models/props/flag_hanging_spanish
++models/vegetation/moss_a
++models/vegetation/jungle_vine_b_200
++models/vegetation/jungle_vine_a_200
++models/vegetation/jungle_vine_b
++models/vegetation/jungle_plant_a
++models/vegetation/moss_b
++models/buildings/shanty_tent_house_facade
++models/props/bench_shanty_2
++models/props/prop_group01
++models/props/bed_shantyB
++models/props/prop_group_H
++models/props/lamp_table_hurricane_candle
++models/islands/pvp_b_worldmap
++models/islands/wild_island_f_worldmap
++models/props/zz_dont_use_rock_Lt_3F
++models/props/zz_dont_use_rock_Lt_1F
++models/vegetation/gen_tree_f
++models/islands/wild_island_d_worldmap
++models/effects/particleMaps
++models/buildings/spanish_npc_house_a_exterior
++models/buildings/spanish_npc_house_g_exterior
++models/buildings/spanish_npc_house_d_exterior
++models/buildings/sign1_spanish_b_frame
++models/buildings/sign1_spanish_b_icon_barber
++models/buildings/TallWallStone_Broken10
++models/buildings/spanish_npc_house_i_exterior
++models/buildings/sign1_spanish_b_icon_tattoo
++models/buildings/sign1_spanish_a_icon_blacksmith
++models/buildings/sign1_spanish_b_icon_jeweler
++models/buildings/sign1_spanish_b_icon_blacksmith
++models/buildings/spanish_npc_house_j_exterior
++models/buildings/burned_half_house
++models/buildings/burned_house
++models/buildings/burned_woods
++models/buildings/smallstucco_arch
++models/buildings/spanish_archA
++models/props/madre_mound_small
++models/buildings/spanish_npc_house_l_exterior
++models/buildings/spanish_npc_house_b_exterior
++models/buildings/shanty_npc_house_combo_A
++models/buildings/shanty_npc_house_combo_F
++models/buildings/shanty_npc_house_combo_B
++models/buildings/fort_medium
++models/props/cabinet_fancy_low
++models/props/sofa_fancy
++models/props/stool_fancy
++models/props/clock_fancy_tall
++models/props/Map_01
++models/props/seascape_battle
++models/buildings/stone_stairs_single
++models/buildings/spanish_archC
++models/buildings/TallWallStone_Column
++models/buildings/TallWallStone_20
++models/buildings/brick_stairs_double
++models/buildings/LowWallStucco_10
++models/buildings/LowWallStucco_60
++models/tunnels/tunnelcap_volcano
++models/buildings/brick_stairs_single
++models/vegetation/Cactus_a
++models/vegetation/Cactus_b
++models/vegetation/rock_cacti_group_circle
++models/vegetation/rock_cacti_group_linear
++models/props/paddle_A
++models/buildings/dirt_ramp
++models/islands/madre_del_fuego_worldmap
++models/buildings/english_h
++models/buildings/LowWallStucco_20
++models/buildings/LowWallStucco_Column
++models/buildings/fort_top_kings
++models/props/interior_wall_spanish
++models/buildings/fort_mid_kings
++models/islands/pier_1_kings
++models/islands/pier_2_kings
++models/buildings/fort_door_kings
++models/buildings/fort_pier_kings
++models/buildings/fort_colonnade_kings
++models/islands/kingshead_worldmap
+-- 
+2.53.0
+

@@ -1,0 +1,126 @@
+From 17027b26824e406479596299aaa37eedecaeafc5 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 15:39:55 -0800
+Subject: [PATCH 351/371] pirates: the fishing game no longer closes about 10 s
+ after it stops its bubble effects; 7 fishing effects hand themselves back to
+ their pool the game's own way (client patch 49, no DC change, no restart)
+
+Fishing lane's in-game run (15:23) closed with AttributeError 'checkInEffect' about 10 s after the fishing game stopped
+its bubble effects. The 7 POR-ported effects (FishIdleBubbleEffect, FishBitingBubbleEffect,
+FishFightingHookedBubbleEffect, LureHittingWaterBubbleEffect, SeaBottomBubbleEffect, LightRay, LureGlow) ended
+cleanUpEffect with self.checkInEffect(self), which this game's PooledEffect does not have. They now use the game's
+own idiom: if self.pool and self.pool.isUsed(self): self.pool.checkin(self). Lane test on the client's Panda
+(test_fishing_client_win.py): live play folder 14 FAILURES, this tree 0 (106 PASS). The server never runs these
+files; this keeps /opt equal to the client copy.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/effects/FishBitingBubbleEffect.py         | 3 ++-
+ pirates/effects/FishFightingHookedBubbleEffect.py | 3 ++-
+ pirates/effects/FishIdleBubbleEffect.py           | 3 ++-
+ pirates/effects/LightRay.py                       | 3 ++-
+ pirates/effects/LureGlow.py                       | 3 ++-
+ pirates/effects/LureHittingWaterBubbleEffect.py   | 3 ++-
+ pirates/effects/SeaBottomBubbleEffect.py          | 3 ++-
+ 7 files changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/pirates/effects/FishBitingBubbleEffect.py b/pirates/effects/FishBitingBubbleEffect.py
+index cb25062..3da9505 100644
+--- a/pirates/effects/FishBitingBubbleEffect.py
++++ b/pirates/effects/FishBitingBubbleEffect.py
+@@ -102,7 +102,8 @@ class FishBitingBubbleEffect(PooledEffect, EffectController):
+ 
+     def cleanUpEffect(self):
+         EffectController.cleanUpEffect(self)
+-        self.checkInEffect(self)
++        if self.pool and self.pool.isUsed(self):
++            self.pool.checkin(self)
+ 
+     def destroy(self):
+         EffectController.destroy(self)
+diff --git a/pirates/effects/FishFightingHookedBubbleEffect.py b/pirates/effects/FishFightingHookedBubbleEffect.py
+index d533c73..c7f37dd 100644
+--- a/pirates/effects/FishFightingHookedBubbleEffect.py
++++ b/pirates/effects/FishFightingHookedBubbleEffect.py
+@@ -102,7 +102,8 @@ class FishFightingHookedBubbleEffect(PooledEffect, EffectController):
+ 
+     def cleanUpEffect(self):
+         EffectController.cleanUpEffect(self)
+-        self.checkInEffect(self)
++        if self.pool and self.pool.isUsed(self):
++            self.pool.checkin(self)
+ 
+     def destroy(self):
+         EffectController.destroy(self)
+diff --git a/pirates/effects/FishIdleBubbleEffect.py b/pirates/effects/FishIdleBubbleEffect.py
+index 458b037..f409cce 100644
+--- a/pirates/effects/FishIdleBubbleEffect.py
++++ b/pirates/effects/FishIdleBubbleEffect.py
+@@ -105,7 +105,8 @@ class FishIdleBubbleEffect(PooledEffect, EffectController):
+ 
+     def cleanUpEffect(self):
+         EffectController.cleanUpEffect(self)
+-        self.checkInEffect(self)
++        if self.pool and self.pool.isUsed(self):
++            self.pool.checkin(self)
+ 
+     def destroy(self):
+         EffectController.destroy(self)
+diff --git a/pirates/effects/LightRay.py b/pirates/effects/LightRay.py
+index 293188f..59319d3 100644
+--- a/pirates/effects/LightRay.py
++++ b/pirates/effects/LightRay.py
+@@ -62,4 +62,5 @@ class LightRay(PooledEffect, EffectController):
+ 
+     def cleanUpEffect(self):
+         EffectController.cleanUpEffect(self)
+-        self.checkInEffect(self)
+\ No newline at end of file
++        if self.pool and self.pool.isUsed(self):
++            self.pool.checkin(self)
+\ No newline at end of file
+diff --git a/pirates/effects/LureGlow.py b/pirates/effects/LureGlow.py
+index 58bb3b3..c50adea 100644
+--- a/pirates/effects/LureGlow.py
++++ b/pirates/effects/LureGlow.py
+@@ -31,7 +31,8 @@ class LureGlow(PooledEffect, EffectController):
+ 
+     def cleanUpEffect(self):
+         EffectController.cleanUpEffect(self)
+-        self.checkInEffect(self)
++        if self.pool and self.pool.isUsed(self):
++            self.pool.checkin(self)
+ 
+     def destroy(self):
+         EffectController.destroy(self)
+diff --git a/pirates/effects/LureHittingWaterBubbleEffect.py b/pirates/effects/LureHittingWaterBubbleEffect.py
+index 0dc2270..1665e19 100644
+--- a/pirates/effects/LureHittingWaterBubbleEffect.py
++++ b/pirates/effects/LureHittingWaterBubbleEffect.py
+@@ -93,7 +93,8 @@ class LureHittingWaterBubbleEffect(PooledEffect, EffectController):
+ 
+     def cleanUpEffect(self):
+         EffectController.cleanUpEffect(self)
+-        self.checkInEffect(self)
++        if self.pool and self.pool.isUsed(self):
++            self.pool.checkin(self)
+ 
+     def destroy(self):
+         EffectController.destroy(self)
+diff --git a/pirates/effects/SeaBottomBubbleEffect.py b/pirates/effects/SeaBottomBubbleEffect.py
+index e052139..a8b36ad 100644
+--- a/pirates/effects/SeaBottomBubbleEffect.py
++++ b/pirates/effects/SeaBottomBubbleEffect.py
+@@ -103,7 +103,8 @@ class SeaBottomBubbleEffect(PooledEffect, EffectController):
+ 
+     def cleanUpEffect(self):
+         EffectController.cleanUpEffect(self)
+-        self.checkInEffect(self)
++        if self.pool and self.pool.isUsed(self):
++            self.pool.checkin(self)
+ 
+     def destroy(self):
+         EffectController.destroy(self)
+-- 
+2.53.0
+

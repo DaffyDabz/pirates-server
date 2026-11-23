@@ -1,0 +1,66 @@
+From 1ebab7d778c9929729fcb896eb87732e48025b49 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 20:58:35 -0800
+Subject: [PATCH 125/371] pirates: two test-only settings (flagship hp scale,
+ flagships spawn near one island) for the bot's flagship check; nothing
+ changes for players, as server-tree patch 0139 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/ShipManagerAI.py | 25 ++++++++++++++++++++++++-
+ 1 file changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/ship/ShipManagerAI.py b/pirates/ship/ShipManagerAI.py
+index 2e42f42..b69428b 100644
+--- a/pirates/ship/ShipManagerAI.py
++++ b/pirates/ship/ShipManagerAI.py
+@@ -330,6 +330,14 @@ class ShipManagerAI:
+         ship.setHp(shipConfig['setHp'][0])
+         ship.setMaxSp(hullConfig['setMaxSp'][0])
+         ship.setSp(hullConfig['setSp'][0])
++        # flagship test knob (2026-11-17): flagship-hp-scale multiplies a flagship's
++        # hp at spawn (default 1, unchanged), so a bot run cripples one in a few
++        # broadsides instead of a long fight
++        hpScale = config.GetFloat('flagship-hp-scale', 1.0) if isFlagship else 1.0
++        if hpScale > 0 and hpScale != 1.0:
++            maxHp = max(1, int(shipConfig['setMaxHp'][0] * hpScale))
++            ship.setMaxHp(maxHp)
++            ship.setHp(min(maxHp, max(1, int(shipConfig['setHp'][0] * hpScale))))
+         ship.setHullCondition(1 << 7)
+         
+         # Mark as flagship if applicable (use setter before generate, not b_)
+@@ -373,6 +381,10 @@ class ShipManagerAI:
+         # Track flagships separately
+         if isFlagship:
+             self.addFlagship(ship)
++            if hpScale != 1.0 or spawnNearIsland is not None:
++                self.notify.warning('TEMP-DIAG flagship %d (class %s) spawned at (%d, %d) near island %s, hp %s/%s '
++                    '(test knobs: hp scale %s)' % (ship.doId, shipClass, sx, sy,
++                    getattr(spawnNearIsland, 'uniqueId', None), ship.getHp(), ship.getMaxHp(), hpScale))
+         
+         return ship
+ 
+@@ -388,8 +400,19 @@ class ShipManagerAI:
+         if shipClass is None:
+             shipClass = random.choice(FlagshipGlobals.ALL_FLAGSHIPS)
+         
++        # flagship test knob (2026-11-17): flagship-spawn-near names an island uid;
++        # flagships then spawn on its patrol ring (just outside its outer sphere)
++        # instead of anywhere on the ocean (default '', unchanged)
++        near = None
++        nearUid = config.GetString('flagship-spawn-near', '')
++        if nearUid:
++            near = self.air.uidMgr.justGetMeMeObject(nearUid)
++            if near is None or not hasattr(near, 'getIslandTransform'):
++                self.notify.warning('TEMP-DIAG flagship-spawn-near %s: no such island here, spawning anywhere' % nearUid)
++                near = None
++
+         try:
+-            ship = self._spawnEnemyShip(shipClass, isFlagship=True)
++            ship = self._spawnEnemyShip(shipClass, isFlagship=True, spawnNearIsland=near)
+             
+             if ship:
+                 self.notify.info('Spawned flagship: %s (doId=%d)' % (
+-- 
+2.53.0
+

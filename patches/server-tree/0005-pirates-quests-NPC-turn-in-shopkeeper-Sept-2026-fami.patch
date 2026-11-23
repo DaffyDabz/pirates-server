@@ -1,0 +1,817 @@
+From c117ea644a542168baa03757fbf6fe535d929644 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 13:03:36 -0800
+Subject: [PATCH 005/371] pirates: quests, NPC turn-in, shopkeeper (Sept 2026
+ family-server fixes)
+
+- QuestManagerAI: finalize cutscenes now play through the quest so the game
+  state carries from one scene to the next (the pirate is no longer stuck in
+  Dialog with the camera on the NPC), wait for the ship name when a scene needs
+  it (never stalls more than two minutes), and close the NPC talk after the
+  last scene. requestInteract reports whether the quest handled the talk. A
+  dropped quest's stub no longer re-runs the ladder drop.
+- DistributedQuestAvatarAI: quest tracking beam works for "defeat any enemy"
+  goals and for world-data-only goals (Quest Node, Dinghy), is positioned
+  relative to the goal's parent instead of riding with the player, and the
+  journal's untrack is echoed back.
+- DistributedQuestGiverAI: quest offers from the ladder, dependency and
+  dynamic-map data for the giver.
+- QuestTaskDNA: a task with no location can be done anywhere, so deliver
+  quests can be handed in.
+- DistributedQuest (client): a finalize cutscene waits for the tunnel walk-out
+  to hand control back (15 s cap) before it starts.
+- DistributedNPCTownfolkAI: talk plays the greeting line (flag 0, not the
+  mid-quest TALK) and does not open the NPC menu when the talk just finished
+  a quest.
+- DistributedEnemySpawnerAI: remember the spawn uid as the quest giver id,
+  even for NPCs with a CustomModel.
+- DistributedShopKeeperAI: repair, overhaul and sell-ship requests (were
+  `pass`) read the docked ship's saved fields and write the new values to the
+  live object and the database.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedEnemySpawnerAI.py |   1 +
+ pirates/economy/DistributedShopKeeperAI.py  |  62 +++++-
+ pirates/npc/DistributedNPCTownfolkAI.py     |  56 ++++-
+ pirates/quest/DistributedQuest.py           |  67 ++++--
+ pirates/quest/DistributedQuestAvatarAI.py   | 230 +++++++++++++++++++-
+ pirates/quest/DistributedQuestGiverAI.py    |  61 ++++++
+ pirates/quest/QuestManagerAI.py             |  85 ++++++--
+ pirates/quest/QuestTaskDNA.py               |   4 +-
+ 8 files changed, 524 insertions(+), 42 deletions(-)
+
+diff --git a/pirates/battle/DistributedEnemySpawnerAI.py b/pirates/battle/DistributedEnemySpawnerAI.py
+index e6014e7..60c11b2 100644
+--- a/pirates/battle/DistributedEnemySpawnerAI.py
++++ b/pirates/battle/DistributedEnemySpawnerAI.py
+@@ -263,6 +263,7 @@ class SpawnNodeBase:
+ 
+         # Set NPC DNA if applicable
+         dnaId = self.objKey
++        npc.spawnUid = dnaId  # family server: quest giver id, even with a CustomModel
+         if hasattr(npc, 'setDNAId'):
+             if self.objectData.get('CustomModel', 'None') != 'None':
+                 npc.setDNAId(self.objectData.get('CustomModel', ''))
+diff --git a/pirates/economy/DistributedShopKeeperAI.py b/pirates/economy/DistributedShopKeeperAI.py
+index 20a52c5..432e7cd 100644
+--- a/pirates/economy/DistributedShopKeeperAI.py
++++ b/pirates/economy/DistributedShopKeeperAI.py
+@@ -291,14 +291,70 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+ 
+         self.d_makeSaleResponse(avatar.doId, 2)
+ 
++    # family server (2026-09-18): these three were `pass`. A docked ship is
++    # not live on the AI, so read its saved fields, then write the new values
++    # both to the live object (if the state server holds it) and to the db.
++    def _withOwnedShip(self, shipId, callback):
++        avId = self.air.getAvatarIdFromSender()
++        avatar = self.air.doId2do.get(avId)
++        inventory = self.air.inventoryManager.getInventory(avId)
++        if not avatar or not inventory or shipId not in inventory.getShipDoIdList():
++            self.notify.warning('ship %d is not owned by %d' % (shipId, avId))
++            return
++
++        def _queried(dclass, fields):
++            if not fields:
++                self.notify.warning('failed to query ship %d' % shipId)
++                return
++            callback(avatar, inventory, dclass, fields)
++
++        self.air.dbInterface.queryObject(self.air.dbId, shipId, _queried)
++
++    def _setShipFields(self, shipId, dclass, values):
++        for field, value in values.items():
++            self.air.send(dclass.aiFormatUpdate(field, shipId, shipId, self.air.ourChannel, value))
++        self.air.dbInterface.updateObject(self.air.dbId, shipId, dclass, values)
++
++    def _repairShip(self, shipId, costFn, kind):
++        def _got(avatar, inventory, dclass, fields):
++            maxHp, = fields['setMaxHp']
++            hp, = fields['setHp']
++            maxSp, = fields['setMaxSp']
++            sp, = fields['setSp']
++            shipClass, = fields['setShipClass']
++            cost = int(costFn(maxHp, hp, maxSp, sp, shipClass))
++            if cost > inventory.getGoldInPocket():
++                self.d_makeSaleResponse(avatar.doId, 0)
++                return
++            inventory.setGoldInPocket(inventory.getGoldInPocket() - cost)
++            self._setShipFields(shipId, dclass, {'setHp': [maxHp], 'setSp': [maxSp]})
++            self.logShopkeepTransaction(type=kind, shipId=shipId, price=cost, purchaser=avatar.doId)
++            self.d_makeSaleResponse(avatar.doId, 2)
++
++        self._withOwnedShip(shipId, _got)
++
+     def requestPurchaseRepair(self, shipId):
+-        pass
++        from pirates.ship import ShipGlobals
++        self._repairShip(shipId, lambda mh, h, ms, s, sc: ShipGlobals.calcRepairCost(mh, h, ms, s, ShipGlobals.getModelClass(sc)), 'requestPurchaseRepair')
+ 
+     def requestPurchaseOverhaul(self, shipId):
+-        pass
++        from pirates.economy import EconomyGlobals
++        self._repairShip(shipId, lambda mh, h, ms, s, sc: EconomyGlobals.getItemCost(sc) * EconomyGlobals.OVERHAUL_COST_PERCENTAGE, 'requestPurchaseOverhaul')
+ 
+     def requestSellShip(self, shipId):
+-        pass
++        from pirates.ship import ShipGlobals
++        from pirates.economy import EconomyGlobals
++
++        def _got(avatar, inventory, dclass, fields):
++            shipClass, = fields['setShipClass']
++            price = int(EconomyGlobals.getItemCost(ShipGlobals.getModelClass(shipClass)) / 2)
++            ships = [s for s in inventory.getShipDoIdList() if s != shipId]
++            inventory.setShipDoIdList(ships)
++            inventory.setGoldInPocket(inventory.getGoldInPocket() + price)
++            self.logShopkeepTransaction(type='requestSellShip', shipId=shipId, price=price, purchaser=avatar.doId)
++            self.d_makeSaleResponse(avatar.doId, 2)
++
++        self._withOwnedShip(shipId, _got)
+ 
+     def d_makeSaleResponse(self, avatarId, results):
+         self.sendUpdateToAvatarId(avatarId, 'makeSaleResponse', [results])
+diff --git a/pirates/npc/DistributedNPCTownfolkAI.py b/pirates/npc/DistributedNPCTownfolkAI.py
+index 3f74926..e332abc 100644
+--- a/pirates/npc/DistributedNPCTownfolkAI.py
++++ b/pirates/npc/DistributedNPCTownfolkAI.py
+@@ -71,10 +71,16 @@ class DistributedNPCTownfolkAI(DistributedBattleNPCAI, DistributedShopKeeperAI):
+         self.sendUpdateToAvatarId(avatarId, 'offerOptions', options)
+ 
+     def handleRequestInteraction(self, avatar, interactType, instant):
+-        self.air.questMgr.requestInteract(avatar, self)
++        handledByQuest = self.air.questMgr.requestInteract(avatar, self, endInteract=True)
+         if interactType == PiratesGlobals.INTERACT_TYPE_FRIENDLY:
+             self.d_triggerInteractShow(avatar.doId, 0)
+-            self.d_offerOptions(avatar.doId, [InteractGlobals.TALK])
++            # family server (2026-09-18): flag 0 plays the greeting; TALK (1)
++            # played the mid-quest line, so most NPCs said the wrong thing.
++            # Not when this talk finished a quest: the client queues the offer behind
++            # the quest dialogue and opens the npc menu after its last line, so the
++            # camera stayed on the npc (and the turn-in waited) until Escape.
++            if not handledByQuest:
++                self.d_offerOptions(avatar.doId, [0])
+             return self.ACCEPT
+ 
+         return self.DENY
+@@ -119,6 +125,10 @@ class DistributedNPCTownfolkAI(DistributedBattleNPCAI, DistributedShopKeeperAI):
+             if not finalOffers:
+                 finalOffers = []
+ 
++            if not finalOffers and numAssignedIncomplete == 0:
++                finalOffers = self.getAvailableQuestOffers(avatar, getattr(self, 'spawnUid', '') or self.dnaId)
++                self.pendingOffers[avatar.doId] = finalOffers
++
+             if numAssignedIncomplete == 0:
+                 self.d_setQuestOffer(avatar.doId, finalOffers)
+             else:
+@@ -128,3 +138,45 @@ class DistributedNPCTownfolkAI(DistributedBattleNPCAI, DistributedShopKeeperAI):
+ 
+     def handleRequestExit(self, avatar):
+         return self.ACCEPT
++
++    # Will Turner's sword tutorial ("You earned enough reputation to level up your
++    # cutlass" -> spend the point on Sweep) expects Cutlass level 2 before the chest
++    # panel. Nothing else grants it (rep only comes from kills), so the lesson start
++    # and its finish both top Cutlass up to level 2 through the normal level-up path,
++    # which grants the Unspent Cutlass point and shows Sweep. Idempotent.
++    def swordTutorialPt1(self, avId):
++        self._grantTutorialCutlassLevel(avId)
++
++    def levelUpCutlass(self, avId):
++        self._grantTutorialCutlassLevel(avId)
++
++    def pistolTutorialPt1(self, avId):
++        pass
++
++    def shipTutorialPt1(self, avId, shipName):
++        # Darby's ship tutorial sends the name the player picked (dc: airecv clsend).
++        # Fire the event Darby's second line waits for (c2.9visitDarby finalize
++        # 'waitEvent': 'tutorialShipConstructed'). The name itself is not applied yet:
++        # the ship keeps 'Unnamed Ship'.
++        senderId = self.air.getAvatarIdFromSender()
++        avatar = self.air.doId2do.get(senderId)
++        if not avatar or avId != senderId:
++            return
++
++        self.notify.info('shipTutorialPt1 from %s: %r' % (avId, shipName))
++        messenger.send(avatar.uniqueName('tutorialShipConstructed'))
++
++    def _grantTutorialCutlassLevel(self, avId):
++        if avId != self.air.getAvatarIdFromSender():
++            return
++
++        avatar = self.air.doId2do.get(avId)
++        inventory = avatar.getInventory() if avatar else None
++        if not inventory:
++            return
++
++        from pirates.uberdog.UberDogGlobals import InventoryType
++        from pirates.reputation import ReputationGlobals
++        needed = ReputationGlobals.getTotalReputation(InventoryType.CutlassRep, 2)
++        if inventory.getReputation(InventoryType.CutlassRep) < needed:
++            inventory.setReputation(InventoryType.CutlassRep, needed)
+diff --git a/pirates/quest/DistributedQuest.py b/pirates/quest/DistributedQuest.py
+index bdd0ffd..75119fc 100644
+--- a/pirates/quest/DistributedQuest.py
++++ b/pirates/quest/DistributedQuest.py
+@@ -155,29 +155,56 @@ class DistributedQuest(DistributedObject.DistributedObject, QuestBase.QuestBase,
+                 self.prevLocalAvState = npc.currentDialogMovie.oldGameState
+ 
+         elif sceneToPlay.get('type') == 'cutscene':
+-            name = sceneToPlay.get('sceneId')
+-            preloadInfo = sceneToPlay.get('preloadInfo', [])
+-            for currPreload in preloadInfo:
+-                base.cr.preloadCutscene(currPreload)
+-                self.preloadedCutscenes.append(currPreload)
+-
+-            plCutscene = base.cr.getPreloadedCutsceneInfo(name)
+-            if plCutscene == None:
+-                self.sceneObj = Cutscene.Cutscene(self.cr, name, self.doneFinalizeScene, giverId)
+-                self.sceneObj.play()
++            gameFSM = getattr(localAvatar, 'gameFSM', None)
++            inTunnel = localAvatar.testTeleportFlag(PiratesGlobals.TFInTunnel)
++            if inTunnel or (gameFSM and gameFSM.state == 'LeaveTunnel'):
++                # The server starts the scene while the pirate is still in the tunnel
++                # ('waitEvent': 'leaveTunnelDone'); the walk-out can start a second after
++                # this call. Wait for the walk-out to finish and the tunnel to hand back
++                # LandRoam, or the walk-out takes the camera and the cutscene saves the
++                # tunnel state. Start anyway after 15 s so the quest can never stall.
++                started = []
++
++                def startNow(task = None):
++                    if started:
++                        return
++                    started.append(1)
++                    self.ignore('LeaveTunnelFinished')
++                    taskMgr.remove(self.uniqueName('finalizeTunnelTimeout'))
++                    self._startFinalizeCutscene(sceneToPlay, giverId)
++
++                def leaveTunnelFinished():
++                    taskMgr.doMethodLater(0.1, startNow, self.uniqueName('finalizeAfterTunnel'))
++
++                self.acceptOnce('LeaveTunnelFinished', leaveTunnelFinished)
++                taskMgr.doMethodLater(15.0, startNow, self.uniqueName('finalizeTunnelTimeout'))
+             else:
+-                self.sceneObj = plCutscene
+-                plCutscene.initialize(self.doneFinalizeScene, giverId, True)
+-                plCutscene.play()
+-            if self.prevLocalAvState == None:
++                self._startFinalizeCutscene(sceneToPlay, giverId)
++
++    def _startFinalizeCutscene(self, sceneToPlay, giverId):
++        name = sceneToPlay.get('sceneId')
++        preloadInfo = sceneToPlay.get('preloadInfo', [])
++        for currPreload in preloadInfo:
++            base.cr.preloadCutscene(currPreload)
++            self.preloadedCutscenes.append(currPreload)
++
++        plCutscene = base.cr.getPreloadedCutsceneInfo(name)
++        if plCutscene == None:
++            self.sceneObj = Cutscene.Cutscene(self.cr, name, self.doneFinalizeScene, giverId)
++            self.sceneObj.play()
++        else:
++            self.sceneObj = plCutscene
++            plCutscene.initialize(self.doneFinalizeScene, giverId, True)
++            plCutscene.play()
++        if self.prevLocalAvState == None:
+ 
+-                def cutsceneStarted():
+-                    localCutActor = self.sceneObj.getActor(CutsceneActor.CutLocalPirate.getActorKey())
+-                    self.prevLocalAvState = localCutActor.oldParams.gameState
++            def cutsceneStarted():
++                localCutActor = self.sceneObj.getActor(CutsceneActor.CutLocalPirate.getActorKey())
++                self.prevLocalAvState = localCutActor.oldParams.gameState
+ 
+-                self.sceneObj.setStartCallback(cutsceneStarted)
+-            else:
+-                self.sceneObj.overrideOldAvState(self.prevLocalAvState)
++            self.sceneObj.setStartCallback(cutsceneStarted)
++        else:
++            self.sceneObj.overrideOldAvState(self.prevLocalAvState)
+ 
+     def doneFinalizeScene(self):
+         if self.sceneObj:
+diff --git a/pirates/quest/DistributedQuestAvatarAI.py b/pirates/quest/DistributedQuestAvatarAI.py
+index b5c0e03..5cb0432 100644
+--- a/pirates/quest/DistributedQuestAvatarAI.py
++++ b/pirates/quest/DistributedQuestAvatarAI.py
+@@ -1,3 +1,5 @@
++import re
++
+ from direct.directnotify import DirectNotifyGlobal
+ 
+ from pirates.quest.QuestAvatarBase import QuestAvatarBase
+@@ -5,6 +7,7 @@ from pirates.quest import QuestTaskDNA
+ from pirates.quest.QuestHolder import QuestHolder
+ from pirates.uberdog.UberDogGlobals import InventoryCategory
+ from pirates.piratesbase import Freebooter
++from pirates.quest.QuestPath import QuestStep
+ 
+ 
+ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+@@ -77,6 +80,12 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+ 
+             return
+ 
++        # the journal sends '' to untrack; echo it so the client's
++        # activeQuestId clears (otherwise the next Track press untracks again)
++        if not activeQuest:
++            self.b_setActiveQuest('')
++            return
++
+         if not self.air.questMgr.hasQuest(self, questId=activeQuest):
+             self.notify.debug('Failed to set active quest %s for avatar %d, '
+                 'quest not found in the avatar\'s questList!' % (activeQuest, self.doId))
+@@ -133,13 +142,228 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+         # attempt to get the quest step object in which,
+         # the ray of light will hover over...
+         goalUid = activeTask.getGoalUid()
++        if goalUid is not None and not isinstance(goalUid, str):
++            # "defeat / recover from any <enemy type>" tasks carry a QuestGoal, not a uid:
++            # point the beam at a live enemy that counts (the original game's preferred
++            # spawner step). Without this such quests show no beam at all.
++            goalUid = self._getEnemyGoalUid(goalUid)
++            if not goalUid:
++                self.sendUpdate('setQuestStep', [[self.doId, 0, 0, [0, 0, 0, 0], '']])
++                return
++
+         stepType, goalObject = self.air.questMgr.getQuestStep(self, goalUid)
+         if not stepType or not goalObject:
++            # goals that are world-data locators only (Quest Node / Dinghy) are never
++            # spawned as distributed objects, so point the beam at the locator's
++            # world-data position instead (the original QuestPath STQuestNode step)
++            questNodeStep = self._getQuestNodeStep(goalUid)
++            if questNodeStep:
++                self.sendUpdate('setQuestStep', [questNodeStep])
++                return
++
+             self.sendUpdate('setQuestStep', [[self.doId, 0, 0, [0, 0, 0, 0], '']])
+             return
+ 
+-        (x, y, z), (h, p, r) = goalObject.getPos(), goalObject.getHpr()
+-        self.sendUpdate('setQuestStep', [[self.doId, goalObject.doId, stepType, [x, y, z, h], goalUid]])
++        # the client parents the beam to originDoId and applies posH locally,
++        # so the origin must be the object posH is relative to (the goal's parent),
++        # not this avatar - otherwise the beam rides along with the player
++        goalParent = goalObject.getParentObj()
++        (x, y, z), (h, p, r) = self._getStepPosHpr(goalObject, goalParent)
++        originDoId = goalParent.doId if goalParent else self.doId
++        self.sendUpdate('setQuestStep', [[originDoId, goalObject.doId, stepType, [x, y, z, h], goalUid]])
++
++    def _getAreaOf(self, obj):
++        from pirates.world.DistributedGameAreaAI import DistributedGameAreaAI
++        while obj is not None:
++            if isinstance(obj, DistributedGameAreaAI):
++                return obj
++            obj = obj.getParentObj() if hasattr(obj, 'getParentObj') else None
++        return None
++
++    def _getIslandOfArea(self, area):
++        # an island, or the island a cave / jungle hangs off through its tunnels
++        from pirates.world.DistributedIslandAI import DistributedIslandAI
++        if area is None or isinstance(area, DistributedIslandAI):
++            return area
++        tunnels = []
++        for obj in list(self.air.doId2do.values()):
++            if type(obj).__name__ != 'DistributedGATunnelAI':
++                continue
++            try:
++                tunnels.append([link[2] for link in obj.getLinks()[2]])
++            except Exception:
++                continue
++        seen = set([area.getUniqueId()])
++        frontier = [area.getUniqueId()]
++        for depth in range(4):
++            nxt = []
++            for uid in frontier:
++                for links in tunnels:
++                    if uid not in links:
++                        continue
++                    for other in links:
++                        if other in seen:
++                            continue
++                        seen.add(other)
++                        otherObj = self.air.uidMgr.justGetMeMeObject(other)
++                        if isinstance(otherObj, DistributedIslandAI):
++                            return otherObj
++                        nxt.append(other)
++            frontier = nxt
++        return None
++
++    def _getEnemyGoalUid(self, goal):
++        try:
++            level, targetType = goal._QuestGoal__goalData[0], goal._QuestGoal__goalData[1]
++        except Exception:
++            return None
++        if targetType == 'ship' or not hasattr(targetType, 'isA'):
++            return None
++        from pirates.battle.DistributedBattleNPCAI import DistributedBattleNPCAI
++        myArea = self._getAreaOf(self)
++        myIsland = self._getIslandOfArea(myArea)
++        islandCache = {}
++        best = None
++        for obj in list(self.air.doId2do.values()):
++            if not isinstance(obj, DistributedBattleNPCAI):
++                continue
++            try:
++                if not obj.getAvatarType().isA(targetType):
++                    continue
++                if level > 0 and level > obj.getLevel():
++                    continue
++                uid = obj.getUniqueId()
++            except Exception:
++                continue
++            if not uid:
++                continue
++            area = self._getAreaOf(obj)
++            if area is None:
++                continue
++            if area.doId not in islandCache:
++                islandCache[area.doId] = self._getIslandOfArea(area)
++            island = islandCache[area.doId]
++            dist = 0.0
++            if area is myArea:
++                rank = 0
++                try:
++                    dist = (obj.getPos(myArea) - self.getPos(myArea)).length()
++                except Exception:
++                    pass
++            elif island is not None and island is myIsland:
++                rank = 1
++            else:
++                rank = 2
++                try:
++                    dist = (island.getPos() - myIsland.getPos()).length()
++                except Exception:
++                    dist = 1e9
++            key = (rank, dist)
++            if best is None or key < best[0]:
++                best = (key, uid)
++        return best[1] if best else None
++
++    def _getStepPosHpr(self, obj, parentObj):
++        # the client applies posH relative to the origin object, but on the AI a
++        # spawned object's own transform is relative to whatever node it hangs
++        # under (e.g. a grid cell), so measure it against the origin explicitly
++        try:
++            if parentObj is not None and hasattr(parentObj, 'getPos') and not parentObj.isEmpty():
++                return obj.getPos(parentObj), obj.getHpr(parentObj)
++        except Exception:
++            pass
++
++        return obj.getPos(), obj.getHpr()
++
++    def _getQuestNodeStep(self, goalUid):
++        # fallback for goals getQuestStep can't resolve to a live object: world-data-only
++        # locators (Quest Node / Dinghy) and objects in an area that isn't spawned or isn't
++        # reachable by the parent walk (e.g. Tia Dalma in the jungle behind a tunnel)
++        worldCreator = getattr(self.air, 'worldCreator', None)
++        if not goalUid or not worldCreator:
++            return None
++
++        objInfo = worldCreator.getObjectDataByUid(goalUid)
++        if not objInfo:
++            return None
++
++        # the goal's area is the second-last key of its world-data path
++        parentUid = None
++        for fileData in list(worldCreator.fileDicts.values()):
++            path = fileData.get('ObjectIds', {}).get(goalUid)
++            if path:
++                keys = [k for k in re.findall(r'\["([^"]+)"\]', path) if k != 'Objects']
++                if len(keys) >= 2:
++                    parentUid = keys[-2]
++                break
++
++        parentObj = self.air.uidMgr.justGetMeMeObject(parentUid) if parentUid else None
++        myArea = self.getParentObj()
++        if parentObj and myArea is not None and myArea.doId == parentObj.doId:
++            # same area: point the beam at the goal's world-data position
++            pos, hpr = objInfo.get('Pos'), objInfo.get('Hpr', (0, 0, 0))
++            if pos is None:
++                return None
++            return [parentObj.doId, 0, QuestStep.STQuestNode, [pos[0], pos[1], pos[2], hpr[0]], goalUid]
++
++        # another area linked to ours by a tunnel: point at that tunnel
++        myUid = myArea.getUniqueId() if myArea is not None and hasattr(myArea, 'getUniqueId') else None
++        if parentUid and myUid:
++            for obj in list(self.air.doId2do.values()):
++                if type(obj).__name__ != 'DistributedGATunnelAI':
++                    continue
++                try:
++                    linkUids = [link[2] for link in obj.getLinks()[2]]
++                except Exception:
++                    continue
++                if parentUid in linkUids and myUid in linkUids:
++                    tunnelParent = obj.getParentObj()
++                    (x, y, z), (h, p, r) = self._getStepPosHpr(obj, tunnelParent)
++                    originDoId = tunnelParent.doId if tunnelParent else self.doId
++                    return [originDoId, obj.doId, QuestStep.STTunnel, [x, y, z, h], goalUid]
++
++        # the goal's area only hangs off another area through a tunnel (a cave or
++        # jungle behind an island we're not on, e.g. Barbossa's cave from the sea):
++        # lead the avatar to that neighbouring area first
++        if parentUid:
++            for obj in list(self.air.doId2do.values()):
++                if type(obj).__name__ != 'DistributedGATunnelAI':
++                    continue
++                try:
++                    linkUids = [link[2] for link in obj.getLinks()[2]]
++                except Exception:
++                    continue
++                if parentUid not in linkUids:
++                    continue
++                for uid in linkUids:
++                    if uid == parentUid or uid == myUid:
++                        continue
++                    area = self.air.uidMgr.justGetMeMeObject(uid)
++                    if not area:
++                        continue
++                    stepType = self.air.questMgr.getQuestStepType(area)
++                    if not stepType:
++                        continue
++                    areaParent = area.getParentObj()
++                    (x, y, z), (h, p, r) = self._getStepPosHpr(area, areaParent)
++                    return [areaParent.doId if areaParent else self.doId, area.doId, stepType, [x, y, z, h], goalUid]
++
++        if not parentObj:
++            return None
++
++        # otherwise lead the avatar toward the goal's area
++        stepObject = self.air.questMgr.getQuestStepObject(self, parentObj)
++        if not stepObject:
++            return None
++
++        stepType = self.air.questMgr.getQuestStepType(stepObject)
++        if not stepType:
++            return None
++
++        stepParent = stepObject.getParentObj()
++        (x, y, z), (h, p, r) = self._getStepPosHpr(stepObject, stepParent)
++        originDoId = stepParent.doId if stepParent else self.doId
++        return [originDoId, stepObject.doId, stepType, [x, y, z, h], goalUid]
+ 
+     def _swapQuest(self, oldQuests=[], giverId=None, questIds=None, rewards=None):
+         inventory = self.getInventory()
+@@ -170,7 +394,7 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+ 
+             return
+ 
+-        def questCreatedCallback():
++        def questCreatedCallback(*args):
+             messenger.send('quest-available-%s-%d' % (nextQuestId, self.doId), [self, inventory.getQuestList()])
+ 
+         self.air.questMgr.createQuest(self, nextQuestId, questCreatedCallback)
+diff --git a/pirates/quest/DistributedQuestGiverAI.py b/pirates/quest/DistributedQuestGiverAI.py
+index 5c6280d..1af4c17 100644
+--- a/pirates/quest/DistributedQuestGiverAI.py
++++ b/pirates/quest/DistributedQuestGiverAI.py
+@@ -1,5 +1,21 @@
+ from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from direct.directnotify import DirectNotifyGlobal
++from pirates.quest import QuestDB, QuestConstants
++from pirates.quest.QuestOffer import QuestOffer
++from pirates.quest.QuestLadderDependency import QuestLadderDependency
++from pirates.quest.QuestLadderDynMap import QuestLadderDynMap
++from pirates.reputation.ReputationGlobals import getLevelFromTotalReputation
++
++_questDependency = None
++_questDynMap = None
++
++
++def _getLadderMaps():
++    global _questDependency, _questDynMap
++    if _questDependency is None:
++        _questDependency = QuestLadderDependency()
++        _questDynMap = QuestLadderDynMap()
++    return _questDependency, _questDynMap
+ 
+ 
+ class DistributedQuestGiverAI(DistributedObjectAI):
+@@ -7,6 +23,51 @@ class DistributedQuestGiverAI(DistributedObjectAI):
+ 
+     def __init__(self, air):
+         DistributedObjectAI.__init__(self, air)
++        self.pendingOffers = {}
++
++    def getAvailableQuestOffers(self, avatar, giverId):
++        # family server (2026-09-18): AI port of the client's
++        # DistributedQuestGiver.hasQuestOffers, so the Quest button the client
++        # lights up gets a real offer list instead of an empty one.
++        inventory = avatar.getInventory()
++        if not inventory:
++            return []
++        dependency, dynMap = _getLadderMaps()
++        ladderHistory = avatar.getQuestLadderHistory()
++        heldIds = [q.getQuestId() for q in inventory.getQuestList()]
++        offers = []
++        for questId, questDNA in list(QuestDB.QuestDict.items()):
++            if questId in heldIds or avatar.questStatus.hasLadderQuestId(questId):
++                continue
++            weapCheck = questDNA.weapLvlType != None and questDNA.minWeapLevel > 0
++            for prereq in questDNA.getPrereqs():
++                if not (prereq.giverMatters() and prereq.giverCanGive(giverId)):
++                    continue
++                if questDNA.minLevel > avatar.getLevel():
++                    continue
++                if not dependency.checkDependency(questId, ladderHistory, 1):
++                    continue
++                if weapCheck and questDNA.minWeapLevel > getLevelFromTotalReputation(questDNA.weapLvlType, inventory.getReputation(questDNA.weapLvlType))[0]:
++                    continue
++                if questDNA.getAcquireOnce() and ladderHistory.count(dynMap.findQuestLadderInt(questId)):
++                    continue
++                try:
++                    offers.append(QuestOffer.create(questId, avatar))
++                except Exception as e:
++                    self.notify.warning('cannot offer %s: %r' % (questId, e))
++                break
++        return offers
++
++    def setOfferResponse(self, index, ladder):
++        avId = self.air.getAvatarIdFromSender()
++        offers = self.pendingOffers.pop(avId, [])
++        avatar = self.air.doId2do.get(avId)
++        if not avatar or index == QuestConstants.CANCEL_QUEST:
++            return
++        if index < 0 or index >= len(offers):
++            self.notify.warning('bad offer index %d from %d' % (index, avId))
++            return
++        self.air.questMgr.createQuest(avatar, offers[index].getQuestId())
+ 
+     def d_setQuestOffer(self, avatarId, offers):
+         self.sendUpdateToAvatarId(avatarId, 'setQuestOffer', [offers])
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 12a7052..69ebd19 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -371,7 +371,12 @@ class QuestManagerAI(DirectObject):
+         if quest.getQuestId() == avatar.getActiveQuest():
+             avatar.b_setActiveQuest('')
+ 
+-        # finally, deactivate the old quest.
++        # finally, deactivate the old quest. the quest stub of a droppable quest
++        # listens for this event with a handler that takes the quest (and re-runs
++        # the ladder drop handled directly above), so detach it before announcing
++        if questStub:
++            questStub.ignore(quest.getDroppedEventString())
++
+         messenger.send(quest.getDroppedEventString())
+         self.deactivateQuest(avatar, quest.doId)
+ 
+@@ -586,7 +591,7 @@ class QuestManagerAI(DirectObject):
+ 
+         return self.completeTaskState(avatar, questEvent)
+ 
+-    def finalizeCutscene(self, avatar, quest, finalizeIndex=0, npc=None):
++    def finalizeCutscene(self, avatar, quest, finalizeIndex=0, npc=None, endInteract=False):
+         taskStates = quest.getTaskStates()
+         finalizeInfo = quest.questDNA.getFinalizeInfo()
+ 
+@@ -595,8 +600,18 @@ class QuestManagerAI(DirectObject):
+ 
+         def finalize(finalizeIndex):
+             if finalizeIndex >= len(finalizeInfo):
++                if finalizeInfo:
++                    # every finalize scene has played; the last one may have already ended
++                    # the npc interaction, so don't wait on interact-canceled...
++                    quest.d_amFinalized()
++                    self.completeQuest(avatar, quest)
++                    # the scenes ran inside the player's talk with the npc; close that
++                    # talk (client cancelInteraction -> requestExit) or the npc stays
++                    # busy for this pirate after the last scene.
++                    if endInteract and npc is not None and hasattr(npc, 'd_setMovie'):
++                        npc.d_setMovie(avatar.doId, 'stop')
+                 # if an npc is present send the quest completed information
+-                if not npc:
++                elif not npc:
+                     # didn't have an NPC, just go ahead and complete the quest anyways...
+                     self.completeQuest(avatar, quest)
+                 else:
+@@ -657,8 +672,34 @@ class QuestManagerAI(DirectObject):
+ 
+                     return
+ 
+-                self.acceptOnce('dialog-complete-%d' % npc.doId, finalizeCallback, extraArgs=[True])
+-                npc.d_playDialogMovie(avatar.doId, finalizeStateInfo['sceneId'])
++                # Play the dialog through the quest (startFinalizeScene), not straight on
++                # the npc: the client quest carries the pre-dialog game state from one
++                # finalize scene to the next. Sent bare, the second scene (Darby's
++                # quest_tut_darby_ship2) starts while still in 'Dialog', never learns the
++                # old state, and leaves the pirate stuck in Dialog with the camera on the npc.
++                self.acceptOnce('quest-finalize-%d' % quest.doId, finalizeCallback, extraArgs=[True])
++                waitEvent = finalizeStateInfo.get('waitEvent')
++                if not waitEvent:
++                    quest.d_startFinalizeScene(finalizeIndex, npc.doId)
++                else:
++                    # e.g. Darby's second line waits for the ship name
++                    # (DistributedNPCTownfolkAI.shipTutorialPt1 sends it). Never stall:
++                    # start anyway after two minutes.
++                    eventName = avatar.uniqueName(waitEvent)
++                    taskName = 'finalize-wait-%d' % quest.doId
++                    started = []
++
++                    def startScene(task=None):
++                        if started:
++                            return
++                        started.append(1)
++                        self.ignore(eventName)
++                        taskMgr.remove(taskName)
++                        if quest.doId in self.air.doId2do:
++                            quest.d_startFinalizeScene(finalizeIndex, npc.doId)
++
++                    self.acceptOnce(eventName, startScene)
++                    taskMgr.doMethodLater(120.0, startScene, taskName)
+             else:
+                 self.notify.warning('Failed to handle interact callback with npc %d for avatar %d '
+                     'with unknown finalizeType: %s!' % (npc.doId, avatar.doId, finalizeType))
+@@ -667,7 +708,7 @@ class QuestManagerAI(DirectObject):
+ 
+         finalize(finalizeIndex)
+ 
+-    def requestInteract(self, avatar, npc):
++    def requestInteract(self, avatar, npc, endInteract=False):
+         parentObj = avatar.getParentObj()
+         if not parentObj:
+             return
+@@ -684,7 +725,7 @@ class QuestManagerAI(DirectObject):
+             return
+ 
+         def interactCallback(quest):
+-            self.finalizeCutscene(avatar, quest, npc=npc)
++            self.finalizeCutscene(avatar, quest, npc=npc, endInteract=endInteract)
+ 
+         return self.completeTaskState(avatar, questEvent, callback=interactCallback)
+ 
+@@ -756,12 +797,30 @@ class QuestManagerAI(DirectObject):
+ 
+             return goalObject, otherObject
+ 
+-        # recurse through the scenegraph and find the target goal object...
+-        goalObject, otherObject = findObject(goalObject, avatar)
++        def findAncestor(obj, cls):
++            while obj is not None:
++                if isinstance(obj, cls):
++                    return obj
++                obj = obj.getParentObj()
++            return None
++
++        # a goal inside an interior the avatar is not in: interiors hang off
++        # their own instance world here, so the lockstep walk below would meet
++        # only at the district and return the instance world (a null step).
++        # Point at the interior instead and let the door logic below take over.
++        goalInterior = findAncestor(goalObject, DistributedGAInteriorAI)
++        if goalInterior and findAncestor(avatar, DistributedGAInteriorAI) is not goalInterior:
++            goalObject, otherObject = goalInterior, findAncestor(avatar, DistributedIslandAI)
++            if otherObject is None:
++                otherObject = avatar
++        else:
++            # recurse through the scenegraph and find the target goal object...
++            goalObject, otherObject = findObject(goalObject, avatar)
+ 
+         # interiors are parented under the world instance object,
+         # the avatar is parented under the island...
+-        if isinstance(goalObject, DistributedGAInteriorAI) and isinstance(otherObject, DistributedIslandAI):
++        # (otherObject is the avatar itself when it is not on an island, e.g. at sea)
++        if isinstance(goalObject, DistributedGAInteriorAI) and not isinstance(otherObject, DistributedGAInteriorAI):
+             doorLocatorNode = goalObject.getExteriorFrontDoor()
+             if not doorLocatorNode:
+                 doorLocatorNode = goalObject.getExteriorBackDoor()
+@@ -781,8 +840,8 @@ class QuestManagerAI(DirectObject):
+         return goalObject
+ 
+     def getQuestStep(self, avatar, goalUid):
+-        goalObject = self.getQuestStepObject(avatar,
+-            self.air.uidMgr.justGetMeMeObject(goalUid))
++        rawObj = self.air.uidMgr.justGetMeMeObject(goalUid)
++        goalObject = self.getQuestStepObject(avatar, rawObj)
+ 
+         if not goalObject:
+             return None, None
+@@ -807,7 +866,7 @@ def dropQuest(questId):
+     if not activeQuest:
+         return 'Could not find active quest: %s!' % questId
+ 
+-    base.air.questMgr.dropQuest(invoker, activeQuest.doId)
++    base.air.questMgr.dropQuest(invoker, activeQuest)
+     return 'Dropped active quest: %s!' % questId
+ 
+ 
+diff --git a/pirates/quest/QuestTaskDNA.py b/pirates/quest/QuestTaskDNA.py
+index e0828ff..08b5008 100644
+--- a/pirates/quest/QuestTaskDNA.py
++++ b/pirates/quest/QuestTaskDNA.py
+@@ -33,7 +33,9 @@ class QuestTaskDNA(POD):
+         return []
+ 
+     def locationMatches(self, questEvent):
+-        if self.getLocation() == LocationIds.ANY_LOCATION:
++        # no location (DeliverItemTaskDNA's default) means the task can be done anywhere;
++        # treating it as 'no match' made every deliver quest impossible to hand in
++        if self.getLocation() is None or self.getLocation() == LocationIds.ANY_LOCATION:
+             return True
+ 
+         if questEvent.location is None:
+-- 
+2.53.0
+

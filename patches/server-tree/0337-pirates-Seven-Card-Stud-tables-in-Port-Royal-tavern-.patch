@@ -1,0 +1,51 @@
+From e7e208ea78f5e1bedfd0c7941cfd6946e63f902c Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 23:55:58 -0800
+Subject: [PATCH 337/371] pirates: Seven Card Stud tables in Port Royal tavern
+ 2 and Tortuga tavern 1 (7stud-0001, AI only)
+
+Seven Card Stud had its client class, AI class, DC Distributed7StudTable and Lookout wiring, but the world data placed
+no 7 Stud table, so nobody could sit at one. The lone parlor table in port_royal_building_int_tavern_2 and in
+tortuga_building_int_tavern changes 'Category': 'Holdem' -> '7Stud' (an original value: the editor's own Category list
+in ObjectList.py is Blackjack / Holdem / 7Stud). Each town keeps a Holdem table in its other tavern. Counts after:
+Blackjack 12, Holdem 8, 7Stud 2. Same table prop, cards and chips as Holdem; no client change.
+
+AI restart only (world data is read when the AI builds the interior). Test: test_7stud.py (real createParlorTable +
+a dealt hand: 7 cards over 5 streets, no community cards; Holdem control): live FAIL 22/23 -> patched PASS 23/23.
+The 7 Stud AI has not run a live hand yet; one bot hand at the table is the live check.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../leveleditor/worldData/port_royal_building_int_tavern_2.py   | 2 +-
+ pirates/leveleditor/worldData/tortuga_building_int_tavern.py    | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/leveleditor/worldData/port_royal_building_int_tavern_2.py b/pirates/leveleditor/worldData/port_royal_building_int_tavern_2.py
+index 11e5faf..1190d3c 100644
+--- a/pirates/leveleditor/worldData/port_royal_building_int_tavern_2.py
++++ b/pirates/leveleditor/worldData/port_royal_building_int_tavern_2.py
+@@ -958,7 +958,7 @@ objectStruct = {
+                 },
+                 '1169798737.63Shochet': {
+                     'Type': 'Parlor Game',
+-                    'Category': 'Holdem',
++                    'Category': '7Stud',
+                     'BetMultiplier': '1',
+                     'Hpr': Point3(0.0, 0.0, 0.0),
+                     'Objects': {},
+diff --git a/pirates/leveleditor/worldData/tortuga_building_int_tavern.py b/pirates/leveleditor/worldData/tortuga_building_int_tavern.py
+index a655a5b..b8452a5 100644
+--- a/pirates/leveleditor/worldData/tortuga_building_int_tavern.py
++++ b/pirates/leveleditor/worldData/tortuga_building_int_tavern.py
+@@ -219,7 +219,7 @@ objectStruct = {
+                 },
+                 '1190740736.0dxschafe1': {
+                     'Type': 'Parlor Game',
+-                    'Category': 'Holdem',
++                    'Category': '7Stud',
+                     'BetMultiplier': '1',
+                     'Hpr': Point3(0.0, 0.0, 0.0),
+                     'Pos': Point3(-16.233, -6.992, 1.0),
+-- 
+2.53.0
+

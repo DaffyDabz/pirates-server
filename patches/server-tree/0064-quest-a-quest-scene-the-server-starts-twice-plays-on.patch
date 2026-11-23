@@ -1,0 +1,39 @@
+From 1806da1441804d58654ef76389a4af3958efe462 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 03:25:27 -0800
+Subject: [PATCH 064/371] quest: a quest scene the server starts twice plays
+ once, so Doggerel Dan's intro no longer crashes the game when it ends
+
+In the tutorial the server started the "Doggerel Dan and Nell Intro" finalize scene twice, 0.08 s apart
+(two requestInteract calls each send startFinalizeScene). The client played the same preloaded Cutscene
+object a second time, so when the scene ended its actors finished twice and the camera actor's
+finishCutscene crashed on `del self._parentNode`. A start that arrives while a scene still plays is
+now ignored.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/DistributedQuest.py | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/pirates/quest/DistributedQuest.py b/pirates/quest/DistributedQuest.py
+index 75119fc..9ac93b1 100644
+--- a/pirates/quest/DistributedQuest.py
++++ b/pirates/quest/DistributedQuest.py
+@@ -144,6 +144,14 @@ class DistributedQuest(DistributedObject.DistributedObject, QuestBase.QuestBase,
+             return 'OBJECTIVE COMPLETE!'
+ 
+     def startFinalizeScene(self, idx, giverId, endEvent = None):
++        if self.sceneObj:
++            # family server (11-17): the server asked again while the scene still plays (the tutorial's
++            # auto-visit and a talk with Dan both finish the quest step). The preloaded Cutscene is the same
++            # object, so playing it again finished its actors twice and crashed the game on the camera's
++            # _parentNode when the scene ended. Let the one already playing finish
++            self.notify.warning('startFinalizeScene %s: a scene is already playing, ignored' % idx)
++            return
++
+         sceneInfo = self.questDNA.getFinalizeInfo()
+         sceneToPlay = sceneInfo[idx]
+         self.endEvent = endEvent
+-- 
+2.53.0
+

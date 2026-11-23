@@ -1,0 +1,198 @@
+From facd04e214ab380329c77625eed7f24e8d13a1c1 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 21:15:19 -0800
+Subject: [PATCH 332/371] pirates: logging out on a ship, at its wheel, at a
+ cannon or fixing it no longer closes the game; every ship part tidies itself
+ away (crew-0003, client only)
+
+0414 and 0415 fixed DistributedShip itself. On the same logout the server's deletes for everything on his ship arrive
+after LocalPirate.delete has removed localAvatar, and the ship's parts and FSM exits still read it:
+- DistributedSteeringWheel.delete: base.localAvatar.doId on every wheel delete (AttributeError, the next relog crash)
+- DistributedShipRepairSpot.disable / stopRepairing (NameError)
+- DistributedPCCannon / DistributedShipCannon.exitFireCannon: combat tray, skill tray, collisions
+- GameFSMShip.exitInPosition: localAvatar.getShip()
+- DistributedShip.loadZoneLevel(2) shipList and localAvatarExitShip's radar zoom
+- DistributedBattleAvatar.hideHpMeter (from disable): an avatar disabled after he logged out
+
+All use getattr(base, 'localAvatar', None) now, as 0414/0415 do, and skip his part when he is gone; with him logged
+in every guarded line runs as before. The lane's AST walk of 252 methods reached from the ship and its parts'
+disable/delete and FSM exits went from 13 localAvatar reads to 4, all already safe.
+
+Client files only; no AI or UberDOG file imports them. Test: test_ship_teardown.py (real client code) live FAIL 9/18,
+patched PASS 18/18; test_ship_logout.py (0415) 4/4 and test_crew_logout.py (0414) 3/3 still pass.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedBattleAvatar.py      |  9 ++++++---
+ pirates/battle/DistributedPCCannon.py          | 13 +++++++++----
+ pirates/battle/DistributedShipCannon.py        |  5 ++++-
+ pirates/ship/DistributedShip.py                | 10 ++++++++--
+ pirates/ship/GameFSMShip.py                    |  7 +++++--
+ pirates/shipparts/DistributedShipRepairSpot.py | 13 +++++++++----
+ pirates/shipparts/DistributedSteeringWheel.py  |  5 ++++-
+ 7 files changed, 45 insertions(+), 17 deletions(-)
+
+diff --git a/pirates/battle/DistributedBattleAvatar.py b/pirates/battle/DistributedBattleAvatar.py
+index e56f280..fb1781a 100644
+--- a/pirates/battle/DistributedBattleAvatar.py
++++ b/pirates/battle/DistributedBattleAvatar.py
+@@ -1782,11 +1782,14 @@ class DistributedBattleAvatar(DistributedReputationAvatar, WeaponBase, Teamable)
+ 
+     def hideHpMeter(self, delay = 6.0):
+         DistributedReputationAvatar.hideHpMeter(self, delay = delay)
+-        if base.localAvatar.guiMgr.targetStatusTray.doId == self.getDoId():
++        # family client (11-20, crew-0003): disable calls this; an avatar disabled after he logged out (LocalPirate.delete
++        # deletes localAvatar first) has no target tray of his to fade.
++        av = getattr(base, 'localAvatar', None)
++        if av is not None and av.guiMgr.targetStatusTray.doId == self.getDoId():
+             if self.getTotalHp() <= 0:
+-                localAvatar.guiMgr.targetStatusTray.updateHp(0, self.maxHp)
++                av.guiMgr.targetStatusTray.updateHp(0, self.maxHp)
+             
+-            localAvatar.guiMgr.targetStatusTray.fadeOut(delay = delay)
++            av.guiMgr.targetStatusTray.fadeOut(delay = delay)
+ 
+     def getLandRoamIdleAnimInfo(self):
+         return ('idle', 1.0)
+diff --git a/pirates/battle/DistributedPCCannon.py b/pirates/battle/DistributedPCCannon.py
+index 06634a5..479b8dc 100644
+--- a/pirates/battle/DistributedPCCannon.py
++++ b/pirates/battle/DistributedPCCannon.py
+@@ -201,15 +201,20 @@ class DistributedPCCannon(DistributedWeapon.DistributedWeapon):
+         self.ignore(InteractiveBase.END_INTERACT_EVENT)
+         self.cgui.destroy()
+         self.cgui = None
+-        localAvatar.guiMgr.combatTray.hideSkills()
+-        localAvatar.guiMgr.combatTray.disableTray()
++        # family client (11-20, crew-0003): logging out aboard his ship (at a cannon) deletes localAvatar before the ship and its parts are
++        # deleted (LocalPirate.delete first); with no local pirate there is nothing of his to tidy up here.
++        av = getattr(base, 'localAvatar', None)
++        if av is not None:
++            av.guiMgr.combatTray.hideSkills()
++            av.guiMgr.combatTray.disableTray()
+         if self.fireSubframeCall:
+             self.fireSubframeCall.cleanup()
+             self.fireSubframeCall = None
+ 
+         self.cannonDressingNode.detachNode()
+-        base.localAvatar.guiMgr.combatTray.skillTray.hideSkillTray()
+-        base.localAvatar.guiMgr.combatTray.initCombatTray(localAvatar.currentWeaponId)
++        if av is not None:
++            av.guiMgr.combatTray.skillTray.hideSkillTray()
++            av.guiMgr.combatTray.initCombatTray(av.currentWeaponId)
+ 
+     def requestExit(self):
+         DistributedWeapon.DistributedWeapon.requestExit(self)
+diff --git a/pirates/battle/DistributedShipCannon.py b/pirates/battle/DistributedShipCannon.py
+index 42c229d..4a0907a 100644
+--- a/pirates/battle/DistributedShipCannon.py
++++ b/pirates/battle/DistributedShipCannon.py
+@@ -117,7 +117,10 @@ class DistributedShipCannon(DistributedPCCannon.DistributedPCCannon, Distributed
+ 
+     def exitFireCannon(self):
+         DistributedPCCannon.DistributedPCCannon.exitFireCannon(self)
+-        base.localAvatar.controlManager.collisionsOff()
++        # family client (11-20, crew-0003): see DistributedPCCannon.exitFireCannon
++        av = getattr(base, 'localAvatar', None)
++        if av is not None:
++            av.controlManager.collisionsOff()
+         if self.ship:
+             keel = self.ship.find('**/keel')
+             if not keel.isEmpty():
+diff --git a/pirates/ship/DistributedShip.py b/pirates/ship/DistributedShip.py
+index 7cf96ab..c5c8a62 100644
+--- a/pirates/ship/DistributedShip.py
++++ b/pirates/ship/DistributedShip.py
+@@ -1324,7 +1324,10 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+             newZoom = self.oldZoom
+         else:
+             newZoom = 'Zoom1'
+-        base.localAvatar.guiMgr.radarGui.zoomFSM.request(newZoom)
++        # family client (11-20, crew-0003): see disable
++        av = getattr(base, 'localAvatar', None)
++        if av is not None:
++            av.guiMgr.radarGui.zoomFSM.request(newZoom)
+         if self.hull:
+             if self.hull[0].prop:
+                 self.setTargetBitmask(1)
+@@ -2254,7 +2257,10 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+         elif level == 2:
+             self.createWake()
+             self.zoneDistance = self.cr.addInterest(self.getDoId(), PiratesGlobals.ShipZoneDistance, self.uniqueName('distance'), event = self.fullBuiltEvent)
+-            base.localAvatar.shipList.append(self.doId)
++            # family client (11-20, crew-0003): see unloadZoneLevel
++            av = getattr(base, 'localAvatar', None)
++            if av is not None:
++                av.shipList.append(self.doId)
+         elif level == 3:
+             if self.flat:
+                 self.flat.stash()
+diff --git a/pirates/ship/GameFSMShip.py b/pirates/ship/GameFSMShip.py
+index 40c43d2..9d0ad7f 100644
+--- a/pirates/ship/GameFSMShip.py
++++ b/pirates/ship/GameFSMShip.py
+@@ -337,9 +337,12 @@ class GameFSMShip(FSM.FSM):
+ 
+     def exitInPosition(self):
+         self.ship.removeTarget()
+-        myShip = localAvatar.getShip()
++        # family client (11-20, crew-0003): logging out aboard his ship deletes localAvatar before the ship and its parts are
++        # deleted (LocalPirate.delete first); with no local pirate there is nothing of his to tidy up here.
++        av = getattr(base, 'localAvatar', None)
++        myShip = av.getShip() if av is not None else None
+         if myShip and myShip.doId == self.ship.boardableShipId:
+-            if myShip.isCaptain(localAvatar.doId):
++            if myShip.isCaptain(av.doId):
+                 myShip.removeBoardingChoice()
+ 
+     def enterBoarded(self):
+diff --git a/pirates/shipparts/DistributedShipRepairSpot.py b/pirates/shipparts/DistributedShipRepairSpot.py
+index f8536d9..b9c5a43 100644
+--- a/pirates/shipparts/DistributedShipRepairSpot.py
++++ b/pirates/shipparts/DistributedShipRepairSpot.py
+@@ -54,7 +54,10 @@ class DistributedShipRepairSpot(DistributedInteractive):
+             self._pendingShip = None
+ 
+         self.stopWatchingShip()
+-        if self.userId == localAvatar.doId:
++        # family client (11-20, crew-0003): logging out aboard his ship deletes localAvatar before the ship and its parts are
++        # deleted (LocalPirate.delete first); with no local pirate there is nothing of his to tidy up here.
++        av = getattr(base, 'localAvatar', None)
++        if av is not None and self.userId == av.doId:
+             self.stopRepairing()
+         
+         DistributedInteractive.disable(self)
+@@ -83,9 +86,11 @@ class DistributedShipRepairSpot(DistributedInteractive):
+         localAvatar.b_setGameState('ShipRepair')
+     
+     def stopRepairing(self):
+-        if self.userId == localAvatar.doId and localAvatar.getGameState() == 'ShipRepair':
+-            localAvatar.b_setGameState(localAvatar.gameFSM.defaultState)
+-            base.localAvatar.motionFSM.on()
++        # family client (11-20, crew-0003): see disable
++        av = getattr(base, 'localAvatar', None)
++        if av is not None and self.userId == av.doId and av.getGameState() == 'ShipRepair':
++            av.b_setGameState(av.gameFSM.defaultState)
++            av.motionFSM.on()
+     
+     def requestExit(self):
+         DistributedInteractive.requestExit(self)
+diff --git a/pirates/shipparts/DistributedSteeringWheel.py b/pirates/shipparts/DistributedSteeringWheel.py
+index bf1d8f3..f80042b 100644
+--- a/pirates/shipparts/DistributedSteeringWheel.py
++++ b/pirates/shipparts/DistributedSteeringWheel.py
+@@ -65,7 +65,10 @@ class DistributedSteeringWheel(DistributedInteractive.DistributedInteractive, Di
+     def delete(self):
+         self.notify.debug('Delete ' + str(self.doId))
+         if self.ship and self.ship.wheel and self.ship.wheel[1]:
+-            if self.ship.steeringAvId == base.localAvatar.doId:
++            # family client (11-20, crew-0003): logging out aboard his ship deletes localAvatar before the ship and its parts are
++            # deleted (LocalPirate.delete first); with no local pirate there is nothing of his to tidy up here.
++            av = getattr(base, 'localAvatar', None)
++            if av is not None and self.ship.steeringAvId == av.doId:
+                 self.ship.clientSteeringEnd()
+ 
+             self.ship.wheel[1] = None
+-- 
+2.53.0
+

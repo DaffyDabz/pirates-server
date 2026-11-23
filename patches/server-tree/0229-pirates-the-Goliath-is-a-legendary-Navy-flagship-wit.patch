@@ -1,0 +1,108 @@
+From 7da9361cea0b96e30ec4a259b2a50d18eb81dc71 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:55:57 -0800
+Subject: [PATCH 229/371] pirates: the Goliath is a legendary Navy flagship
+ with its own crew and royal chests (0266)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/FlagshipGlobals.py | 33 ++++++++++++++++++++++++++++++---
+ 1 file changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/ship/FlagshipGlobals.py b/pirates/ship/FlagshipGlobals.py
+index 443dea0..00f05b6 100644
+--- a/pirates/ship/FlagshipGlobals.py
++++ b/pirates/ship/FlagshipGlobals.py
+@@ -113,9 +113,15 @@ ALL_FLAGSHIPS = (
+ )
+ 
+ # Legendary/Pirate flagships (special spawning rules)
++# patch 0266 (2026-11-19): the Goliath, the Navy's level-40 giant. It is the
++# only legendary ship the 2008 client has a model for (phase_5 goliath-*) that
++# sails for an enemy team: the Black Pearl is Jack's (PLAYER_TEAM), and there
++# are no Queen Anne's Revenge, Flying Dutchman, Jolly Roger or Dauntless models
++# or ship configs. ShipManagerAI spawns at most legendary-flagship-max of them,
++# now and then, never in the starter waters, on top of the regular flagships.
++# It is not in ALL_FLAGSHIPS, so the regular flagship draw never picks it.
+ LEGENDARY_FLAGSHIPS = [
+-    # Queen Anne's Revenge - Found near Isla Cangrejos, Isla Perdida, and Isla Tormenta
+-    # Look for alerts as to where she is sailing
++    ShipGlobals.GOLIATH,
+ ]
+ 
+ 
+@@ -309,6 +315,9 @@ FLAGSHIP_CREW_SIZE = {
+     ShipGlobals.NAVY_COLOSSUS: 10,
+     ShipGlobals.SKEL_BLOOD_SCOURGE_FR: 10,
+     ShipGlobals.SKEL_BLOOD_SCOURGE_SP: 10,
++
++    # Legendary (patch 0266)
++    ShipGlobals.GOLIATH: 10,
+ }
+ 
+ DEFAULT_CREW_SIZE = 8
+@@ -323,6 +332,9 @@ LOOT_BECKETTS_SPYGLASS = 'becketts_spyglass'
+ LOOT_NORRINGTONS_SPYGLASS = 'norringtons_spyglass'
+ LOOT_SEA_BEAST_VANQUISHER = 'sea_beast_vanquisher'
+ LOOT_BOTTLE_ROCKET_RAM = 'bottle_rocket_ram'
++# patch 0266: a royal chest that always drops (each loot item that drops is one
++# royal chest in the boarders' hold, NPCShipAI.flagshipDefeated)
++LOOT_LEGENDARY_CHEST = 'legendary_chest'
+ 
+ # Special drops by ship class
+ FLAGSHIP_SPECIAL_LOOT = {
+@@ -343,6 +355,10 @@ FLAGSHIP_SPECIAL_LOOT = {
+     ShipGlobals.SKEL_SHADOW_CROW_SP: [LOOT_BOTTLE_ROCKET_RAM],
+     ShipGlobals.SKEL_HELLHOUND_SP: [LOOT_BOTTLE_ROCKET_RAM],
+     ShipGlobals.SKEL_BLOOD_SCOURGE_SP: [LOOT_BOTTLE_ROCKET_RAM],
++
++    # The Goliath (patch 0266): two royal chests for sure, and the rare drops
++    ShipGlobals.GOLIATH: [LOOT_LEGENDARY_CHEST, LOOT_LEGENDARY_CHEST,
++                          LOOT_SEA_BEAST_VANQUISHER, LOOT_NORRINGTONS_SPYGLASS],
+ }
+ 
+ # Loot drop chances (0.0 to 1.0)
+@@ -351,6 +367,7 @@ SPECIAL_LOOT_CHANCES = {
+     LOOT_NORRINGTONS_SPYGLASS: 0.05,   # 5% chance
+     LOOT_SEA_BEAST_VANQUISHER: 0.02,   # 2% chance (only from special flagships)
+     LOOT_BOTTLE_ROCKET_RAM: 0.08,      # 8% chance
++    LOOT_LEGENDARY_CHEST: 1.0,         # always (patch 0266)
+ }
+ 
+ 
+@@ -382,6 +399,9 @@ FLAGSHIP_ENEMY_LEVELS = {
+     ShipGlobals.SKEL_SHADOW_CROW_SP: (14, 20),
+     ShipGlobals.SKEL_HELLHOUND_SP: (18, 24),
+     ShipGlobals.SKEL_BLOOD_SCOURGE_SP: (22, 30),
++
++    # Legendary (patch 0266): the level-40 Goliath, a step above the Colossus
++    ShipGlobals.GOLIATH: (24, 32),
+ }
+ 
+ DEFAULT_ENEMY_LEVELS = (12, 18)
+@@ -412,7 +432,12 @@ FLAGSHIP_CAPTAINS = {
+ 
+ def isFlagship(shipClass):
+     """Check if a ship class is a flagship"""
+-    return shipClass in ALL_FLAGSHIPS
++    return shipClass in ALL_FLAGSHIPS or shipClass in LEGENDARY_FLAGSHIPS
++
++
++def isLegendary(shipClass):
++    """patch 0266: is this ship class a legendary flagship (the Goliath)?"""
++    return shipClass in LEGENDARY_FLAGSHIPS
+ 
+ 
+ def getFlagshipCrew(shipClass, team=None):
+@@ -463,6 +488,8 @@ def getFlagshipTeam(shipClass):
+         return PiratesGlobals.FRENCH_UNDEAD_TEAM
+     elif shipClass in SPANISH_UNDEAD_FLAGSHIPS:
+         return PiratesGlobals.SPANISH_UNDEAD_TEAM
++    elif shipClass in LEGENDARY_FLAGSHIPS:
++        return ShipGlobals.getShipTeam(shipClass)
+     return PiratesGlobals.UNDEAD_TEAM
+ 
+ 
+-- 
+2.53.0
+

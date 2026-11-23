@@ -1,0 +1,35 @@
+From 5f435536f2b19ca92cf7cb7347f7fd0e1a0e6f69 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 04:41:16 -0800
+Subject: [PATCH 368/371] pirates: the AI district no longer closes when a
+ pirate logs out within a few seconds of logging in (the login's level
+ catch-up runs giveLevelUpQuests from a 5 s timer, and from 1 s retries while
+ a quest job runs; an inventory deleted by the logout has air None, so
+ 'self.air.doId2do' raised AttributeError out of taskMgr and ended the AI, as
+ at 04:18:31); giveLevelUpQuests now gives nothing for a deleted inventory,
+ the same as for a pirate who is gone; as server-tree patch 0452 (AI code
+ only, 1 line, no client patch, no DC change, AI restart)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/PirateInventoryAI.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/uberdog/PirateInventoryAI.py b/pirates/uberdog/PirateInventoryAI.py
+index b114adc..fe874ce 100644
+--- a/pirates/uberdog/PirateInventoryAI.py
++++ b/pirates/uberdog/PirateInventoryAI.py
+@@ -82,7 +82,9 @@ class PirateInventoryAI(DistributedInventoryAI):
+         # and drops a second one ("an FSM already running"), so two calls in a row, or a level-up from a quest
+         # reward while the next quest of the ladder is still being made, lost the level-up quest for good. Wait
+         # for the running job instead (up to 10 seconds). A quest he holds or has finished is not given again.
+-        if self.air.doId2do.get(avatar.doId) is not avatar:
++        # family server (11-22): this runs from a timer (5 s after login, 1 s retries); a pirate who logs out first
++        # leaves this inventory deleted (air None), and the error closed the whole AI district (04:18:31)
++        if self.air is None or self.air.doId2do.get(avatar.doId) is not avatar:
+             return
+ 
+         from pirates.quest import QuestDB
+-- 
+2.53.0
+

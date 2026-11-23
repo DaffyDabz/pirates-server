@@ -1,0 +1,378 @@
+From 49bb800b6eb27e1b54bf4a0c2b5398fbec8aa587 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:57:29 -0800
+Subject: [PATCH 184/371] pirates: PvP challenges can be sent, accepted and
+ cancelled (0242)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pvp/PVPManagerAI.py | 351 +++++++++++++++++++++++++++++++++++-
+ 1 file changed, 350 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/pvp/PVPManagerAI.py b/pirates/pvp/PVPManagerAI.py
+index 1f5132f..57a021b 100644
+--- a/pirates/pvp/PVPManagerAI.py
++++ b/pirates/pvp/PVPManagerAI.py
+@@ -1,8 +1,357 @@
+ from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from direct.directnotify import DirectNotifyGlobal
++from otp.uberdog.RejectCode import RejectCode
++from pirates.piratesbase import PiratesGlobals
++from pirates.pvp.PVPSkirmishAI import PVPSkirmishAI
+ 
++
++# family server (11-18): the Skirmish ("Crew Battle") button on a pirate's panel works again.
++# A pirate challenges a friend or crewmate who is standing on the same island; the other one says yes or no;
++# a yes starts a PVPSkirmishAI right there. Either side can cancel the challenge or stop the fight at any time.
++#
++# Wire use (no dc change):
++#   requestChallenge(targetId)   client -> AI   challenge targetId; 0 = cancel my challenge or stop my skirmish
++#   acceptChallenge(challengerId) client -> AI  say yes to challengerId; 0 = say no to every challenge I have
++#   challengeFrom(challengerId)  AI -> invitee  someone challenges you (the client opens the yes/no panel)
++#   challengeAccepted(value)     AI -> one pirate:
++#       a pirate's id   your challenge to him was accepted
++#       0               the challenge to you was taken back (the client closes the yes/no panel)
++#       anything else   a RejectCode: why your challenge did not go through
+ class PVPManagerAI(DistributedObjectAI):
+     notify = DirectNotifyGlobal.directNotify.newCategory('PVPManagerAI')
+ 
++    CHALLENGE_TIMEOUT = 30.0  # seconds a challenge waits for an answer
++    HIT_MEMORY = 20.0         # a knockout counts for the opponent who hit him in the last this-many seconds
++    GRACE_TIME = 30.0         # after a skirmish ends, a late knockout by the old opponent still gets him up again
++    REWARDS_PER_HOUR = 10     # paid skirmishes per pirate per hour
++
+     def __init__(self, air):
+-        DistributedObjectAI.__init__(self, air)
+\ No newline at end of file
++        DistributedObjectAI.__init__(self, air)
++        self.pending = {}          # challengerId -> inviteeId
++        self.skirmishes = {}       # skirmishId -> PVPSkirmishAI
++        self.avatar2skirmish = {}  # avId -> PVPSkirmishAI
++        self.lastHit = {}          # avId -> (attackerId, time)
++        self.recentlyEnded = {}    # avId -> (set of old opponent ids, time)
++        self.rewardTimes = {}      # avId -> [time, ...]
++        self.nextSkirmishId = 1
++
++    def delete(self):
++        for challengerId in list(self.pending.keys()):
++            self.clearPending(challengerId)
++
++        for skirmish in list(self.skirmishes.values()):
++            skirmish.finish(None, 'The Skirmish is over.')
++
++        DistributedObjectAI.delete(self)
++
++    # --- small helpers ---
++
++    def now(self):
++        return globalClock.getRealTime()
++
++    def getPlayer(self, avId):
++        from pirates.pirate.DistributedPlayerPirateAI import DistributedPlayerPirateAI
++        avatar = self.air.doId2do.get(avId)
++        if not isinstance(avatar, DistributedPlayerPirateAI):
++            return None
++
++        return avatar
++
++    def tellAvatar(self, avId, field, args):
++        self.sendUpdateToAvatarId(avId, field, args)
++
++    def reject(self, challengerId, code):
++        self.tellAvatar(challengerId, 'challengeAccepted', [code])
++
++    def takeBack(self, inviteeId):
++        # closes the yes/no panel on the invitee's screen
++        self.tellAvatar(inviteeId, 'challengeAccepted', [0])
++
++    def areFriends(self, avatar, otherId):
++        # same reading as the dinghy's friend check: list entries can be ids or (id, flags)
++        def friendIds(av):
++            ids = set()
++            for entry in (av.getFriendsList() if av and hasattr(av, 'getFriendsList') else None) or []:
++                if isinstance(entry, (list, tuple)):
++                    entry = entry[0] if entry else 0
++                ids.add(entry)
++            return ids
++
++        if otherId in friendIds(avatar):
++            return True
++
++        return avatar.doId in friendIds(self.air.doId2do.get(otherId))
++
++    def areCrewmates(self, avId, otherId):
++        bandManager = getattr(self.air, 'bandManager', None)
++        return bool(bandManager and bandManager.areCrewmates(avId, otherId))
++
++    def isDown(self, avatar):
++        # knocked out, on the way to jail or in jail
++        gameFSM = getattr(avatar, 'gameFSM', None)
++        state = gameFSM.getCurrentOrNextState() if gameFSM else None
++        if state in ('Death', 'ThrownInJail'):
++            return True
++
++        testTeleportFlag = getattr(avatar, 'testTeleportFlag', None)
++        return bool(testTeleportFlag and testTeleportFlag(PiratesGlobals.TFInJail))
++
++    def whyNot(self, challenger, inviteeId, checkInvites):
++        # the reason a challenge between these two cannot happen right now, or 0
++        invitee = self.getPlayer(inviteeId)
++        if invitee is None:
++            return RejectCode.INVITEE_NOT_ONLINE
++
++        if not (self.areFriends(challenger, inviteeId) or self.areCrewmates(challenger.doId, inviteeId)):
++            return RejectCode.PVP_NOT_FRIENDS
++
++        if challenger.parentId != invitee.parentId:
++            return RejectCode.PVP_NOT_HERE
++
++        if challenger.doId in self.avatar2skirmish or self.isDown(challenger):
++            return RejectCode.PVP_IN_BATTLE
++
++        if inviteeId in self.avatar2skirmish or self.isDown(invitee):
++            return RejectCode.PVP_OTHER_IN_BATTLE
++
++        if checkInvites:
++            for otherChallengerId, otherInviteeId in self.pending.items():
++                if otherInviteeId == inviteeId and otherChallengerId != challenger.doId:
++                    return RejectCode.ALREADY_INVITED
++
++        return 0
++
++    # --- challenges ---
++
++    def timeoutName(self, challengerId):
++        return 'pvp-challenge-timeout-%d' % challengerId
++
++    def clearPending(self, challengerId):
++        taskMgr.remove(self.timeoutName(challengerId))
++        return self.pending.pop(challengerId, None)
++
++    def requestChallenge(self, targetId):
++        avId = self.air.getAvatarIdFromSender()
++        challenger = self.getPlayer(avId)
++        if challenger is None:
++            return
++
++        if not targetId:
++            self.cancelFor(avId)
++            return
++
++        if targetId == avId:
++            return
++
++        reason = self.whyNot(challenger, targetId, True)
++        if reason:
++            self.reject(avId, reason)
++            return
++
++        oldInviteeId = self.clearPending(avId)
++        if oldInviteeId and oldInviteeId != targetId:
++            self.takeBack(oldInviteeId)
++
++        self.pending[avId] = targetId
++        taskMgr.doMethodLater(self.CHALLENGE_TIMEOUT, self.__challengeTimedOut, self.timeoutName(avId),
++            extraArgs=[avId])
++        self.tellAvatar(targetId, 'challengeFrom', [avId])
++
++    def __challengeTimedOut(self, challengerId):
++        inviteeId = self.clearPending(challengerId)
++        if inviteeId:
++            self.reject(challengerId, RejectCode.TIMEOUT)
++            self.takeBack(inviteeId)
++
++    def cancelFor(self, avId):
++        # requestChallenge(0): take back my challenge and stop my skirmish
++        inviteeId = self.clearPending(avId)
++        if inviteeId:
++            self.takeBack(inviteeId)
++
++        skirmish = self.avatar2skirmish.get(avId)
++        if skirmish:
++            skirmish.stop(avId, 'stopped')
++
++    def declineFor(self, avId):
++        # acceptChallenge(0): say no to every challenge waiting on me
++        for challengerId, inviteeId in list(self.pending.items()):
++            if inviteeId == avId:
++                self.clearPending(challengerId)
++                self.reject(challengerId, RejectCode.INVITATION_DECLINED)
++
++    def acceptChallenge(self, challengerId):
++        avId = self.air.getAvatarIdFromSender()
++        invitee = self.getPlayer(avId)
++        if invitee is None:
++            return
++
++        if not challengerId:
++            self.declineFor(avId)
++            return
++
++        if self.pending.get(challengerId) != avId:
++            # taken back, timed out or never sent
++            invitee.d_setSystemMessage(0, 'That challenge is over.')
++            return
++
++        self.clearPending(challengerId)
++        challenger = self.getPlayer(challengerId)
++        if challenger is None:
++            invitee.d_setSystemMessage(0, 'That challenge is over.')
++            return
++
++        reason = self.whyNot(challenger, avId, False)
++        if reason:
++            self.reject(challengerId, reason)
++            invitee.d_setSystemMessage(0, 'The Skirmish could not start.')
++            return
++
++        # nobody can be in two fights: drop every other challenge either of them has
++        for otherChallengerId, otherInviteeId in list(self.pending.items()):
++            if otherChallengerId in (challengerId, avId):
++                self.clearPending(otherChallengerId)
++                self.takeBack(otherInviteeId)
++            elif otherInviteeId in (challengerId, avId):
++                self.clearPending(otherChallengerId)
++                self.reject(otherChallengerId, RejectCode.PVP_OTHER_IN_BATTLE)
++
++        self.tellAvatar(challengerId, 'challengeAccepted', [avId])
++        self.startSkirmish(challenger, invitee)
++
++    # --- skirmishes ---
++
++    def startSkirmish(self, challenger, invitee):
++        skirmish = PVPSkirmishAI(self, self.nextSkirmishId, challenger, invitee)
++        self.nextSkirmishId += 1
++        self.skirmishes[skirmish.skirmishId] = skirmish
++        for avId in skirmish.getMemberIds():
++            self.avatar2skirmish[avId] = skirmish
++            self.recentlyEnded.pop(avId, None)
++
++        skirmish.start()
++        return skirmish
++
++    def skirmishOver(self, skirmish):
++        self.skirmishes.pop(skirmish.skirmishId, None)
++        now = self.now()
++        for avId in skirmish.getMemberIds():
++            if self.avatar2skirmish.get(avId) is skirmish:
++                del self.avatar2skirmish[avId]
++
++            team = skirmish.getTeamOf(avId)
++            others = set(skirmish.teams[skirmish.getOtherTeam(team)])
++            self.recentlyEnded[avId] = (others, now)
++
++    def getSkirmish(self, avId):
++        return self.avatar2skirmish.get(avId)
++
++    def areOpponents(self, avatar, target):
++        skirmish = self.avatar2skirmish.get(avatar.doId)
++        if skirmish is None or skirmish.over or self.avatar2skirmish.get(target.doId) is not skirmish:
++            return False
++
++        return skirmish.getTeamOf(avatar.doId) != skirmish.getTeamOf(target.doId)
++
++    def areSiegeEnemies(self, attacker, target):
++        a = attacker.getSiegeTeam() if hasattr(attacker, 'getSiegeTeam') else 0
++        b = target.getSiegeTeam() if hasattr(target, 'getSiegeTeam') else 0
++        return bool(a and b and a != b)
++
++    def allowHit(self, attacker, target):
++        # BattleManagerAI asks before one pirate hurts another: only skirmish opponents may,
++        # and Sea Battle's siege enemies (pir-ships, 0250+: setSiegeTeam 1 and 2), which keep their own rules
++        if self.areSiegeEnemies(attacker, target):
++            return True
++
++        if not self.areOpponents(attacker, target):
++            return False
++
++        self.lastHit[target.doId] = (attacker.doId, self.now())
++        return True
++
++    def handleKnockout(self, avatar):
++        # PlayerPirateGameFSMAI.enterDeath asks first; True means "handled, no jail"
++        avId = avatar.doId
++        now = self.now()
++        hit = self.lastHit.get(avId)
++        attackerId = hit[0] if hit and now - hit[1] <= self.HIT_MEMORY else None
++        skirmish = self.avatar2skirmish.get(avId)
++        if skirmish is not None and not skirmish.over:
++            team = skirmish.getTeamOf(avId)
++            if attackerId is None or skirmish.getTeamOf(attackerId) in (0, team):
++                # knocked out by something else (an enemy, a fall): the normal rules apply
++                return False
++
++            self.lastHit.pop(avId, None)
++            skirmish.knockout(avatar)
++            self.scheduleRespawn(avatar)
++            return True
++
++        ended = self.recentlyEnded.get(avId)
++        if ended and now - ended[1] <= self.GRACE_TIME and attackerId in ended[0]:
++            # a hit from the fight that just ended (a burn or poison still running)
++            self.lastHit.pop(avId, None)
++            self.scheduleRespawn(avatar)
++            return True
++
++        return False
++
++    def respawnName(self, avId):
++        return 'pvp-respawn-%d' % avId
++
++    def scheduleRespawn(self, avatar):
++        taskMgr.remove(self.respawnName(avatar.doId))
++        taskMgr.doMethodLater(PVPSkirmishAI.RESPAWN_DELAY, self.__respawn, self.respawnName(avatar.doId),
++            extraArgs=[avatar.doId])
++
++    def __respawn(self, avId):
++        avatar = self.getPlayer(avId)
++        if avatar is None:
++            return
++
++        gameFSM = getattr(avatar, 'gameFSM', None)
++        if not gameFSM or gameFSM.getCurrentOrNextState() != 'Death':
++            return
++
++        # up again at full health, right where he fell: no jail, no groggy, nothing taken
++        avatar.b_setHp(avatar.getMaxHp())
++        avatar.b_setGameState('LandRoam')
++
++    # --- rewards ---
++
++    def mayReward(self, avId):
++        now = self.now()
++        times = [t for t in self.rewardTimes.get(avId, []) if now - t < 3600.0]
++        self.rewardTimes[avId] = times
++        return len(times) < self.REWARDS_PER_HOUR
++
++    def noteReward(self, avId):
++        self.rewardTimes.setdefault(avId, []).append(self.now())
++
++    # --- the pirate left or moved ---
++
++    def avatarOffline(self, avId):
++        inviteeId = self.clearPending(avId)
++        if inviteeId:
++            self.takeBack(inviteeId)
++
++        for challengerId, otherInviteeId in list(self.pending.items()):
++            if otherInviteeId == avId:
++                self.clearPending(challengerId)
++                self.reject(challengerId, RejectCode.INVITEE_NOT_ONLINE)
++
++        skirmish = self.avatar2skirmish.get(avId)
++        if skirmish:
++            skirmish.stop(avId, 'left')
++
++        taskMgr.remove(self.respawnName(avId))
++        self.lastHit.pop(avId, None)
++        self.recentlyEnded.pop(avId, None)
++        # rewardTimes is kept on purpose: logging out and back in does not reset the hourly cap
++
++    def avatarMoved(self, avatar):
++        # going to another island, inside a building or to jail ends the fight
++        skirmish = self.avatar2skirmish.get(avatar.doId)
++        if skirmish and not skirmish.over and avatar.parentId != skirmish.parentId:
++            skirmish.stop(avatar.doId, 'moved')
+-- 
+2.53.0
+

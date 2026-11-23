@@ -1,0 +1,70 @@
+From 4703ef7c60705df02ff08f397d53258ede0bad69 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 298/371] family server (11-20): at a dock's rowboat the other
+ boy's ship is at the top of the list, with his name and a Board button (0382)
+
+Game: the friend's ships were only on the "Friend" tab, so the boys only ever saw and launched their own. The
+"can't teleport to a friend at sea" message now says to walk to a dock's rowboat and pick his ship.
+Lane: boats. Test: test_boats.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/piratesbase/PLocalizerEnglish.py |  3 ++-
+ pirates/piratesgui/ShipDeployPanel.py    | 26 ++++++++++++++++++++++++
+ 2 files changed, 28 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/piratesbase/PLocalizerEnglish.py b/pirates/piratesbase/PLocalizerEnglish.py
+index 95d7f90..2c53dc3 100644
+--- a/pirates/piratesbase/PLocalizerEnglish.py
++++ b/pirates/piratesbase/PLocalizerEnglish.py
+@@ -5030,7 +5030,8 @@ NoTeleportToFlagshipBattle = 'Sorry, %s is battling a flagship!'
+ NoTeleportToIgnore = 'Sorry, %s\\ is ignoring you.'
+ # family server (0313): every teleport onto a ship is refused (TFOnShip, 0048), full or not; the old line said the
+ # ship was full. Say where the pirate is and how to reach him. One %s only: both callers fill it with % avName.
+-NoTeleportToNoSpaceOnShip = "Sorry, %s is out at sea on a ship.\nJoin their crew, then sail out from a dock's dinghy."
++# family server (11-20): every other pirate's ship is at the top of a dock dinghy's list now, crew or not
++NoTeleportToNoSpaceOnShip = "Sorry, %s is out at sea on a ship.\nWalk to a dock's dinghy and pick their ship to board it."
+ NoTeleportToTreasureMap = TeleportPlayerNotAvailable
+ NoTeleportToWelcomeWorld = NoTeleportToInTutorial
+ NoTeleportToZombie = 'Sorry, %s is undead!'
+diff --git a/pirates/piratesgui/ShipDeployPanel.py b/pirates/piratesgui/ShipDeployPanel.py
+index 2b86c14..81dad86 100644
+--- a/pirates/piratesgui/ShipDeployPanel.py
++++ b/pirates/piratesgui/ShipDeployPanel.py
+@@ -100,6 +100,32 @@ class ShipDeployPanel(ShipSelectionPanel):
+         shipFrame.addCrewMemberName(avatarName)
+         self.addFrameGuild(shipFrame)
+     
++    # family server (11-20): the boys could not find each other's ship at the dinghy. The panel opens on "Own" (his
++    # own ships are added first), and another pirate's ship sat behind the "Friend", "Crew", "Guild" or "Public" tab,
++    # which he never clicked. Another pirate's ship now also shows at the top of "Own", with its captain's name and a
++    # Board button; it stays on its own tab too.
++    def _showOnOwnPage(self, shipFrame):
++        own = self.shipFrames[self.OWN]
++        if shipFrame not in own:
++            others = len([f for f in own if f['shipType'] != ShipFrameDeploy.STOwn])
++            self._addFrame(self.OWN, shipFrame, others)
++
++    def addFrameCrew(self, shipFrame, index = None):
++        ShipSelectionPanel.addFrameCrew(self, shipFrame, index)
++        self._showOnOwnPage(shipFrame)
++
++    def addFrameFriend(self, shipFrame, index = None):
++        ShipSelectionPanel.addFrameFriend(self, shipFrame, index)
++        self._showOnOwnPage(shipFrame)
++
++    def addFrameGuild(self, shipFrame, index = None):
++        ShipSelectionPanel.addFrameGuild(self, shipFrame, index)
++        self._showOnOwnPage(shipFrame)
++
++    def addFramePublic(self, shipFrame, index = None):
++        ShipSelectionPanel.addFramePublic(self, shipFrame, index)
++        self._showOnOwnPage(shipFrame)
++
+     def addPublicShip(self, shipInfo, callback):
+         (ownerId, shipId, shipHp, shipSp, cargo, crew, time, shipClass, shipName, siegeTeam, avatarName) = shipInfo
+         shipFrame = self._makeFrame(shipId, shipName, shipClass, ShipGlobals.getMastInfo(shipClass), shipHp, shipSp, cargo, crew, time, siegeTeam, avatarName, callback)
+-- 
+2.53.0
+

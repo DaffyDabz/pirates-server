@@ -1,0 +1,42 @@
+From 60c099faeb7f7be80ea4192361ea012e68f17e2a Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 16:26:26 -0800
+Subject: [PATCH 353/371] pirates: a pirate can leave the fishing game again;
+ the fishing music is now a name the game's music manager knows (client patch
+ 51, no DC change, no restart)
+
+FishingSounds.MUSIC_MINIGAME_FISHING was the file name 'music_fishing.mp3', not a MusicManager.musicDict label. The song went on the playlist without being loaded, so leaving the fishing game raised KeyError('music_fishing.mp3') in MusicManager.update() and the pirate stayed in the fishing game; every later music change raised the same error until a restart. The constant is now 'fishing' and musicDict maps it to audio/music_fishing.mp3 (phase_4), so the fishing music also really plays. Found by the fishing lane's in-game run 16:16 (claude1, after catching a Tuna). test_music_key.py on the client Panda: live play folder 8 FAIL, with these files 8 PASS.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/FishingSounds.py   | 2 +-
+ pirates/piratesbase/MusicManager.py | 3 ++-
+ 2 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/minigame/FishingSounds.py b/pirates/minigame/FishingSounds.py
+index f185905..30ea4de 100644
+--- a/pirates/minigame/FishingSounds.py
++++ b/pirates/minigame/FishingSounds.py
+@@ -40,4 +40,4 @@ SFX_MINIGAME_FISHING_REEL_END = 'sfx_fsh_reelend.mp3'
+ SFX_MINIGAME_FISHING_ROD_OUT = 'sfx_fsh_rodout.mp3'
+ SFX_MINIGAME_FISHING_ROD_PUT_AWAY = 'sfx_fsh_rodputaway.mp3'
+ SFX_MINIGAME_FISHING_SKILL = 'sfx_fsh_fishingSkill.mp3'
+-MUSIC_MINIGAME_FISHING = 'music_fishing.mp3'
++MUSIC_MINIGAME_FISHING = 'fishing'
+diff --git a/pirates/piratesbase/MusicManager.py b/pirates/piratesbase/MusicManager.py
+index 334e699..67b6af3 100644
+--- a/pirates/piratesbase/MusicManager.py
++++ b/pirates/piratesbase/MusicManager.py
+@@ -49,7 +49,8 @@ musicDict = {
+     'performers-02': 'audio/music_performers_02.mp3',
+     'performers-07': 'audio/music_performers_07.mp3',
+     'performers-09': 'audio/music_performers_09.mp3',
+-    'performers-10': 'audio/music_performers_10.mp3'}
++    'performers-10': 'audio/music_performers_10.mp3',
++    'fishing': 'audio/music_fishing.mp3'}
+ songItem2MusicLabel = {
+     UberDogGlobals.InventoryType.Song_1: 'island-driftwood',
+     UberDogGlobals.InventoryType.Song_2: 'island-cangrejos',
+-- 
+2.53.0
+

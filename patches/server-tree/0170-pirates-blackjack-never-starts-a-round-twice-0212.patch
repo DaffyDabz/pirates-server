@@ -1,0 +1,27 @@
+From 7505ce1887211df20af047d2615752ccb661cc98 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:27:11 -0800
+Subject: [PATCH 170/371] pirates: blackjack never starts a round twice (0212)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/DistributedBlackjackTableAI.py | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/pirates/minigame/DistributedBlackjackTableAI.py b/pirates/minigame/DistributedBlackjackTableAI.py
+index 091b801..13fa479 100644
+--- a/pirates/minigame/DistributedBlackjackTableAI.py
++++ b/pirates/minigame/DistributedBlackjackTableAI.py
+@@ -569,6 +569,9 @@ class DistributedBlackjackTableAI(DistributedGameTableAI):
+             self.uniqueName('bj-deal'), appendTask=True)
+ 
+     def _nextRoundTask(self, task=None):
++        if self._roundActive:
++            # A pirate sat down after the payout and his sit already started the round
++            return Task.done
+         occupied = self._getOccupiedPlayerSeats()
+         if occupied and self._hasHuman():
+             self._startRound()
+-- 
+2.53.0
+

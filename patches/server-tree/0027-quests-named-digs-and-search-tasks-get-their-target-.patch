@@ -1,0 +1,155 @@
+From 856345b88188afdabea3ea464459b8159d787d66 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 19:02:32 -0800
+Subject: [PATCH 027/371] quests: named digs and search tasks get their target;
+ enemy beam stays in the task's place
+
+Buried chests got no unique id (createObjectSpawnNode never set it), so a dig quest that names its chest never
+counted and nothing could point at it. Search (container) tasks had no goal at all: no step, no arrow, no beam;
+they now point at the nearest container in the task's list not searched yet, and dig tasks at the nearest named
+chest, once the pirate is on the quest's island. An enemy task limited to some places points only at enemies
+there, or at the place itself when none is up.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/DistributedQuestAvatarAI.py | 66 ++++++++++++++++++++++-
+ pirates/world/GameAreaBuilderAI.py        |  3 ++
+ 2 files changed, 67 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/quest/DistributedQuestAvatarAI.py b/pirates/quest/DistributedQuestAvatarAI.py
+index 85a9e13..befd663 100644
+--- a/pirates/quest/DistributedQuestAvatarAI.py
++++ b/pirates/quest/DistributedQuestAvatarAI.py
+@@ -8,6 +8,7 @@ from pirates.quest.QuestHolder import QuestHolder
+ from pirates.uberdog.UberDogGlobals import InventoryCategory
+ from pirates.piratesbase import Freebooter
+ from pirates.quest.QuestPath import QuestStep
++from pirates.quest.QuestConstants import LocationIds, PropIds, TreasureIds, getLocationList, getPropList, getTreasureList
+ 
+ 
+ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+@@ -140,6 +141,11 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+             # attempt to get the quest step object in which,
+             # the ray of light will hover over...
+             goalUid = activeTask.getGoalUid()
++            # search and dig tasks name their containers or chests (one, or a group): point at the nearest one not
++            # searched yet. Container tasks had no goal (no arrow, no beam) and a chest group's name is not a uid
++            searchUid = self._getSearchGoalUid(activeQuest, activeTask)
++            if searchUid:
++                goalUid = searchUid
+         else:
+             # every task is done but the quest was never handed in: the finishing scene with the NPC was cut short
+             # (a logout, a crash, the game closed mid-dialog). Talking to that NPC again plays the scene and finishes
+@@ -152,7 +158,7 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+             # "defeat / recover from any <enemy type>" tasks carry a QuestGoal, not a uid:
+             # point the beam at a live enemy that counts (the original game's preferred
+             # spawner step). Without this such quests show no beam at all.
+-            goalUid = self._getEnemyGoalUid(goalUid)
++            goalUid = self._getEnemyGoalUid(goalUid, activeTask)
+             if not goalUid:
+                 self.sendUpdate('setQuestStep', [[self.doId, 0, 0, [0, 0, 0, 0], '']])
+                 return
+@@ -241,13 +247,22 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+             frontier = nxt
+         return None
+ 
+-    def _getEnemyGoalUid(self, goal):
++    def _getEnemyGoalUid(self, goal, task=None):
+         try:
+             level, targetType = goal._QuestGoal__goalData[0], goal._QuestGoal__goalData[1]
+         except Exception:
+             return None
+         if targetType == 'ship' or not hasattr(targetType, 'isA'):
+             return None
++        # a task limited to some places (dice from the Port Royal jungle, a ritual in one cave) counts only the
++        # enemies there: the beam used to pick the nearest enemy of the type anywhere, which gave no credit
++        locations = None
++        try:
++            location = task.getLocation() if task is not None else None
++            if location is not None and location != LocationIds.ANY_LOCATION:
++                locations = getLocationList(location)
++        except Exception:
++            locations = None
+         from pirates.battle.DistributedBattleNPCAI import DistributedBattleNPCAI
+         myArea = self._getAreaOf(self)
+         myIsland = self._getIslandOfArea(myArea)
+@@ -269,6 +284,8 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+             area = self._getAreaOf(obj)
+             if area is None:
+                 continue
++            if locations and area.getUniqueId() not in locations:
++                continue
+             if area.doId not in islandCache:
+                 islandCache[area.doId] = self._getIslandOfArea(area)
+             island = islandCache[area.doId]
+@@ -290,8 +307,53 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+             key = (rank, dist)
+             if best is None or key < best[0]:
+                 best = (key, uid)
++        if best is None and locations:
++            # none of them is up right now: lead the pirate to the place itself
++            return locations[0]
+         return best[1] if best else None
+ 
++    def _getSearchGoalUid(self, quest, task):
++        try:
++            if isinstance(task, QuestTaskDNA.RecoverContainerItemTaskDNA):
++                if task.containerId == PropIds.ANY_PROP:
++                    return None
++                uids = list(getPropList(task.containerId) or (task.containerId,))
++                taskState = quest.getTaskStates()[list(quest.getTasks()).index(task)]
++                uids = [uid for uid in uids if not taskState.hasSearchedContainer(uid)] or uids
++            elif isinstance(task, QuestTaskDNA.RecoverTreasureItemTaskDNA):
++                if task.treasureId == TreasureIds.ANY_TREASURE:
++                    return None
++                uids = list(getTreasureList(task.treasureId) or (task.treasureId,))
++            else:
++                return None
++            myArea = self._getAreaOf(self)
++            goalLocation = task.getGoalLocation()
++            if goalLocation:
++                # the quest names the place first (Isla Cangrejos for its chests): the beam stays on the place
++                # until the pirate is there
++                places = getLocationList(goalLocation) or (goalLocation,)
++                myIsland = self._getIslandOfArea(myArea)
++                if not any(a is not None and a.getUniqueId() in places for a in (myArea, myIsland)):
++                    return None
++            best = None
++            for uid in uids:
++                obj = self.air.uidMgr.justGetMeMeObject(uid)
++                area = self._getAreaOf(obj)
++                if area is None:
++                    continue
++                rank, dist = 1, 0.0
++                if area is myArea:
++                    rank = 0
++                    try:
++                        dist = (obj.getPos(myArea) - self.getPos(myArea)).length()
++                    except Exception:
++                        pass
++                if best is None or (rank, dist) < best[0]:
++                    best = ((rank, dist), uid)
++            return best[1] if best else uids[0]
++        except Exception:
++            return None
++
+     def _getStepPosHpr(self, obj, parentObj):
+         # the client applies posH relative to the origin object, but on the AI a
+         # spawned object's own transform is relative to whatever node it hangs
+diff --git a/pirates/world/GameAreaBuilderAI.py b/pirates/world/GameAreaBuilderAI.py
+index 1e399a0..84bc120 100644
+--- a/pirates/world/GameAreaBuilderAI.py
++++ b/pirates/world/GameAreaBuilderAI.py
+@@ -328,6 +328,9 @@ class GameAreaBuilderAI(ClientAreaBuilderAI):
+             spawnNode.setStartingDepth(int(objectData.get('startingDepth', 10)))
+             spawnNode.setCurrentDepth(spawnNode.getStartingDepth())
+ 
++        # its world-data key, as containers and props get: named dig quests match the chest by it, and with '' on
++        # every chest no named dig ever counted (and the quest beam could not find the chest)
++        spawnNode.setUniqueId(objKey)
+         spawnNode.setPos(objectData.get('GridPos', objectData.get('Pos', (0, 0, 0))))
+         spawnNode.setHpr(objectData.get('Hpr', (0, 0, 0)))
+         spawnNode.setScale(objectData.get('Scale', (1, 1, 1)))
+-- 
+2.53.0
+

@@ -1,0 +1,687 @@
+From c5866af3d06ec36b3d15d448d7ec33b3421d0615 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 20:58:35 -0800
+Subject: [PATCH 124/371] pirates: the flagship deck has enemies, a captain
+ boss and royal loot, as server-tree patch 0138 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/BattleNPCGameFSMAI.py |   9 +-
+ pirates/ship/FlagshipDeckFightAI.py  | 403 +++++++++++++++++++++++++++
+ pirates/ship/GameFSMShipAI.py        |  30 +-
+ pirates/ship/NPCShipAI.py            | 126 ++++++++-
+ 4 files changed, 553 insertions(+), 15 deletions(-)
+ create mode 100644 pirates/ship/FlagshipDeckFightAI.py
+
+diff --git a/pirates/pirate/BattleNPCGameFSMAI.py b/pirates/pirate/BattleNPCGameFSMAI.py
+index 22d14ec..42956a5 100644
+--- a/pirates/pirate/BattleNPCGameFSMAI.py
++++ b/pirates/pirate/BattleNPCGameFSMAI.py
+@@ -234,7 +234,14 @@ class BattleNPCGameFSMAI(BattleAvatarGameFSMAI):
+         self.walkToPoint(currentTarget.getPos(), currentTarget.getParent())
+ 
+     def walkToPoint(self, walkPoint, parent=None):
+-        if not parent or parent.isEmpty():
++        # family server (2026-11-17, boarding step 4): an enemy on a ship's deck
++        # walks in the ship's own frame (its walkFrame, set by FlagshipDeckFightAI):
++        # its position and its target's are ship-local, so measuring them from the
++        # ship sent it off into the sea
++        frame = getattr(self.avatar, 'walkFrame', None)
++        if frame is not None and (not parent or parent.isEmpty() or parent is self.avatar.getParentObj()):
++            parent = frame
++        elif not parent or parent.isEmpty():
+             parent = self.avatar.getParentObj()
+ 
+         # setup a node applying the walkPoint relative to the parent
+diff --git a/pirates/ship/FlagshipDeckFightAI.py b/pirates/ship/FlagshipDeckFightAI.py
+new file mode 100644
+index 0000000..4ba7222
+--- /dev/null
++++ b/pirates/ship/FlagshipDeckFightAI.py
+@@ -0,0 +1,403 @@
++"""
++Boarding step 4 (family server, 2026-11-17): the fight on a boarded flagship's deck.
++
++When the first pirate lands on the deck of a boarded flagship, its crew comes at
++him in waves (FlagshipGlobals: the crew types, crew size and level range of that
++flagship), then its captain. Beating the captain defeats the flagship: its
++special loot rolls, the pirates swing back to their ship and it sinks, paid.
++
++The deck enemies are ordinary battle NPCs generated as children of the flagship
++in its deck zone (where the pirates on the deck are), so they ride the ship. They
++stand in the ship's own frame: the AI keeps their positions ship-local (like the
++pirates' on the deck) and sends them as smooth positions, which the client reads
++in the ship's frame. Their spawn node is a DeckSpawnNode, which tells this fight
++when one dies.
++"""
++import random
++
++from panda3d.core import NodePath, Point3
++from direct.directnotify import DirectNotifyGlobal
++from direct.distributed.ClockDelta import globalClockDelta
++
++from pirates.piratesbase import PiratesGlobals
++from pirates.piratesbase import PLocalizer
++from pirates.pirate import AvatarTypes
++from pirates.battle import EnemyGlobals
++from pirates.ship import ShipGlobals
++from pirates.ship import FlagshipGlobals
++
++DECK_ZONE = PiratesGlobals.ShipZoneOnDeck
++
++# where the boarding pirates land on each hull (the boarding_spot locators of the
++# *-locators.bam models, in the ship's frame); the crew stands just inboard of them
++BOARDING_SPOTS = {
++    ShipGlobals.INTERCEPTORL1: [(0.5, 33.5, 11.0), (0.5, -10.6, 9.4)],
++    ShipGlobals.INTERCEPTORL2: [(0.5, 18.1, 20.9), (0.5, -39.2, 23.6)],
++    ShipGlobals.INTERCEPTORL3: [(17.5, -33.1, 22.2), (18.2, 13.8, 22.3), (-19.1, 13.8, 22.3), (-17.3, -33.1, 22.2)],
++    ShipGlobals.MERCHANTL1: [(0.1, -36.8, 37.3), (13.3, 48.4, 30.2), (-16.0, 48.4, 30.2), (12.3, 5.5, 19.4), (-9.3, 5.8, 19.4)],
++    ShipGlobals.MERCHANTL2: [(11.7, 0.5, 35.0), (-9.3, 0.5, 35.0), (13.3, 62.8, 52.4), (-17.6, 61.6, 52.4),
++                             (11.7, 22.8, 35.0), (-9.3, 22.8, 35.0)],
++    ShipGlobals.MERCHANTL3: [(20.2, 10.8, 52.8), (-15.8, 10.8, 52.8), (13.3, 92.8, 77.7), (-16.0, 92.8, 77.7),
++                             (20.7, 38.1, 53.0), (-17.0, 38.1, 53.0)],
++    ShipGlobals.WARSHIPL1: [(-16.3, 2.8, 15.0), (-12.0, -46.3, 12.8), (13.8, -46.3, 12.8), (16.5, 2.8, 15.0),
++                            (-11.4, 36.7, 26.8), (11.5, 36.7, 26.8)],
++    ShipGlobals.WARSHIPL2: [(-24.9, -8.3, 26.1), (-18.4, -83.6, 22.7), (21.3, -83.6, 22.7), (25.4, -8.3, 26.1),
++                            (-17.4, 43.6, 44.2), (17.7, 43.6, 44.2)],
++    ShipGlobals.WARSHIPL3: [(22.7, 66.5, 49.6), (-22.2, 66.5, 49.6), (-23.5, -96.5, 22.0), (27.3, -96.5, 22.0),
++                            (32.6, -0.9, 26.3), (-31.8, -0.9, 26.3)],
++    ShipGlobals.BLACK_PEARL: [(-25.9, -65.8, 46.5), (-16.0, -51.5, 45.7), (15.5, -51.5, 45.7), (24.7, -65.0, 46.3),
++                              (-27.3, -36.6, 45.8), (25.5, -36.4, 45.8)],
++    ShipGlobals.GOLIATH: [(49.4, 160.4, 94.8), (-40.5, 160.4, 94.8), (-43.1, -165.5, 39.7), (58.6, -165.5, 39.7),
++                          (69.1, 25.5, 48.4), (-59.6, 25.5, 48.4)],
++    ShipGlobals.SKEL_INTERCEPTORL3: [(-9.3, -40.8, 23.2), (11.7, -40.8, 23.2), (10.5, 28.5, 23.2), (-9.3, 28.5, 23.2),
++                                     (11.7, -7.6, 22.4), (-9.3, -7.6, 22.4)],
++    # the skeleton warship's model has no boarding spots: its deck, from its
++    # cannon and mast locators (deck cannons at z 19.5-23.8)
++    ShipGlobals.SKEL_WARSHIPL3: [(10.0, -30.0, 21.5), (-10.0, -30.0, 21.5), (10.0, -5.0, 22.0), (-10.0, -5.0, 22.0),
++                                 (8.0, 25.0, 24.0), (-8.0, 25.0, 24.0)],
++}
++DEFAULT_SPOTS = [(10.0, -10.0, 22.0), (-10.0, -10.0, 22.0), (10.0, 15.0, 22.0), (-10.0, 15.0, 22.0)]
++
++
++def getDeckSpots(ship):
++    try:
++        modelClass = ShipGlobals.getModelClass(ship.getShipClass())
++    except Exception:
++        modelClass = 0
++
++    return BOARDING_SPOTS.get(modelClass) or DEFAULT_SPOTS
++
++
++def getNPCTeam(avatarType):
++    # DistributedEnemySpawnerAI.getNPCTeam's map
++    if avatarType.isA(AvatarTypes.Navy):
++        return PiratesGlobals.NAVY_TEAM
++    if avatarType.isA(AvatarTypes.TradingCo):
++        return PiratesGlobals.TRADING_CO_TEAM
++    if avatarType.isA(AvatarTypes.Undead):
++        if avatarType.isA(AvatarTypes.French):
++            return PiratesGlobals.FRENCH_UNDEAD_TEAM
++        if avatarType.isA(AvatarTypes.Spanish):
++            return PiratesGlobals.SPANISH_UNDEAD_TEAM
++        return PiratesGlobals.UNDEAD_TEAM
++    return PiratesGlobals.UNDEAD_TEAM
++
++
++def getNPCClass(avatarType, boss):
++    if avatarType.isA(AvatarTypes.Undead):
++        if boss:
++            from pirates.npc.DistributedBossSkeletonAI import DistributedBossSkeletonAI
++            return DistributedBossSkeletonAI
++        from pirates.npc.DistributedNPCSkeletonAI import DistributedNPCSkeletonAI
++        return DistributedNPCSkeletonAI
++
++    if boss:
++        from pirates.npc.DistributedBossNavySailorAI import DistributedBossNavySailorAI
++        return DistributedBossNavySailorAI
++    from pirates.npc.DistributedNPCNavySailorAI import DistributedNPCNavySailorAI
++    return DistributedNPCNavySailorAI
++
++
++def getBossName(avatarType):
++    """The game's boss name for this crew type, or None (French and Spanish undead have none)."""
++    try:
++        bossType = avatarType.getBossType()
++        return PLocalizer.BossNames[bossType.faction][bossType.track][bossType.id][bossType.boss - 1]
++    except Exception:
++        return None
++
++
++class DeckSpawnNode:
++    """What a deck enemy's game FSM reads from its spawn node, and its death call."""
++
++    def __init__(self, fight, hpr, captain=False):
++        self.fight = fight
++        self.captain = captain
++        self.npc = None
++        self.objKey = ''
++        self.objectData = {
++            'Patrol Radius': 0.0,
++            'Pause Chance': 0.0,
++            'Pause Duration': 5.0,
++            'AnimSet': 'default',
++            'Hpr': hpr,
++            'Start State': 'Idle'}
++
++    def processDeath(self):
++        self.fight.enemyDied(self)
++
++
++class FlagshipDeckFight:
++    notify = DirectNotifyGlobal.directNotify.newCategory('FlagshipDeckFight')
++
++    def __init__(self, ship):
++        self.ship = ship
++        self.air = ship.air
++        self.shipClass = ship.getShipClass()
++        self.team = ship.getTeam() if hasattr(ship, 'getTeam') else None
++        self.crew = FlagshipGlobals.getFlagshipCrew(self.shipClass, self.team) or []
++        self.minLevel, self.maxLevel = FlagshipGlobals.getFlagshipEnemyLevels(self.shipClass)
++        self.waveCount = int(config.GetInt('flagship-wave-count', FlagshipGlobals.FLAGSHIP_WAVE_COUNT))
++        crewSize = FlagshipGlobals.getFlagshipCrewSize(self.shipClass)
++        self.waveSize = int(config.GetInt('flagship-wave-size', max(2, crewSize // max(1, self.waveCount))))
++        self.spots = getDeckSpots(ship)
++        self.wave = 0
++        self.alive = {}       # doId: npc, the deck enemies still standing
++        self.everyone = {}    # doId: npc, every deck enemy we made (deleted when we stop)
++        self.captainId = 0
++        self.captainAttackers = []
++        self.started = False
++        self.stopped = False
++        self.won = False
++
++    def _name(self, suffix):
++        return self.ship.uniqueName('deck-fight-%s' % suffix)
++
++    # --- the fight ---
++
++    def start(self):
++        if self.started or self.stopped:
++            return
++
++        self.started = True
++        if not self.crew:
++            self.notify.warning('TEMP-DIAG flagship %d (class %s): no crew types for its deck, it is beaten at once' % (
++                self.ship.doId, self.shipClass))
++            self._captainBeaten([])
++            return
++
++        taskMgr.doMethodLater(0.2, self._sendPositions, self._name('positions'))
++        taskMgr.doMethodLater(2.0, self._aggroIdle, self._name('aggro'))
++        self._nextWave()
++
++    def _nextWave(self, task=None):
++        if self.stopped:
++            return
++
++        self.wave += 1
++        if self.wave > self.waveCount:
++            self._spawnCaptain()
++            return
++
++        made = []
++        for i in range(self.waveSize):
++            avatarType = FlagshipGlobals.pickCrewMember(self.shipClass, self.team)
++            if avatarType is None:
++                continue
++
++            level = random.randint(self.minLevel, self.maxLevel)
++            npc = self._spawn(avatarType, level, self._deckPos(i), boss=False)
++            if npc is not None:
++                made.append('%s %d (level %d)' % (npc.getName(), npc.doId, level))
++
++        self.notify.warning('TEMP-DIAG flagship %d wave %d of %d: %d enemies on the deck: %s' % (
++            self.ship.doId, self.wave, self.waveCount, len(made), made))
++        if not self.alive:
++            # nothing could be made: go on so the fight cannot hang
++            taskMgr.doMethodLater(1.0, self._nextWave, self._name('next-wave'))
++
++    def _spawnCaptain(self):
++        # the captain is the crew's highest rank on this flagship
++        avatarType = sorted([at for at, weight in self.crew], key=lambda at: (at.track, at.id))[-1]
++        level = self.maxLevel + 2
++        bossName = getBossName(avatarType)
++        if bossName:
++            npc = self._spawn(avatarType.getBossType(), level, self._captainPos(), boss=True)
++        else:
++            npc = self._spawn(avatarType, level, self._captainPos(), boss=False, hpScale=3.0,
++                name='Captain %s' % avatarType.getName())
++
++        if npc is None:
++            self.notify.warning('TEMP-DIAG flagship %d: its captain could not be made, it is beaten' % self.ship.doId)
++            self._captainBeaten([])
++            return
++
++        self.captainId = npc.doId
++        npc.spawnNode.captain = True
++        self.notify.warning('TEMP-DIAG flagship %d captain %s %d spawned (level %d, hp %d, boss %s)' % (
++            self.ship.doId, npc.getName(), npc.doId, level, npc.getMaxHp(), bool(bossName)))
++
++    def _deckPos(self, i):
++        spots = self.spots
++        x, y, z = spots[i % len(spots)]
++        row = i // len(spots)
++        # inboard of where the pirates land, a little apart from each other
++        return (x * 0.4, y + (4.0 if row % 2 else -4.0) * ((row + 1) // 2) + (2.0 if i % 2 else -2.0), z + 0.5)
++
++    def _captainPos(self):
++        x, y, z = self.spots[0]
++        return (x * 0.2, y, z + 0.5)
++
++    def _spawn(self, avatarType, level, pos, boss=False, hpScale=1.0, name=None):
++        ship = self.ship
++        try:
++            npc = getNPCClass(avatarType, boss)(self.air)
++            npc.setUniqueId('')
++            npc.spawnUid = ''
++            npc.setPos(*pos)
++            hpr = (random.uniform(0.0, 360.0), 0.0, 0.0)
++            npc.setHpr(*hpr)
++            npc.setCollisionMode(PiratesGlobals.COLL_MODE_FLOORS_CL)
++            npc.setSpawnPos(npc.getPos())
++            npc.setInitZ(npc.getZ())
++            npc.setAvatarType(avatarType)
++            aggroInfo = EnemyGlobals.determineAggroInfo(None)
++            npc.setAggroMode(aggroInfo[0])
++            npc.setAggroRadius(aggroInfo[1])
++            if boss and hasattr(npc, 'loadBossData'):
++                try:
++                    npc.loadBossData('', avatarType)
++                except Exception as e:
++                    self.notify.warning('flagship %d: no boss data for %s (%s), an ordinary one' % (ship.doId, avatarType, e))
++                    avatarType = avatarType.getNonBossType()
++                    npc.setAvatarType(avatarType)
++                    boss = False
++                    hpScale = 3.0
++
++            npc.setTeam(getNPCTeam(avatarType))
++            npc.setLevel(level)
++            hp, mp = EnemyGlobals.getEnemyStats(avatarType, level)
++            bossData = getattr(npc, 'bossData', None) if boss else None
++            if bossData:
++                hp = hp * bossData['HpScale']
++                mp = mp * bossData['MpScale']
++            else:
++                hp = hp * hpScale
++
++            # flagship-deck-hp-scale (default 1): every deck enemy's hp, for short test runs
++            hp = max(1, hp * config.GetFloat('flagship-deck-hp-scale', 1.0))
++            npc.setMaxHp(int(hp))
++            npc.setHp(npc.getMaxHp(), True)
++            npc.setMaxMojo(int(mp))
++            npc.setMojo(npc.getMaxMojo())
++            if hasattr(npc, 'setDNAId'):
++                npc.setDNAId('')
++
++            if bossData and bossData.get('Name'):
++                name = bossData['Name']
++            npc.setName(name or avatarType.getName())
++            npc.setAnimSet('default')
++            npc.setStartState('Idle')
++            npc.setAmbush(False)
++            npc.setShipId(ship.doId)
++            # its walks and chases are in the ship's frame (BattleNPCGameFSMAI.walkToPoint)
++            npc.walkFrame = NodePath('deck-%d' % ship.doId)
++            spawnNode = DeckSpawnNode(self, hpr)
++            spawnNode.npc = npc
++            ship.generateChildWithRequired(npc, DECK_ZONE)
++            npc.setSpawnNode(spawnNode)
++            npc.d_setInitZ(npc.getZ())
++            npc.d_setSpawnIn()
++            npc.b_setGameState(npc.getStartState())
++        except Exception as e:
++            self.notify.warning('TEMP-DIAG flagship %d: could not make deck enemy %s level %s: %r' % (
++                ship.doId, avatarType, level, e))
++            return None
++
++        self.alive[npc.doId] = npc
++        self.everyone[npc.doId] = npc
++        return npc
++
++    def _live(self, npc):
++        return npc is not None and getattr(npc, 'air', None) is not None and self.air.doId2do.get(npc.doId) is npc
++
++    def _sendPositions(self, task):
++        if self.stopped:
++            return task.done
++
++        timestamp = globalClockDelta.getRealNetworkTime(bits=16)
++        for npc in list(self.everyone.values()):
++            if not self._live(npc):
++                continue
++
++            x, y, z = npc.getPos()
++            h, p, r = npc.getHpr()
++            npc.sendUpdate('setSmPosHpr', [x, y, z, h, p, r, timestamp])
++
++        return task.again
++
++    def _aggroIdle(self, task):
++        """A deck enemy standing idle goes for the nearest pirate on the deck."""
++        if self.stopped:
++            return task.done
++
++        pirates = [self.air.doId2do.get(avId) for avId in self.ship.getDeckPirates()]
++        pirates = [av for av in pirates if av is not None and not av.isEmpty()]
++        if pirates:
++            for npc in list(self.alive.values()):
++                if not self._live(npc) or getattr(npc.gameFSM, 'state', None) != 'Idle':
++                    continue
++
++                # both stand in the ship's frame (standalone nodes, ship-local positions)
++                target = min(pirates, key=lambda av: (npc.getPos() - av.getPos()).length())
++                try:
++                    npc.handleClientAggro(target)
++                except Exception as e:
++                    self.notify.warning('flagship %d: deck enemy %d could not go for pirate %d: %r' % (
++                        self.ship.doId, npc.doId, target.doId, e))
++
++        task.delayTime = 3.0
++        return task.again
++
++    def enemyDied(self, spawnNode):
++        npc = spawnNode.npc
++        if npc is None or npc.doId not in self.alive:
++            return
++
++        del self.alive[npc.doId]
++        doId = npc.doId
++
++        def _remove(task):
++            n = self.everyone.pop(doId, None)
++            if self._live(n):
++                n.requestDelete()
++            return task.done
++
++        taskMgr.doMethodLater(5.0, _remove, self._name('remove-%d' % doId))
++        if self.stopped:
++            return
++
++        if spawnNode.captain:
++            attackers = []
++            try:
++                attackers = list(self.air.targetMgr.getAttackers(doId) or [])
++            except Exception:
++                pass
++            self._captainBeaten(attackers)
++            return
++
++        self.notify.warning('TEMP-DIAG flagship %d wave %d: %s %d beaten, %d left' % (
++            self.ship.doId, self.wave, npc.getName(), doId, len(self.alive)))
++        if not self.alive:
++            self.notify.warning('TEMP-DIAG flagship %d wave %d cleared' % (self.ship.doId, self.wave))
++            taskMgr.doMethodLater(config.GetFloat('flagship-wave-gap', 3.0), self._nextWave, self._name('next-wave'))
++
++    def _captainBeaten(self, attackers):
++        if self.won:
++            return
++
++        self.won = True
++        self.captainAttackers = attackers
++        self.notify.warning('TEMP-DIAG flagship %d captain beaten by %s, pirates on deck %s' % (
++            self.ship.doId, attackers, self.ship.getDeckPirates()))
++        self.ship.captainBeaten(attackers)
++
++    def stop(self):
++        if self.stopped:
++            return
++
++        self.stopped = True
++        taskMgr.remove(self._name('positions'))
++        taskMgr.remove(self._name('aggro'))
++        taskMgr.remove(self._name('next-wave'))
++        left = []
++        for doId, npc in list(self.everyone.items()):
++            taskMgr.remove(self._name('remove-%d' % doId))
++            if self._live(npc):
++                left.append(doId)
++                npc.requestDelete()
++
++        self.everyone.clear()
++        self.alive.clear()
++        if left:
++            self.notify.warning('TEMP-DIAG flagship %d: deck enemies %s removed' % (self.ship.doId, left))
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index 09f5de5..95dff62 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -3018,6 +3018,7 @@ class GameFSMShipAI(FSM.FSM):
+         timeout = ship.getBoardedTimeout()
+         ship.b_setSinkTimer(int(timeout))
+         self._boardedDeadline = globalClock.getFrameTime() + timeout
++        self._boarderGoneLogged = False
+ 
+         def _boardedCheck(task):
+             ship = self.ship
+@@ -3029,6 +3030,15 @@ class GameFSMShipAI(FSM.FSM):
+                 return Task.done
+ 
+             if ship.getBoarderShip() is None:
++                # step 4: pirates still fighting on the deck finish the fight; at
++                # the end they go ashore instead of swinging back
++                if ship.getDeckPirates():
++                    if not self._boarderGoneLogged:
++                        self._boarderGoneLogged = True
++                        ship.notify.warning('TEMP-DIAG flagship %d: pirate ship %s gone, %d pirates fight on, they go ashore at the end' % (
++                            ship.doId, ship._boarderShipId, len(ship.getDeckPirates())))
++                    return Task.again
++
+                 ship.sinkFlagship('pirate ship %s gone, sunk or empty' % ship._boarderShipId)
+                 return Task.done
+ 
+@@ -3057,11 +3067,23 @@ class GameFSMShipAI(FSM.FSM):
+         specialLoot = FlagshipGlobals.getFlagshipSpecialLoot(shipClass)
+         
+         self._droppedSpecialLoot = []
++        # family server: flagship-special-loot-chance (0..1) overrides each item's chance, for tests
++        forced = config.GetFloat('flagship-special-loot-chance', -1.0)
+         for lootType in specialLoot:
+-            chance = FlagshipGlobals.getSpecialLootChance(lootType)
++            chance = forced if forced >= 0.0 else FlagshipGlobals.getSpecialLootChance(lootType)
+             if random.random() < chance:
+                 self._droppedSpecialLoot.append(lootType)
+-        
++
++        # family server (2026-11-17, boarding step 4): it stays beside the pirate
++        # ship; the flagship credits the deck, gives the loot, swings the pirates
++        # back and sinks
++        ship = self.ship
++        if ship is not None and hasattr(ship, 'flagshipDefeated'):
++            if hasattr(ship, 'getAlongsideTarget'):
++                self._holdTask = taskMgr.add(self._holdAlongside, ship.uniqueName('hold-alongside'))
++            ship.flagshipDefeated(self._droppedSpecialLoot)
++            return
++
+         # Schedule transition to sinking after loot collection time
+         def _defeatToSink(task):
+             if self.ship:
+@@ -3074,6 +3096,10 @@ class GameFSMShipAI(FSM.FSM):
+             self.ship.uniqueName('defeat-to-sink'))
+ 
+     def exitDefeated(self):
++        if getattr(self, '_holdTask', None):
++            taskMgr.remove(self._holdTask)
++            self._holdTask = None
++
+         if hasattr(self, '_defeatSinkTask') and self._defeatSinkTask:
+             taskMgr.remove(self._defeatSinkTask)
+             self._defeatSinkTask = None
+diff --git a/pirates/ship/NPCShipAI.py b/pirates/ship/NPCShipAI.py
+index 8937f02..b06a946 100644
+--- a/pirates/ship/NPCShipAI.py
++++ b/pirates/ship/NPCShipAI.py
+@@ -80,6 +80,8 @@ class NPCShipAI(DistributedShipAI):
+         self._deckPirates = set()
+         self._boardingSent = False
+         self._endingBoarding = False
++        # boarding step 4: the crew and captain fighting on our deck
++        self._deckFight = None
+ 
+     @property
+     def isNpc(self):
+@@ -97,6 +99,8 @@ class NPCShipAI(DistributedShipAI):
+             self.notify.warning('flagship %s: could not clear its boarder: %s' % (self.doId, e))
+ 
+         taskMgr.remove(self.uniqueName('boarding-over'))
++        taskMgr.remove(self.uniqueName('defeated-over'))
++        self._stopDeckFight()
+         self.air.shipManager.removeShip(self)
+         self.air.shipManager.removeFlagship(self)
+         DistributedShipAI.delete(self)
+@@ -269,7 +273,7 @@ class NPCShipAI(DistributedShipAI):
+         """Sink a crippled flagship on purpose, through the normal (paying) sink."""
+         state = self.gameFSM.getCurrentOrNextState() if getattr(self, 'gameFSM', None) else None
+         self.notify.warning('TEMP-DIAG flagship %d %s: sinking (%s)' % (
+-            self.doId, 'boarding over' if state == 'Boarded' else 'not boarded', reason))
++            self.doId, 'boarding over' if state in ('Boarded', 'Defeated') else 'not boarded', reason))
+         self._clearBoarder()
+         self._forceSink = True
+         self.b_setGameState('Sinking', 0)
+@@ -458,9 +462,88 @@ class NPCShipAI(DistributedShipAI):
+             return
+ 
+         self._deckPirates.add(avatar.doId)
++        state = self.gameFSM.getCurrentOrNextState() if getattr(self, 'gameFSM', None) else None
+         self.notify.warning('TEMP-DIAG flagship %d: pirate %d landed on the deck (state %s), on deck %s' % (
+-            self.doId, avatar.doId, self.gameFSM.getCurrentOrNextState() if getattr(self, 'gameFSM', None) else None,
+-            sorted(self._deckPirates)))
++            self.doId, avatar.doId, state, sorted(self._deckPirates)))
++        # the first pirate on the deck starts its crew's fight (boarding step 4)
++        if state == 'Boarded' and not self._endingBoarding and self._deckFight is None:
++            self._startDeckFight()
++
++    # The deck fight (boarding step 4): the flagship's crew in waves, then its
++    # captain (FlagshipDeckFightAI). Beating the captain defeats the flagship:
++    # every pirate on the deck is paid when it sinks, its special loot rolls,
++    # and they swing back to their ship.
++
++    def _startDeckFight(self):
++        from pirates.ship.FlagshipDeckFightAI import FlagshipDeckFight
++        self._deckFight = FlagshipDeckFight(self)
++        self._deckFight.start()
++
++    def _stopDeckFight(self):
++        fight, self._deckFight = self._deckFight, None
++        if fight is not None:
++            fight.stop()
++
++    def getDeckFight(self):
++        return self._deckFight
++
++    def captainBeaten(self, attackers):
++        state = self.gameFSM.getCurrentOrNextState() if getattr(self, 'gameFSM', None) else None
++        if state != 'Boarded' or self._endingBoarding:
++            self.notify.warning('TEMP-DIAG flagship %d: captain beaten in state %s (ending %s): nothing more' % (
++                self.doId, state, self._endingBoarding))
++            return
++
++        self.notify.warning('TEMP-DIAG flagship %d defeated: its captain is beaten (by %s), pirates on deck %s' % (
++            self.doId, list(attackers or []), self.getDeckPirates()))
++        DistributedShipAI.b_setGameState(self, 'Defeated', 0)
++
++    def flagshipDefeated(self, loot):
++        """
++        Called by the Defeated state with the special loot it rolled: every pirate
++        on the deck is credited for the sink (paid when it sinks, 0114), each
++        special loot item goes into the pirate ship's hold as a royal chest (the
++        named items do not exist in this game), and after a short look round the
++        pirates swing back and it sinks.
++        """
++        onDeck = self.getDeckPirates()
++        for avId in onDeck:
++            self._sinkCredit.setdefault(avId, set())
++
++        ships = []
++        boarder = self.getBoarderShip()
++        if boarder is not None:
++            ships.append(boarder)
++        else:
++            for avId in onDeck:
++                av = self.air.doId2do.get(avId)
++                shipId = getattr(av, 'getCrewShipId', lambda: 0)() if av is not None else 0
++                # only a crew ship still afloat can take it, never one that is sinking
++                ship = self._getBoarderShip(shipId)
++                if ship is not None and ship not in ships and hasattr(ship, 'addPlunder'):
++                    ships.append(ship)
++
++        for item in loot or []:
++            if not ships:
++                self.notify.warning('TEMP-DIAG flagship %d special loot %s: no pirate ship to take it' % (self.doId, item))
++                continue
++
++            for ship in ships:
++                taken = ship.addPlunder([ItemId.CARGO_SKCHEST])
++                self.notify.warning('TEMP-DIAG flagship %d special loot %s: a royal chest into ship %d (%s)' % (
++                    self.doId, item, ship.doId, 'taken' if taken else 'the hold is full'))
++
++        delay = config.GetFloat('flagship-defeated-time', 10.0)
++        self.notify.warning('TEMP-DIAG flagship %d defeated: pirates %s credited, special loot %s, swinging back in %d s' % (
++            self.doId, onDeck, list(loot or []), int(delay)))
++
++        def _defeatedOver(task):
++            if self.air is not None and self.air.doId2do.get(self.doId) is self:
++                self.endBoarding('the captain was beaten')
++            return task.done
++
++        taskMgr.remove(self.uniqueName('defeated-over'))
++        taskMgr.doMethodLater(delay, _defeatedOver, self.uniqueName('defeated-over'))
+ 
+     def _playerDeparted(self, avatar):
+         if not self.isFlagship:
+@@ -503,17 +586,32 @@ class NPCShipAI(DistributedShipAI):
+             return
+ 
+         self._endingBoarding = True
+-        boarder = self.air.doId2do.get(self._boarderShipId) if self._boarderShipId else None
++        # the deck enemies go before the pirates leave (step 4)
++        self._stopDeckFight()
++        # only a pirate ship still afloat takes its crew back; if it sank while they
++        # were across, they go ashore like a sunk ship's crew (step 4)
++        boarder = self.getBoarderShip()
+         onDeck = self.getDeckPirates()
+         back = []
+-        if boarder is not None:
+-            for avId in onDeck:
+-                if avId in getattr(boarder, 'crew', ()):
+-                    boarder.d_setMovie(0, avId, 0, 0)
+-                    back.append(avId)
+-
+-        self.notify.warning('TEMP-DIAG flagship %d boarding over (%s): pirates %s swing back to ship %s, sinking in %d s' % (
+-            self.doId, reason, back, self._boarderShipId, int(config.GetFloat('flagship-return-time', 8.0))))
++        ashore = []
++        for avId in onDeck:
++            av = self.air.doId2do.get(avId)
++            if boarder is not None and avId in getattr(boarder, 'crew', ()):
++                boarder.d_setMovie(0, avId, 0, 0)
++                back.append(avId)
++                self.notify.warning('TEMP-DIAG flagship %d: pirate %d swings back to ship %d' % (self.doId, avId, boarder.doId))
++            elif av is not None:
++                try:
++                    sent = self.sendCrewAshore(av)
++                except Exception as e:
++                    self.notify.warning('flagship %d: could not send pirate %d ashore: %r' % (self.doId, avId, e))
++                    sent = False
++                ashore.append(avId)
++                self.notify.warning('TEMP-DIAG flagship %d: pirate %d sent ashore (his ship %s is gone)%s' % (
++                    self.doId, avId, self._boarderShipId, '' if sent else ', but no island found'))
++
++        self.notify.warning('TEMP-DIAG flagship %d boarding over (%s): pirates %s swing back to ship %s, %s sent ashore, sinking in %d s' % (
++            self.doId, reason, back, boarder.doId if boarder is not None else None, ashore, int(config.GetFloat('flagship-return-time', 8.0))))
+ 
+         def _sinkAfterReturn(task):
+             if self.air is not None and self.air.doId2do.get(self.doId) is self:
+@@ -525,6 +623,10 @@ class NPCShipAI(DistributedShipAI):
+ 
+     def setGameState(self, stateName, avId, timeStamp=0):
+         DistributedShipAI.setGameState(self, stateName, avId, timeStamp)
++        if stateName in ('Sinking', 'Sunk', 'PutAway', 'Off'):
++            # whoever is still on the deck goes down with the ship, not with its crew
++            self._stopDeckFight()
++            taskMgr.remove(self.uniqueName('defeated-over'))
+         if stateName == 'Sinking':
+             self.notify.warning('TEMP-DIAG npc ship %d (class %s, flagship %s) Sinking at hp %s, %d pirates credited, already paid %s' % (
+                 self.doId, self.getShipClass(), getattr(self, 'isFlagship', 0), self.hp, len(self._sinkCredit), self._sinkRewarded))
+-- 
+2.53.0
+

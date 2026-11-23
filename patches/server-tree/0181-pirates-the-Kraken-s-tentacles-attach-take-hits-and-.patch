@@ -1,0 +1,455 @@
+From 5919a002e2dd562fd54bbd342b098ded1fcfd445 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:57:27 -0800
+Subject: [PATCH 181/371] pirates: the Kraken's tentacles attach, take hits and
+ sink a ship without freezing the game, client side (0220, patch 18)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/EnemyGlobals.py    |  8 +++
+ pirates/kraken/DoomTentacle.py    | 15 ++---
+ pirates/kraken/Grabber.py         | 17 +++---
+ pirates/kraken/GrabberTentacle.py | 96 ++++++++++++++++++++++++-------
+ pirates/kraken/Kraken.py          | 25 +++++---
+ pirates/kraken/KrakenBody.py      |  2 -
+ pirates/kraken/TentacleUtils.py   |  7 ++-
+ pirates/ship/DistributedShip.py   | 18 ++++--
+ 8 files changed, 132 insertions(+), 56 deletions(-)
+
+diff --git a/pirates/battle/EnemyGlobals.py b/pirates/battle/EnemyGlobals.py
+index b25ee40..401f5a8 100644
+--- a/pirates/battle/EnemyGlobals.py
++++ b/pirates/battle/EnemyGlobals.py
+@@ -773,6 +773,14 @@ __baseAvatarStats = {
+         280.0,
+         MONSTER,
+         0],
++    AvatarTypes.GrabberTentacle: [
++        10,
++        10,
++        1.0,
++        175.0,
++        15.0,
++        MONSTER,
++        0],
+     AvatarTypes.Townfolk: [
+         1,
+         1,
+diff --git a/pirates/kraken/DoomTentacle.py b/pirates/kraken/DoomTentacle.py
+index 1052578..3b4dbbf 100644
+--- a/pirates/kraken/DoomTentacle.py
++++ b/pirates/kraken/DoomTentacle.py
+@@ -20,15 +20,9 @@ class DoomTentacle(Actor, TentacleUtils):
+                 DoomTentacle.sfx[name] = loader.loadSfx('audio/' + DoomTentacle.SfxNames[name])
+ 
+         filePrefix = self.ModelInfo[1]
+-        if loader.loadModelCopy(filePrefix + '1000') != None:
+-            hasLOD = True
+-            self.setLODs()
+-            self.loadModel(filePrefix + '2000', 'modelRoot', 'hi', copy = 1)
+-            self.loadModel(filePrefix + '1000', 'modelRoot', 'med', copy = 1)
+-            self.loadModel(filePrefix + '500', 'modelRoot', 'low', copy = 1)
+-        else:
+-            hasLOD = False
+-            self.loadModel(self.ModelInfo[0], copy = 1)
++        # the 2008 build ships only doomTentacle_high/_medium/_low, never the _2000/_1000/_500 LOD files this looked for
++        hasLOD = False
++        self.loadModel(self.ModelInfo[0], copy = 1)
+         AnimDict = dict()
+         for anim in self.AnimList:
+             AnimDict[anim[0]] = filePrefix + anim[1]
+@@ -41,6 +35,9 @@ class DoomTentacle(Actor, TentacleUtils):
+         self.initStatusTable()
+         self.startUpdateTask()
+ 
++    def uniqueName(self, s):
++        return 'doomTentacle-%d-%s' % (id(self), s)
++
+     def disable(self):
+         self.removeEffects()
+         self.stopUpdateTask()
+diff --git a/pirates/kraken/Grabber.py b/pirates/kraken/Grabber.py
+index 57dbb20..0165908 100644
+--- a/pirates/kraken/Grabber.py
++++ b/pirates/kraken/Grabber.py
+@@ -14,13 +14,14 @@ class Grabber(Creature, TentacleUtils):
+         'pain': 'sfx_crab_pain.mp3',
+         'death': 'sfx_crab_death.mp3'})
+     sfx = {}
+-    AnimList = (('idle_d', 'idle'), ('idle_a', 'idleA'), ('idle_a_to_b', 'idle_a_to_b'), ('idle_b', 'idleB'), ('idle_b_to_c', 'idle_b_to_c'), ('idle_c', 'idleC'), ('idle_c_to_a', 'idle_c_to_a'), ('grab_avatar', 'grab'), ('grab_avatar_idle', 'grab_idle'), ('lift_avatar', 'lift_player'), ('lift_avatar_idle', 'lift_player_idle'), ('lower_avatar', 'lower_player'), ('release_avatar', 'release_player'), ('emerge', 'emerge'), ('grab_mast', 'grab_mast'), ('grab_mast_idle', 'grab_mast_idle'), ('death', 'death'), ('hit_react', 'hit_reaction'), ('smackdown_avatar', 'smackdown_player'))
++    AnimList = (('idle', 'idle'), ('idle_d', 'idle'), ('idle_a', 'idleA'), ('idle_a_to_b', 'idle_alt_a_to_b'), ('idle_b', 'idleB'), ('idle_b_to_c', 'idle_alt_b_to_c'), ('idle_c', 'idleC'), ('idle_c_to_a', 'idle_alt_c_to_a'), ('grab_avatar', 'grab'), ('grab_avatar_idle', 'grab_idle'), ('lift_avatar', 'lift_player'), ('lift_avatar_idle', 'lift_player_idle'), ('lower_avatar', 'lower_player'), ('release_avatar', 'release_player'), ('emerge', 'emerge'), ('grab_mast', 'grab_mast'), ('grab_mast_idle', 'grab_mast_idle'), ('death', 'death'), ('hit_react', 'hit_reaction'), ('smackdown_avatar', 'smackdown_player'))
+     
+     class AnimationMixer(Creature.AnimationMixer):
+         notify = DirectNotifyGlobal.directNotify.newCategory('CrabAnimationMixer')
+         LOOP = Creature.AnimationMixer.LOOP
+         ACTION = Creature.AnimationMixer.ACTION
+         AnimRankings = {
++            'idle': (LOOP['LOOP'],),
+             'idle_d': (LOOP['LOOP'],),
+             'idle_a_to_b': (ACTION['ACTION'],),
+             'idle_b_to_c': (ACTION['ACTION'],),
+@@ -64,15 +65,9 @@ class Grabber(Creature, TentacleUtils):
+     
+     def generateCreature(self):
+         filePrefix = self.ModelInfo[1]
+-        if loader.loadModelCopy(filePrefix + '1000') != None:
+-            hasLOD = True
+-            self.setLODs()
+-            self.loadModel(filePrefix + '2000', 'modelRoot', 'hi', copy = 1)
+-            self.loadModel(filePrefix + '1000', 'modelRoot', 'med', copy = 1)
+-            self.loadModel(filePrefix + '500', 'modelRoot', 'low', copy = 1)
+-        else:
+-            hasLOD = False
+-            self.loadModel(self.ModelInfo[0], copy = 1)
++        # the 2008 build ships only grabberTentacle_high/_medium/_low, never the _2000/_1000/_500 LOD files this looked for
++        hasLOD = False
++        self.loadModel(self.ModelInfo[0], copy = 1)
+         j = self.exposeJoint(NodePath(ModelRoot('def_tent_03')), 'modelRoot', 'def_tent_03', localTransform = 0)
+         j.reparentTo(self.getChild(0).getChild(0))
+         j = self.exposeJoint(NodePath(ModelRoot('def_tent_06')), 'modelRoot', 'def_tent_06', localTransform = 0)
+@@ -145,7 +140,9 @@ class Grabber(Creature, TentacleUtils):
+         self.removeEffects()
+     
+     def delete(self):
++        self.stopIdleTask()
+         self.uniqueNameFunc = None
++        Creature.delete(self)
+     
+     def startIdleTask(self):
+         self.stopIdleTask()
+diff --git a/pirates/kraken/GrabberTentacle.py b/pirates/kraken/GrabberTentacle.py
+index 28c6aa4..3ef9bb7 100644
+--- a/pirates/kraken/GrabberTentacle.py
++++ b/pirates/kraken/GrabberTentacle.py
+@@ -8,9 +8,15 @@ import math
+ import random
+ 
+ class GrabberTentacle(DistributedCreature):
+-    
++    # battle and aim tubes in the tentacle model's own space: it stands up +Z, about 170 tall at idle (measured headlessly)
++    TubeTop = 165.0
++    TubeRadius = 15.0
++
+     def __init__(self, cr):
+-        DistributedCreature.__init__(self, cr, Grabber(self.uniqueName))
++        DistributedCreature.__init__(self, cr)
++        self.slideBase = None
++        self.slider = None
++        self.creature = Grabber(self.uniqueName)
+         self.krakenId = 0
+         self.krakenRequest = None
+         self.avatarId = 0
+@@ -23,15 +29,52 @@ class GrabberTentacle(DistributedCreature):
+         self.locatorId = -1
+         self.rangeCollisions = None
+ 
+-    def setupCreature(self):
+-        self.slideBase = NodePath('slideBase')
+-        self.slider = self.slideBase.attachNewNode('slider')
+-        self.creature.reparentTo(self.slider)
++    def setupCreature(self, avatarType = None):
++        if self.slideBase is None:
++            self.slideBase = NodePath('slideBase')
++            self.slider = self.slideBase.attachNewNode('slider')
++            self.creature.reparentTo(self.slider)
++            try:
++                self.motionFSM.setAnimInfo(self.getAnimInfo('LandRoam'))
++            except Exception:
++                pass
++            # like DistributedCreature.setupCreature, but this object's own node stays at the ship's root,
++            # so the name tag goes onto the tentacle model
++            try:
++                self.nametag3d.setName('empty_use_self_dot_creature_dot_nametag3d_instead')
++                self.creature.nametag3d.reparentTo(self.nametag3d)
++                self.nametag3d.reparentTo(self.creature)
++            except Exception:
++                pass
++
++    def initializeBattleCollisions(self):
++        DistributedCreature.initializeBattleCollisions(self)
++        self.fitBattleTubes()
++
++    def fitBattleTubes(self):
++        # the ship parents this object to its root, but the tentacle you see hangs under slider/slideBase on a kraken
++        # locator, so the tubes that cannonballs, shots and the target lock hit must ride on the tentacle model itself
++        if not self.creature:
++            return
++        for np in list(self.battleTubeNodePaths) + list(self.aimTubeNodePaths):
++            if np.isEmpty():
++                continue
++            np.reparentTo(self.creature)
++            np.setPosHprScale(0, 0, 0, 0, 0, 0, 1, 1, 1)
++            solid = np.node().modifySolid(0)
++            solid.setPointA(Point3(0, 0, 0))
++            solid.setPointB(Point3(0, 0, self.TubeTop))
++            if np in self.aimTubeNodePaths:
++                solid.setRadius(self.TubeRadius * 1.5)
++            else:
++                solid.setRadius(self.TubeRadius)
++
++    def setHeight(self, height):
++        DistributedCreature.setHeight(self, height)
++        self.fitBattleTubes()
+ 
+     def announceGenerate(self):
+-        print('announceGenerate - GrabberTentacle', self.doId, self.getLocation())
+         DistributedCreature.announceGenerate(self)
+-        self.accept('f8', self.grabAvatar, extraArgs = [localAvatar])
+         self.creature.startIdleTask()
+         if not self.emerged:
+             self.creature.hide()
+@@ -42,14 +85,13 @@ class GrabberTentacle(DistributedCreature):
+         if __dev__:
+             if not hasattr(base, 'tentacles'):
+                 base.tentacles = set()
+-            
++
+             base.tentacles.add(self)
+ 
+     def disable(self):
+-        if __dev__:
++        if hasattr(base, 'tentacles'):
+             base.tentacles.discard(self)
+-        
+-        print(self.doId)
++
+         if self.krakenRequest:
+             self.cr.relatedObjectMgr.abortRequest(self.krakenRequest)
+             self.krakenRequest = None
+@@ -72,11 +114,11 @@ class GrabberTentacle(DistributedCreature):
+         if kraken:
+             kraken.removeGrabberTentacle(self.doId)
+         
+-        self.ignore('f8')
+         self.ignore(self.uniqueName('enterRange'))
+         self.ignore(self.uniqueName('exitRange'))
+         self.creature.disable()
+-        self.slideBase.detachNode()
++        if self.slideBase:
++            self.slideBase.detachNode()
+         if self.rangeCollisions:
+             self.rangeCollisions.detachNode()
+             self.rangeCollisions = None
+@@ -84,7 +126,8 @@ class GrabberTentacle(DistributedCreature):
+         DistributedCreature.disable(self)
+ 
+     def delete(self):
+-        self.creature.delete()
++        if self.creature:
++            self.creature.delete()
+         self.krakenId = 0
+         self.locatorId = -1
+         self.slider = None
+@@ -124,6 +167,8 @@ class GrabberTentacle(DistributedCreature):
+         
+         def shipArrived(ship):
+             self.shipRequest = None
++            if not self.slideBase:
++                return
+             locator = ship.getKrakenGrabberLocator(self.locatorId)
+             if wrt:
+                 self.wrtSetBase(locator, scale = 1)
+@@ -133,10 +178,12 @@ class GrabberTentacle(DistributedCreature):
+             self.creature.setEffectsScale(2 * locator.getScale()[0])
+ 
+         kraken = self.getKraken()
++        if not kraken:
++            return
+         if self.shipRequest:
+             self.cr.relatedObjectMgr.abortRequest(self.shipRequest)
+             self.shipRequest = None
+-        
++
+         self.shipRequest = self.cr.relatedObjectMgr.requestObjects((kraken.getShipId(),), eachCallback = shipArrived)
+ 
+     def attachToShipModel(self):
+@@ -165,7 +212,8 @@ class GrabberTentacle(DistributedCreature):
+     def loop(self, *args, **kw):
+         if args and args[0] == 'idle' or kw.get('animName') == 'idle' or kw.get('newAnim') == 'idle':
+             kw['restart'] = 0
+-            self.pose('idle', random.choice(range(self.creature.getNumFrames('idle'))))
++            numFrames = self.creature.getNumFrames('idle') or 1
++            self.pose('idle', random.randrange(numFrames))
+         
+         DistributedCreature.loop(self, *args, **kw)
+     
+@@ -219,12 +267,12 @@ class GrabberTentacle(DistributedCreature):
+                     self.avatarId = av.doId
+                     self.reparentNodeToTip(av)
+                     av.setY(-4)
+-                    av.loop('tentacle_struggle')
++                    av.loop('tentacle_squeeze')
+                     taskMgr.doMethodLater(2, self.setAvatarToGrabbedState, self.uniqueName('grabDelay'), extraArgs = [
+                         av])
+                 
+             else:
+-                print('move interrupted')
++                pass
+ 
+         time = self.creature.getDuration('grab_avatar')
+         blendDelay = 0.5
+@@ -390,7 +438,11 @@ class GrabberTentacle(DistributedCreature):
+     def setupCollisions(self):
+         if not self.rangeCollisions:
+             ship = self.getShip()
++            if not ship:
++                return
+             rParent = ship.getKrakenRangeParent(self.locatorId)
++            if rParent.isEmpty():
++                rParent = ship.getKrakenGrabberLocator(self.locatorId)
+             self.creature.pose('grab_avatar_idle', 0, blendT = 0)
+             self.creature.update()
+             range = self.creature.getGrabTargetNode().getPos().length()
+@@ -407,10 +459,10 @@ class GrabberTentacle(DistributedCreature):
+             self.rangeCollisions = cNodePath
+     
+     def withinRange(self, cEntry):
+-        print(' withinRange-%s(%s)' % (self.doId, self.locatorId))
+-    
++        pass
++
+     def withoutRange(self, cEntry):
+-        print('withoutRange-%s(%s)' % (self.doId, self.locatorId))
++        pass
+ 
+     def showVis(self):
+         self.rangeCollisions.show()
+diff --git a/pirates/kraken/Kraken.py b/pirates/kraken/Kraken.py
+index 239540b..2c0e426 100644
+--- a/pirates/kraken/Kraken.py
++++ b/pirates/kraken/Kraken.py
+@@ -32,6 +32,11 @@ class Kraken(DistributedNode):
+         self.holderTentacles = {}
+         if self.doomTentacle:
+             self.doomTentacle.disable()
++            try:
++                self.doomTentacle.cleanup()
++                self.doomTentacle.removeNode()
++            except Exception:
++                pass
+             self.doomTentacle = None
+         
+         self.body = None
+@@ -63,7 +68,7 @@ class Kraken(DistributedNode):
+         def shipArrived(ship):
+             self.shipRomRequest = None
+             ship.setKraken(self)
+-            for grabber in self.grabberTentacles:
++            for grabber in list(self.grabberTentacles.values()):
+                 grabber.attachToShipLocator()
+                 grabber.setupCollisions()
+             
+@@ -85,10 +90,13 @@ class Kraken(DistributedNode):
+             grabber.setupCollisions()
+ 
+     def removeGrabberTentacle(self, grabber):
+-        self.grabberTentacles.discard(grabber)
++        # called with the tentacle's doId (GrabberTentacle.disable) or with the tentacle itself
++        for k, v in list(self.grabberTentacles.items()):
++            if v is grabber or getattr(v, 'doId', None) == grabber:
++                del self.grabberTentacles[k]
+     
+     def getRollAngle(self):
+-        dampen = max([ grabber.getRockingDampen() for grabber in self.grabberTentacles.values() ])
++        dampen = max([0] + [ grabber.getRockingDampen() for grabber in self.grabberTentacles.values() ])
+         if dampen:
+             frameTime = globalClock.getFrameTime()
+             self.dampen[1] = frameTime
+@@ -127,8 +135,9 @@ class Kraken(DistributedNode):
+     
+     def spawnDoomTentacle(self):
+         if not self.doomTentacle:
+-            self.doomTentacle = DoomTentacle(self.uniqueName)
+-            self.doomTentacle.reparentTo(self)
++            self.doomTentacle = DoomTentacle()
++            # the Kraken node itself is not in the scene graph, so put the doom tentacle beside the ship
++            self.doomTentacle.reparentTo(self.getShip().getParent())
+             self.doomTentacle.setScale(self.getShip().dimensions[1] / 400)
+             self.doomTentacle.setEffectsScale(self.getShip().dimensions[1] / 100)
+             self.doomTentacle.setPos(self.getShip(), -self.getShip().dimensions[0] / 1.3, -1 * ShipGlobals.getShipSplitOffset(self.getShip().shipClass) + 2, -15)
+@@ -138,9 +147,11 @@ class Kraken(DistributedNode):
+         self.doomTentacle.play('emerge')
+     
+     def hideSideTentacles(self, side):
+-        numTent = len(self.grabberTentacles) / 2
++        numTent = len(self.grabberTentacles) // 2
+         for i in range(numTent):
+-            self.grabberTentacles[i + numTent * side].emerge(0)
++            grabber = self.grabberTentacles.get(i + numTent * side)
++            if grabber:
++                grabber.emerge(0)
+         
+ 
+ 
+diff --git a/pirates/kraken/KrakenBody.py b/pirates/kraken/KrakenBody.py
+index 5ea6b80..1ec4cab 100644
+--- a/pirates/kraken/KrakenBody.py
++++ b/pirates/kraken/KrakenBody.py
+@@ -27,7 +27,5 @@ class KrakenBody(Body, DistributedCreature):
+ 
+     def reparentTo(self, *args, **kw):
+         Body.reparentTo(self, *args, **kw)
+-        import pdb
+-        pdb.set_trace()
+ 
+ 
+diff --git a/pirates/kraken/TentacleUtils.py b/pirates/kraken/TentacleUtils.py
+index 8fb7bf5..2bc6dc5 100644
+--- a/pirates/kraken/TentacleUtils.py
++++ b/pirates/kraken/TentacleUtils.py
+@@ -47,7 +47,12 @@ class TentacleUtils:
+ 
+     def getWaterPos(self, aboveJoint, belowJoint):
+         avgPos = (aboveJoint.getPos(render) + belowJoint.getPos(render)) / 2.0
+-        waterHeight = base.cr.activeWorld.getWater().calcHeight(avgPos[0], avgPos[1], 0, render)
++        world = getattr(base.cr, 'activeWorld', None)
++        water = world and world.getWater()
++        if water:
++            waterHeight = water.calcHeight(avgPos[0], avgPos[1], 0, render)
++        else:
++            waterHeight = avgPos[2]
+         return Vec3(avgPos[0], avgPos[1], waterHeight)
+     
+     def startRippleEffect(self, section):
+diff --git a/pirates/ship/DistributedShip.py b/pirates/ship/DistributedShip.py
+index b6d7c1c..f021d94 100644
+--- a/pirates/ship/DistributedShip.py
++++ b/pirates/ship/DistributedShip.py
+@@ -4094,12 +4094,17 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+             localAvatar.skillDiary.startRecharging(skillId, ammoSkillId)
+             localAvatar.guiMgr.combatTray.skillTray.updateSkillIval(skillId)
+ 
+-    def setupKrakenLocators(self):
+-        if not hasattr(self, 'krakenLocators') and self.kraken:
++    def setupKrakenLocators(self, force = False):
++        if not hasattr(self, 'krakenLocators') and (self.kraken or force):
++            locatorInfo = ShipGlobals.KrakenLocators.get(self.shipClass)
++            if not locatorInfo:
++                return
+             self.findAllMatches('**/kraken-*').detach()
+             self.krakenLocators = []
+-            locatorInfo = ShipGlobals.KrakenLocators.get(self.shipClass)
+             for x, (pos, scale, rPos, rScale) in enumerate(locatorInfo):
++                # copies: the table's Point3s are shared by every ship of this class
++                pos = Point3(pos)
++                rPos = Point3(rPos)
+                 pos.setX(pos[0] + 30)
+                 locator = self.attachNewNode('kraken-%s' % (x,))
+                 locator.setPosHprScale(pos, VBase3(-90, 0, 0), VBase3(scale))
+@@ -4120,8 +4125,11 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+                 self.krakenLocators.append(locator)
+ 
+     def getKrakenGrabberLocator(self, locatorId):
+-        self.setupKrakenLocators()
+-        return self.krakenLocators[locatorId]
++        self.setupKrakenLocators(force = True)
++        locators = getattr(self, 'krakenLocators', None)
++        if not locators or locatorId < 0 or locatorId >= len(locators):
++            return self.waterlineNode
++        return locators[locatorId]
+ 
+     def getKrakenRangeParent(self, locatorId):
+         locator = self.getKrakenGrabberLocator(locatorId)
+-- 
+2.53.0
+

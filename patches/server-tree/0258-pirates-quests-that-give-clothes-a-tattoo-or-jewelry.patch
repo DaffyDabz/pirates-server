@@ -1,0 +1,74 @@
+From 2e60fee0f5ed1bd93e68087807c8413225e3d87a Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 07:31:25 -0800
+Subject: [PATCH 258/371] pirates: quests that give clothes, a tattoo or
+ jewelry now give them (0350)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ai/PiratesAIRepository.py             |  3 ++
+ pirates/economy/AvatarAccessoriesManagerAI.py | 28 ++++++++++++++++++-
+ 2 files changed, 30 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/ai/PiratesAIRepository.py b/pirates/ai/PiratesAIRepository.py
+index 8abb2b9..bf7472f 100644
+--- a/pirates/ai/PiratesAIRepository.py
++++ b/pirates/ai/PiratesAIRepository.py
+@@ -20,6 +20,7 @@ from pirates.distributed.DistrictTrackerAI import DistrictTrackerAI
+ from pirates.world import WorldGlobals
+ from pirates.ai.NewsManagerAI import NewsManagerAI
+ from pirates.quest.QuestManagerAI import QuestManagerAI
++from pirates.economy.AvatarAccessoriesManagerAI import AvatarAccessoriesManagerAI
+ from pirates.piratesbase.UniqueIdManager import UniqueIdManager
+ from pirates.distributed.DistributedPopulationTrackerAI import DistributedPopulationTrackerAI
+ from pirates.instance.DistributedTeleportMgrAI import DistributedTeleportMgrAI
+@@ -128,6 +129,8 @@ class PiratesAIRepository(PiratesInternalRepository):
+         self.newsManager.generateWithRequired(OTP_ZONE_ID_MANAGEMENT)
+ 
+         self.questMgr = QuestManagerAI(self)
++        # patch 0350: clothing / tattoo / jewelry quest rewards (QuestReward.py uses base.air.avatarAccessoriesManager)
++        self.avatarAccessoriesManager = AvatarAccessoriesManagerAI(self)
+ 
+         self.friendManager = FriendManagerAI(self)
+         self.friendManager.generateWithRequired(OTP_ZONE_ID_MANAGEMENT)
+diff --git a/pirates/economy/AvatarAccessoriesManagerAI.py b/pirates/economy/AvatarAccessoriesManagerAI.py
+index 298384a..562b75f 100644
+--- a/pirates/economy/AvatarAccessoriesManagerAI.py
++++ b/pirates/economy/AvatarAccessoriesManagerAI.py
+@@ -5,4 +5,30 @@ class AvatarAccessoriesManagerAI(DistributedObjectAI):
+     notify = DirectNotifyGlobal.directNotify.newCategory('AvatarAccessoriesManagerAI')
+ 
+     def __init__(self, air):
+-        DistributedObjectAI.__init__(self, air)
+\ No newline at end of file
++        DistributedObjectAI.__init__(self, air)
++
++    # patch 0350: quest rewards of clothing, tattoos and jewelry (QuestReward.py calls these). The family server
++    # keeps what a pirate owns in the wardrobe file the tailor, tattoo parlour and jeweler use
++    # (DistributedShopKeeperAI: wardrobe/<avId>.json), so the reward shows in the store's list, ready to wear.
++    # This object is a plain helper on the AI (air.avatarAccessoriesManager); it is never generated.
++    def _add(self, avId, kind, entry, same):
++        from pirates.economy import DistributedShopKeeperAI as Shop
++        wardrobe = Shop._loadWardrobe(avId)
++        if not [e for e in wardrobe[kind] if same(e)]:
++            wardrobe[kind].append(entry)
++        if not Shop._saveWardrobe(avId, wardrobe):
++            self.notify.warning('could not save the wardrobe of %s (%s %s)' % (avId, kind, entry))
++            return False
++        return True
++
++    def requestClothingAdd(self, avId, uid, colorId, forceAdd=False):
++        uid, colorId = int(uid), int(colorId)
++        return self._add(avId, 'clothes', [uid, colorId, 0], lambda e: e[0] == uid and e[1] == colorId)
++
++    def requestTattooAdd(self, avId, uid, forceAdd=False):
++        uid = int(uid)
++        return self._add(avId, 'tattoos', uid, lambda e: e == uid)
++
++    def requestJewelryAdd(self, avId, uid, forceAdd=False):
++        uid = int(uid)
++        return self._add(avId, 'jewelry', uid, lambda e: e == uid)
+\ No newline at end of file
+-- 
+2.53.0
+

@@ -1,0 +1,30 @@
+From ad07cc598bc31abe2a9f8955f9721bfbb4ba609b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 13:58:31 -0800
+Subject: [PATCH 067/371] family server: boarding a ship always ends in
+ LandRoam, even while the tutorial holds the game state locked
+
+---
+ pirates/ship/DistributedShip.py | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/pirates/ship/DistributedShip.py b/pirates/ship/DistributedShip.py
+index 4e8f3bd..7022f43 100644
+--- a/pirates/ship/DistributedShip.py
++++ b/pirates/ship/DistributedShip.py
+@@ -1299,7 +1299,12 @@ class DistributedShip(DistributedMovingObject, DistributedCharterableObject, Zon
+             av.setPos(pos)
+ 
+         if av.isLocal():
++            # family server: the tutorial keeps the pirate's state locked, and a locked state refuses
++            # LandRoam. Boarding always has to end, or the pirate stands frozen on the deck for good.
++            locked = av.gameFSM.lockFSM
++            av.gameFSM.lockFSM = False
+             av.b_setGameState('LandRoam')
++            av.gameFSM.lockFSM = locked
+ 
+     @report(types=['frameCount', 'deltaStamp'], dConfigParam='want-shipboard-report')
+     def getRope(self, thickness = 0.15):
+-- 
+2.53.0
+

@@ -1,0 +1,705 @@
+From 09e15e9c7450cbb5318b585824ca95ec931bb178 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 01:07:56 -0800
+Subject: [PATCH 200/371] pirates: a Sea Serpent attacks crewed ships at sea,
+ can be fought, and beating it pays 400 gold and plunder (0223)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ai/PiratesMagicWordManagerAI.py     |  49 +++
+ pirates/creature/DistributedSeaSerpentAI.py | 452 +++++++++++++++++++-
+ pirates/creature/SeaSerpentManagerAI.py     | 126 ++++++
+ pirates/kraken/KrakenAI.py                  |   2 +
+ pirates/ship/ShipManagerAI.py               |  10 +
+ 5 files changed, 636 insertions(+), 3 deletions(-)
+ create mode 100644 pirates/creature/SeaSerpentManagerAI.py
+
+diff --git a/pirates/ai/PiratesMagicWordManagerAI.py b/pirates/ai/PiratesMagicWordManagerAI.py
+index fd7d8e1..a37b209 100644
+--- a/pirates/ai/PiratesMagicWordManagerAI.py
++++ b/pirates/ai/PiratesMagicWordManagerAI.py
+@@ -235,6 +235,55 @@ def kraken(what='attack'):
+     return "The Kraken attacks ship %d with %d tentacles" % (ship.doId, len(kraken.tentacles))
+ 
+ 
++@magicWord(category=CATEGORY_SYSTEM_ADMIN, types=[str])
++def serpent(what='attack'):
++    """
++    The Sea Serpent (patch 0223): 'attack' sends one at the ship you are on now (even in the starter waters),
++    'why' says whether it may attack your ship by itself, 'beat' knocks it down, 'off' sends it away.
++    """
++    invoker = spellbook.getInvoker()
++    air = spellbook.getManager().air
++    shipMgr = getattr(air, 'shipManager', None)
++    serpentMgr = getattr(shipMgr, 'serpentMgr', None)
++    if serpentMgr is None:
++        from pirates.creature.SeaSerpentManagerAI import SeaSerpentManagerAI
++        serpentMgr = SeaSerpentManagerAI(air, shipMgr)
++        if shipMgr is not None:
++            shipMgr.serpentMgr = serpentMgr
++
++    from pirates.ship.DistributedShipAI import DistributedShipAI
++    ship = None
++    for shipId in (getattr(invoker, 'getActiveShipId', lambda: 0)(), getattr(invoker, 'getCrewShipId', lambda: 0)(),
++                   getattr(invoker, 'parentId', 0)):
++        obj = air.doId2do.get(shipId)
++        if isinstance(obj, DistributedShipAI):
++            ship = obj
++            break
++    if ship is None:
++        return "You are not on a ship"
++
++    if what == 'why':
++        return "Sea Serpent on ship %d: %s" % (ship.doId, serpentMgr.whyNot(ship) or 'it may attack now')
++    if what in ('beat', 'off'):
++        serpent = getattr(ship, 'serpent', None)
++        if serpent is None:
++            return "No Sea Serpent on ship %d" % ship.doId
++        if what == 'off':
++            serpent.finish('magic word')
++            return "The Sea Serpent leaves ship %d" % ship.doId
++        if not serpent.isAlive():
++            return "The Sea Serpent is already down"
++        serpent.b_setHp(0)
++        return "Knocked the Sea Serpent down"
++    if what != 'attack':
++        return "Valid: attack, why, beat, off"
++
++    serpent, why = serpentMgr.summon(ship)
++    if serpent is None:
++        return "No Sea Serpent: %s" % why
++    return "A Sea Serpent attacks ship %d" % ship.doId
++
++
+ @magicWord(category=CATEGORY_SYSTEM_ADMIN, types=[str])
+ def bpkill(target='goliath'):
+     """
+diff --git a/pirates/creature/DistributedSeaSerpentAI.py b/pirates/creature/DistributedSeaSerpentAI.py
+index 05d8743..af84d0f 100644
+--- a/pirates/creature/DistributedSeaSerpentAI.py
++++ b/pirates/creature/DistributedSeaSerpentAI.py
+@@ -1,8 +1,454 @@
+-from direct.distributed.DistributedObjectAI import DistributedObjectAI
++"""
++The Sea Serpent (patch 0223, 2026-11-19). The 2008 game shipped the serpent's
++model, its animations and a client class that could not load (fixed in 0222),
++but only an empty server stub; this is a kid-friendly first version.
++
++One Sea Serpent attacks one pirate ship out in the deep water (never in the
++starter waters round Port Royal and Tortuga):
++
++- it waits under water a moment, then rears up beside the hull, facing it;
++- every few seconds it lunges (the attack animation) and bites the hull for a
++  small share of the ship's max hull points, so a ship that does nothing sinks
++  in about four minutes;
++- after every few bites it dives and comes up on the other side of the ship,
++  so the crew has to swing round to the other cannons;
++- the crew beats it with the cannons (or guns and swords): it has one small
++  health bar and a cannonball always takes the same bite;
++- when it goes down every pirate aboard (and anyone else who shot it) gets
++  gold and the hold gets a chest and a royal chest (the loot pop-up shows them);
++- it never grabs a pirate, and gives up and dives away after a time limit; it
++  goes away if the ship sinks, docks or is put away.
++
++Every number is a config knob (see SerpentKnobs below).
++"""
+ from direct.directnotify import DirectNotifyGlobal
+ 
+-class DistributedSeaSerpentAI(DistributedObjectAI):
++from pirates.creature.DistributedCreatureAI import DistributedCreatureAI
++from pirates.pirate.BattleAvatarGameFSMAI import BattleAvatarGameFSMAI
++from pirates.pirate import AvatarTypes
++from pirates.piratesbase import PiratesGlobals
++from pirates.ship import ShipGlobals
++
++
++def _knob(kind, name, default):
++    try:
++        cfg = config
++    except NameError:
++        return default
++    try:
++        if kind == 'bool':
++            return bool(cfg.GetBool(name, default))
++        if kind == 'int':
++            return int(cfg.GetInt(name, default))
++        return float(cfg.GetFloat(name, default))
++    except Exception:
++        return default
++
++
++class SerpentKnobs:
++    # read on use, so a test or a magic word sees the current value
++    @staticmethod
++    def hp():
++        return min(32767, max(1, _knob('int', 'serpent-hp', 1200)))
++
++    @staticmethod
++    def level():
++        return max(1, _knob('int', 'serpent-level', 15))
++
++    @staticmethod
++    def cannonDamage():
++        return max(0, _knob('int', 'serpent-cannon-damage', 100))
++
++    @staticmethod
++    def weaponDamage():
++        return max(0, _knob('int', 'serpent-weapon-damage', 25))
++
++    @staticmethod
++    def damagePercent():
++        # share of the ship's max hull points one bite takes
++        return max(0.0, _knob('float', 'serpent-damage-percent', 5.0))
++
++    @staticmethod
++    def attackPeriod():
++        return max(2.0, _knob('float', 'serpent-attack-period', 8.0))
++
++    @staticmethod
++    def emergeDelay():
++        return max(0.0, _knob('float', 'serpent-emerge-delay', 3.0))
++
++    @staticmethod
++    def timeLimit():
++        return max(10.0, _knob('float', 'serpent-time-limit', 300.0))
++
++    @staticmethod
++    def hullFloorPercent():
++        # 0: the serpent can sink the ship; 25: it never takes the hull below a quarter
++        return min(100.0, max(0.0, _knob('float', 'serpent-hull-floor-percent', 0.0)))
++
++    @staticmethod
++    def gold():
++        return max(0, _knob('int', 'serpent-gold', 400))
++
++    @staticmethod
++    def swapEvery():
++        # bites before it dives and comes up on the other side (0: never swaps)
++        return max(0, _knob('int', 'serpent-swap-every', 3))
++
++    @staticmethod
++    def cleanupDelay():
++        return max(0.0, _knob('float', 'serpent-cleanup-delay', 4.0))
++
++    @staticmethod
++    def sideMargin():
++        # feet of open water between the hull's side and the serpent's neck
++        return max(0.0, _knob('float', 'serpent-side-margin', 18.0))
++
++
++# half the hull's width in feet, measured from the High hull models (tools/serpent_measure.py)
++HULL_HALF_WIDTH = {
++    ShipGlobals.INTERCEPTORL1: 22, ShipGlobals.INTERCEPTORL2: 37, ShipGlobals.INTERCEPTORL3: 45,
++    ShipGlobals.MERCHANTL1: 30, ShipGlobals.MERCHANTL2: 43, ShipGlobals.MERCHANTL3: 52,
++    ShipGlobals.WARSHIPL1: 26, ShipGlobals.WARSHIPL2: 43, ShipGlobals.WARSHIPL3: 54,
++}
++
++# seconds the client animations take (24 fps): emerge 118 frames, attack 30, submerge 37
++EMERGE_TIME = 5.0
++BITE_DELAY = 0.9
++ATTACK_TIME = 1.3
++SUBMERGE_TIME = 1.6
++UNDER_WATER_TIME = 3.0
++
++SERPENT_SHIP_STATES_BLOCKED = ('Off', 'Spawn', 'Docked', 'Sinking', 'Sunk', 'PutAway', 'RecoverFromSunk',
++                               'InBoardingPosition', 'WaitingForGrapple', 'GrappleLerping', 'InPosition',
++                               'Boarded', 'Defeated', 'Parley')
++
++
++def whyNotTarget(air, ship, ignoreStarterWaters=False):
++    """'' when a Sea Serpent may attack this ship now, else the reason it may not."""
++    if ship is None or getattr(ship, 'air', None) is None:
++        return 'no ship'
++    if getattr(ship, 'npcShip', 0):
++        return 'an enemy ship'
++    if ship.getShipClass() not in HULL_HALF_WIDTH:
++        return 'ship class %s is not a serpent target' % ship.getShipClass()
++    if getattr(ship, 'serpent', None) is not None:
++        return 'already has a Sea Serpent'
++    if getattr(ship, 'kraken', None) is not None:
++        return 'already has a Kraken'
++    afloat = getattr(ship, '_isAfloat', None)
++    if afloat is not None and not afloat():
++        return 'not afloat'
++    state = (getattr(ship, 'gameState', None) or ['Off'])[0]
++    if state in SERPENT_SHIP_STATES_BLOCKED:
++        return 'ship state %s' % state
++    if not ship.getPiratesAboard():
++        return 'nobody aboard'
++    if not ignoreStarterWaters:
++        from pirates.ship import StarterWaters
++        if StarterWaters.inStarterWaters(air, ship.getX(), ship.getY()):
++            return 'in the starter waters'
++    return ''
++
++
++class SeaSerpentGameFSMAI(BattleAvatarGameFSMAI):
++    notify = DirectNotifyGlobal.directNotify.newCategory('SeaSerpentGameFSMAI')
++
++    def enterIdle(self):
++        pass
++
++    def exitIdle(self):
++        pass
++
++    def enterDeath(self):
++        self.avatar.serpentDied()
++
++
++class DistributedSeaSerpentAI(DistributedCreatureAI):
+     notify = DirectNotifyGlobal.directNotify.newCategory('DistributedSeaSerpentAI')
+ 
++    ALLOWED_STATES = ('Off', 'Emerge', 'Idle', 'Attack', 'Submerge', 'Death')
++    HITTABLE_STATES = ('Emerge', 'Idle', 'Attack')
++
+     def __init__(self, air):
+-        DistributedObjectAI.__init__(self, air)
+\ No newline at end of file
++        DistributedCreatureAI.__init__(self, air)
++        self.gameFSM.destroy()
++        self.gameFSM = SeaSerpentGameFSMAI(self.air, self)
++        self.shipId = 0
++        self.side = 1
++        self.phase = 'Off'
++        self.dead = False
++        self.startTime = 0.0
++        self.attackers = set()
++        self.bites = 0
++        self.bitesThisSide = 0
++        self.hullTaken = 0
++        self.rewarded = []
++        self.endReason = ''
++        self.onDone = None
++
++    # ---- where it sits: beside the hull, in the ship's own space, facing the ship
++    @staticmethod
++    def sidePos(shipClass, side):
++        x = side * (HULL_HALF_WIDTH.get(shipClass, 40) + SerpentKnobs.sideMargin())
++        return (x, 0.0, 0.0, 90.0 if x > 0 else -90.0)
++
++    def setupSerpent(self, ship, side=1):
++        hp = SerpentKnobs.hp()
++        self.shipId = ship.doId
++        self.side = 1 if side >= 0 else -1
++        x, y, z, h = self.sidePos(ship.getShipClass(), self.side)
++        self.setPos(x, y, z)
++        self.setH(h)
++        self.setCollisionMode(PiratesGlobals.COLL_MODE_NONE)
++        self.setSpawnPos((x, y, z))
++        self.setInitZ(z)
++        self.setAvatarType(AvatarTypes.SeaSerpent)
++        self.setTeam(PiratesGlobals.UNDEAD_TEAM)
++        self.setLevel(SerpentKnobs.level())
++        self.setMaxHp(hp)
++        self.setHp(hp, True)
++        self.setName('Sea Serpent')
++        self.setAnimSet('default')
++
++    def getShip(self):
++        if self.air is None:
++            return None
++        return self.air.doId2do.get(self.shipId)
++
++    def isAlive(self):
++        return not self.dead and self.hp > 0
++
++    # ---- states: the client shows each one (0222); it never chases or fights on its own
++    def setGameState(self, gameState, timestamp=0):
++        if gameState not in self.ALLOWED_STATES:
++            return
++        DistributedCreatureAI.setGameState(self, gameState, timestamp)
++
++    def b_setGameState(self, gameState):
++        if gameState not in self.ALLOWED_STATES:
++            return
++        DistributedCreatureAI.b_setGameState(self, gameState)
++
++    def requestClientAggro(self):
++        pass
++
++    def handleClientAggro(self, avatar):
++        pass
++
++    # ---- life
++    def attackShip(self, ship, side=1):
++        """Generate this serpent beside the ship, under water. Returns True when it started."""
++        self.setupSerpent(ship, side)
++        ship.generateChildWithRequired(self, PiratesGlobals.ShipZoneSilhouette)
++        ship.serpent = self
++        self.startTime = globalClock.getFrameTime()
++        self.phase = 'Rising'
++        self.b_setGameState('Off')
++        self._tellCrew(ship, 'A Sea Serpent is coming! Shoot it with the cannons when it rises!')
++        self._later(SerpentKnobs.emergeDelay(), self._emerge)
++        taskMgr.doMethodLater(SerpentKnobs.timeLimit(), self._timeUp, self.uniqueName('serpent-timeout'))
++        self.notify.info('Sea Serpent %s attacks ship %s (class %s)' % (self.doId, ship.doId, ship.getShipClass()))
++        return True
++
++    def _later(self, delay, fn):
++        taskMgr.remove(self.uniqueName('serpent-step'))
++        taskMgr.doMethodLater(delay, fn, self.uniqueName('serpent-step'))
++
++    def _timeUp(self, task=None):
++        # the time limit lands even while it waits between bites
++        if self.phase in ('Rising', 'Attacking'):
++            self._checkShip()
++        return None if task is None else task.done
++
++    def _checkShip(self):
++        """The ship, or None after ending the fight because it is gone, sunk, docked or the time is up."""
++        ship = self.getShip()
++        why = self._shipGoneReason(ship)
++        if why:
++            self.finish(why)
++            return None
++        if globalClock.getFrameTime() - self.startTime >= SerpentKnobs.timeLimit():
++            self._tellCrew(ship, 'The Sea Serpent gives up and swims away.')
++            self.finish('time limit')
++            return None
++        return ship
++
++    def _emerge(self, task=None):
++        if self.phase in ('Leaving', 'Off') or self._checkShip() is None:
++            return None if task is None else task.done
++        self.phase = 'Attacking'
++        self.bitesThisSide = 0
++        self.b_setGameState('Emerge')
++        self._later(EMERGE_TIME, self._settle)
++        return None if task is None else task.done
++
++    def _settle(self, task=None):
++        if self.phase != 'Attacking' or self._checkShip() is None:
++            return None if task is None else task.done
++        self.b_setGameState('Idle')
++        self._later(SerpentKnobs.attackPeriod(), self._lunge)
++        return None if task is None else task.done
++
++    def _lunge(self, task=None):
++        if self.phase != 'Attacking' or self._checkShip() is None:
++            return None if task is None else task.done
++        self.b_setGameState('Attack')
++        self._later(BITE_DELAY, self._bite)
++        return None if task is None else task.done
++
++    def _bite(self, task=None):
++        if self.phase != 'Attacking':
++            return None if task is None else task.done
++        ship = self._checkShip()
++        if ship is None:
++            return None if task is None else task.done
++        try:
++            maxHp = max(1, int(ship.getMaxHp() or 1))
++            bite = max(1, int(round(maxHp * SerpentKnobs.damagePercent() / 100.0)))
++            floor = int(maxHp * SerpentKnobs.hullFloorPercent() / 100.0)
++            hp = int(ship.getHp() or 0)
++            newHp = max(floor, hp - bite) if hp > floor else hp
++            self.bites += 1
++            self.bitesThisSide += 1
++            if newHp != hp:
++                self.hullTaken += hp - newHp
++                ship.b_setHp(newHp)   # 0 sinks the ship; the next step sees it and leaves
++        except Exception as e:
++            self.notify.warning('Sea Serpent %s bite failed: %r' % (self.doId, e))
++            self.finish('error')
++            return None if task is None else task.done
++
++        swapEvery = SerpentKnobs.swapEvery()
++        if swapEvery and self.bitesThisSide >= swapEvery:
++            self._later(ATTACK_TIME - BITE_DELAY, self._dive)
++        else:
++            self._later(ATTACK_TIME - BITE_DELAY, self._settle)
++        return None if task is None else task.done
++
++    def _dive(self, task=None):
++        if self.phase != 'Attacking' or self._checkShip() is None:
++            return None if task is None else task.done
++        self.b_setGameState('Submerge')
++        self._later(SUBMERGE_TIME, self._swapSides)
++        return None if task is None else task.done
++
++    def _swapSides(self, task=None):
++        if self.phase != 'Attacking':
++            return None if task is None else task.done
++        ship = self._checkShip()
++        if ship is None:
++            return None if task is None else task.done
++        self.side = -self.side
++        x, y, z, h = self.sidePos(ship.getShipClass(), self.side)
++        self.b_setXYZH(x, y, z, h)   # it is hidden under water while it moves
++        self._later(UNDER_WATER_TIME, self._emerge)
++        return None if task is None else task.done
++
++    def _shipGoneReason(self, ship):
++        if ship is None or getattr(ship, 'air', None) is None:
++            return 'ship gone'
++        afloat = getattr(ship, '_isAfloat', None)
++        if afloat is not None and not afloat():
++            return 'ship sunk'
++        state = (getattr(ship, 'gameState', None) or ['Off'])[0]
++        if state in ('Docked', 'PutAway', 'Off'):
++            return 'ship left'
++        return ''
++
++    # ---- hits: a fixed bite, so kids always see the bar go down the same amount
++    def takeKrakenHit(self, avatar, isCannon):
++        """WeaponBaseAI's sea-monster hook (patch 0221). Returns the damage done (0 under water or when down)."""
++        if not self.isAlive() or self.phase != 'Attacking':
++            return 0
++        if self.gameFSM.getCurrentOrNextState() not in self.HITTABLE_STATES:
++            return 0
++        damage = SerpentKnobs.cannonDamage() if isCannon else SerpentKnobs.weaponDamage()
++        damage = min(damage, self.hp)
++        if damage <= 0:
++            return 0
++        if avatar is not None:
++            self.attackers.add(avatar.doId)
++        self.b_setHp(self.hp - damage)
++        return damage
++
++    def serpentDied(self):
++        self.dead = True
++        if self.phase not in ('Rising', 'Attacking'):
++            return
++        taskMgr.remove(self.uniqueName('serpent-step'))
++        ship = self.getShip()
++        if ship is not None and not self._shipGoneReason(ship):
++            self._reward(ship)
++        self.finish('beaten')
++
++    def _reward(self, ship):
++        from pirates.economy.EconomyGlobals import ItemId
++        gold = SerpentKnobs.gold()
++        paid = []
++        pirates = {av.doId: av for av in ship.getPiratesAboard()}
++        for avId in self.attackers:
++            av = self.air.doId2do.get(avId)
++            if av is not None and avId not in pirates and hasattr(av, 'getInventory'):
++                pirates[avId] = av
++        for avId, av in pirates.items():
++            try:
++                inventory = av.getInventory()
++                if inventory is not None and gold:
++                    inventory.addGoldInPocket(gold)
++                paid.append(avId)
++            except Exception as e:
++                self.notify.warning('Sea Serpent %s: could not pay %s: %r' % (self.doId, avId, e))
++        try:
++            if hasattr(ship, 'addPlunder'):
++                ship.addPlunder([ItemId.CARGO_CHEST, ItemId.CARGO_SKCHEST])
++        except Exception as e:
++            self.notify.warning('Sea Serpent %s: no plunder for ship %s: %r' % (self.doId, ship.doId, e))
++        self._tellCrew(ship, 'You beat the Sea Serpent! %d gold each, and a treasure chest in the hold!' % gold)
++        self.notify.info('Sea Serpent %s beaten on ship %s: %d gold to %s' % (self.doId, ship.doId, gold, sorted(paid)))
++        self.rewarded = paid
++
++    def _tellCrew(self, ship, text):
++        try:
++            for av in ship.getPiratesAboard():
++                if hasattr(av, 'd_setSystemMessage'):
++                    av.d_setSystemMessage(0, text)
++        except Exception:
++            pass
++
++    def finish(self, reason):
++        if self.phase in ('Leaving', 'Off'):
++            return
++        self.notify.info('Sea Serpent %s on ship %s ends: %s (hull taken %d)' % (self.doId, self.shipId, reason, self.hullTaken))
++        self.phase = 'Leaving'
++        self.endReason = reason
++        taskMgr.remove(self.uniqueName('serpent-step'))
++        delay = SerpentKnobs.cleanupDelay()
++        if reason == 'ship gone':
++            delay = 0.0
++        elif reason != 'beaten' and self.air is not None:
++            self.b_setGameState('Submerge')   # a beaten serpent plays its death fade instead
++        taskMgr.remove(self.uniqueName('serpent-timeout'))
++        taskMgr.doMethodLater(delay, self._cleanup, self.uniqueName('serpent-cleanup'))
++
++    def _forget(self):
++        ship = self.getShip()
++        if ship is not None and getattr(ship, 'serpent', None) is self:
++            ship.serpent = None
++        self.phase = 'Off'
++        if self.onDone is not None:
++            onDone, self.onDone = self.onDone, None
++            onDone(self)
++
++    def _cleanup(self, task=None):
++        self._forget()
++        if self.air is not None:
++            self.requestDelete()
++        return None if task is None else task.done
++
++    def delete(self):
++        taskMgr.remove(self.uniqueName('serpent-step'))
++        taskMgr.remove(self.uniqueName('serpent-cleanup'))
++        taskMgr.remove(self.uniqueName('serpent-timeout'))
++        if self.phase != 'Off':
++            self._forget()
++        DistributedCreatureAI.delete(self)
+diff --git a/pirates/creature/SeaSerpentManagerAI.py b/pirates/creature/SeaSerpentManagerAI.py
+new file mode 100644
+index 0000000..0c629da
+--- /dev/null
++++ b/pirates/creature/SeaSerpentManagerAI.py
+@@ -0,0 +1,126 @@
++"""
++Sends the Sea Serpent after pirate ships out in the deep water (patch 0223, 2026-11-19).
++
++The same rules as the Kraken (patch 0221): every serpent-check-period seconds
++(60) each crewed pirate ship that is sailing outside the starter waters has a
++serpent-chance (0.15) of being attacked, at most serpent-max (2) serpents at
++once in the world, a ship that just met one is left alone for serpent-cooldown
++seconds (900), and a ship never has a Kraken and a Sea Serpent at once.
++want-serpent 0 turns it all off.
++"""
++import random
++
++from direct.directnotify import DirectNotifyGlobal
++
++from pirates.creature.DistributedSeaSerpentAI import DistributedSeaSerpentAI, whyNotTarget, _knob
++
++
++class SeaSerpentManagerAI:
++    notify = DirectNotifyGlobal.directNotify.newCategory('SeaSerpentManagerAI')
++
++    TASK_NAME = 'serpent-manager-upkeep'
++
++    def __init__(self, air, shipManager=None):
++        self.air = air
++        self.shipManager = shipManager
++        self.serpents = {}
++        self.lastAttack = {}
++        self.random = random.Random()
++
++    @staticmethod
++    def wantSerpent():
++        return _knob('bool', 'want-serpent', True)
++
++    @staticmethod
++    def checkPeriod():
++        return max(5.0, _knob('float', 'serpent-check-period', 60.0))
++
++    @staticmethod
++    def chance():
++        return min(1.0, max(0.0, _knob('float', 'serpent-chance', 0.15)))
++
++    @staticmethod
++    def maxSerpents():
++        return max(0, _knob('int', 'serpent-max', 2))
++
++    @staticmethod
++    def cooldown():
++        return max(0.0, _knob('float', 'serpent-cooldown', 900.0))
++
++    def start(self):
++        if not self.wantSerpent():
++            self.notify.info('want-serpent is off')
++            return
++        # half a period later than the Kraken's check, so the two never pick the same ship in one frame
++        taskMgr.doMethodLater(self.checkPeriod() * 1.5, self.__upkeep, self.TASK_NAME)
++
++    def stop(self):
++        taskMgr.remove(self.TASK_NAME)
++        for serpent in list(self.serpents.values()):
++            serpent.finish('stopped')
++
++    def candidateShips(self):
++        ships = []
++        if self.shipManager is not None and hasattr(self.shipManager, 'getPlayerShips'):
++            ships = list(self.shipManager.getPlayerShips())
++        if not ships:
++            from pirates.ship.DistributedShipAI import DistributedShipAI
++            ships = [do for do in list(self.air.doId2do.values()) if isinstance(do, DistributedShipAI)]
++        return ships
++
++    def whyNot(self, ship, now=None, ignoreStarterWaters=False, ignoreCooldown=False):
++        why = whyNotTarget(self.air, ship, ignoreStarterWaters)
++        if why:
++            return why
++        if len(self.serpents) >= self.maxSerpents():
++            return 'already %d Sea Serpents out' % len(self.serpents)
++        if not ignoreCooldown:
++            now = globalClock.getFrameTime() if now is None else now
++            last = self.lastAttack.get(ship.doId)
++            if last is not None and now - last < self.cooldown():
++                return 'met a Sea Serpent %d s ago' % int(now - last)
++        return ''
++
++    def __upkeep(self, task):
++        try:
++            self.upkeep()
++        except Exception as e:
++            self.notify.warning('Sea Serpent upkeep failed: %r' % (e,))
++        task.delayTime = self.checkPeriod()
++        return task.again
++
++    def upkeep(self):
++        if not self.wantSerpent():
++            return []
++        started = []
++        now = globalClock.getFrameTime()
++        for ship in self.candidateShips():
++            if self.whyNot(ship, now):
++                continue
++            if self.random.random() >= self.chance():
++                continue
++            if self.attack(ship):
++                started.append(ship.doId)
++        return started
++
++    def attack(self, ship, side=None):
++        serpent = DistributedSeaSerpentAI(self.air)
++        serpent.onDone = self.__serpentDone
++        if side is None:
++            side = self.random.choice((1, -1))
++        if not serpent.attackShip(ship, side):
++            return None
++        self.serpents[serpent.doId] = serpent
++        self.lastAttack[ship.doId] = globalClock.getFrameTime()
++        return serpent
++
++    def __serpentDone(self, serpent):
++        self.serpents.pop(serpent.doId, None)
++        self.lastAttack[serpent.shipId] = globalClock.getFrameTime()
++
++    def summon(self, ship):
++        """The ~serpent magic word: skips the chance, the cooldown and the starter waters rule."""
++        why = self.whyNot(ship, ignoreStarterWaters=True, ignoreCooldown=True)
++        if why:
++            return None, why
++        return self.attack(ship), ''
+diff --git a/pirates/kraken/KrakenAI.py b/pirates/kraken/KrakenAI.py
+index cfed6ee..079ab19 100644
+--- a/pirates/kraken/KrakenAI.py
++++ b/pirates/kraken/KrakenAI.py
+@@ -115,6 +115,8 @@ def whyNotTarget(air, ship, ignoreStarterWaters=False):
+         return 'ship class %s has no Kraken locators' % ship.getShipClass()
+     if getattr(ship, 'kraken', None) is not None:
+         return 'already has a Kraken'
++    if getattr(ship, 'serpent', None) is not None:
++        return 'already has a Sea Serpent'
+     afloat = getattr(ship, '_isAfloat', None)
+     if afloat is not None and not afloat():
+         return 'not afloat'
+diff --git a/pirates/ship/ShipManagerAI.py b/pirates/ship/ShipManagerAI.py
+index 15d157e..b27a9a2 100644
+--- a/pirates/ship/ShipManagerAI.py
++++ b/pirates/ship/ShipManagerAI.py
+@@ -548,3 +548,13 @@ class ShipManagerAI:
+             self.krakenMgr.start()
+         except Exception as e:
+             self.notify.warning('Kraken manager did not start: %r' % (e,))
++
++        # the Sea Serpent hunts them too, never on a ship the Kraken has (patch 0223)
++        try:
++            from pirates.creature.SeaSerpentManagerAI import SeaSerpentManagerAI
++            if getattr(self, 'serpentMgr', None) is not None:
++                self.serpentMgr.stop()
++            self.serpentMgr = SeaSerpentManagerAI(self.air, self)
++            self.serpentMgr.start()
++        except Exception as e:
++            self.notify.warning('Sea Serpent manager did not start: %r' % (e,))
+-- 
+2.53.0
+

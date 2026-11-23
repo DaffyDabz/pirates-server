@@ -1,0 +1,176 @@
+From cf6bf49c7082f8325ad992beb0a16630396ea64a Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:27:11 -0800
+Subject: [PATCH 174/371] pirates: poker ties split and side pots pay right
+ (0216)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/DistributedPokerTableAI.py | 113 +++++++++++++-------
+ 1 file changed, 74 insertions(+), 39 deletions(-)
+
+diff --git a/pirates/minigame/DistributedPokerTableAI.py b/pirates/minigame/DistributedPokerTableAI.py
+index 33016e6..b9bafd8 100644
+--- a/pirates/minigame/DistributedPokerTableAI.py
++++ b/pirates/minigame/DistributedPokerTableAI.py
+@@ -45,6 +45,7 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         self._activeBettors = []  # seat indexes still in the hand
+         self._bettingOrder = []   # remaining bettors this round
+         self._timeouts = {}       # seatIndex -> consecutive timeout count
++        self._contrib = {}        # seatIndex -> gold put in the pot this hand
+ 
+     def delete(self):
+         taskMgr.remove(self.uniqueName('poker-turn'))
+@@ -304,6 +305,7 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+         for s in self._activeBettors:
+             self._totalWinnings[s] = PlayingCardGlobals.PlayerLost
+ 
++        self._contrib = {}
+         self._collectBlindsAndAntes()
+         self._dealInitialCards()
+         self._broadcastTableState(1)
+@@ -352,6 +354,7 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+             amount = min(amount, gold)
+             inv.setGoldInPocket(gold - amount)
+         self._chipsCount[seatIndex] -= amount
++        self._contrib[seatIndex] = self._contrib.get(seatIndex, 0) + amount
+         return amount
+ 
+     def _dealInitialCards(self):
+@@ -570,12 +573,11 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+ 
+         if len(self._activeBettors) == 1:
+             winner = self._activeBettors[0]
+-            self._payoutWinner(winner)
++            self._payoutWinners(*self._splitPot({winner: 0}))
+             return
+ 
+         # Showdown
+-        bestScore = None
+-        winner = None
++        scores = {}
+         handIds = [0] * self._availableSeats
+         handCards = [[] for _ in range(self._availableSeats)]
+ 
+@@ -584,10 +586,7 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+             handId, best5 = self._bestHandFrom(allCards)
+             handIds[seatIndex] = handId
+             handCards[seatIndex] = best5
+-            score = self._scoreHand(best5)
+-            if bestScore is None or score > bestScore:
+-                bestScore = score
+-                winner = seatIndex
++            scores[seatIndex] = self._scoreHand(best5)
+ 
+         # Reveal hands
+         self.sendUpdate('setAllHandValues', [handIds, handCards])
+@@ -597,38 +596,74 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+                 self.sendUpdateToAvatarId(seat.doId, 'setLocalAvatarHandValue',
+                     [handIds[seatIndex], handCards[seatIndex]])
+ 
+-        self._payoutWinner(winner)
+-
+-    def _payoutWinner(self, winnerSeat):
+-        seat = self.seats[winnerSeat]
+-        winnings = self.potSize
+-
+-        if seat and seat not in (0, 1):
+-            inv = self.air.inventoryManager.getInventory(seat.doId)
+-            if inv:
+-                # setGoldInPocket, not addGoldInPocket: the stake already left his
+-                # pocket, and addGoldInPocket would double it on a gold holiday.
+-                inv.setGoldInPocket(inv.getGoldInPocket() + winnings)
+-                # Quest hook
+-                if hasattr(self.air, 'questMgr'):
+-                    self.air.questMgr.pokerHandWon(seat, winnings)
+-                # Reputation
+-                repInv = self.air.inventoryManager.getInventory(seat.doId)
+-                if repInv:
+-                    current = dict(repInv.getAccumulators()).get(InventoryType.PokerGame, 0)
+-                    repInv.b_setAccumulator(InventoryType.PokerGame,
+-                        min(current + winnings, 9999))
+-
+-        self._totalWinnings[winnerSeat] = winnings
+-        for s in self._activeBettors:
+-            if s != winnerSeat:
+-                self._totalWinnings[s] = PlayingCardGlobals.PlayerLost
+-
+-        # AI winners keep chips on the table stack.
+-        winnerSeatObj = self.seats[winnerSeat] if winnerSeat is not None else None
+-        if winnerSeatObj == 1:
+-            self._chipsCount = self._normalizeChipsCount(self._chipsCount)
+-            self._chipsCount[winnerSeat] += winnings
++        self._payoutWinners(*self._splitPot(scores))
++
++    def _splitPot(self, scores):
++        # scores: live seat -> hand score. Each layer of the pot, up to what an
++        # all-in seat put in, goes to the best hand among the seats that put in that
++        # much; a tie splits it (the odd coin to the lowest seat). A layer only one
++        # seat paid into (a bet nobody called) goes back to him.
++        # Returns (won, back): gold won, and gold handed back, per live seat.
++        won = dict((s, 0) for s in scores)
++        back = dict((s, 0) for s in scores)
++        contrib = self._contrib
++        prev = 0
++        paidOut = 0
++        top = []
++        for level in sorted(set(contrib.get(s, 0) for s in scores)):
++            if level <= prev:
++                continue
++            amount = 0
++            payers = 0
++            for c in contrib.values():
++                part = max(0, min(c, level) - prev)
++                amount += part
++                if part > 0:
++                    payers += 1
++            contenders = [s for s in scores if contrib.get(s, 0) >= level]
++            if payers > 1:
++                best = max(scores[s] for s in contenders)
++                top = sorted(s for s in contenders if scores[s] == best)
++                share, odd = divmod(amount, len(top))
++                for s in top:
++                    won[s] += share
++                won[top[0]] += odd
++            else:
++                back[contenders[0]] += amount
++            paidOut += amount
++            prev = level
++        rest = self.potSize - paidOut
++        if rest > 0:
++            # Gold put in above every live seat's stake (by players who left or folded)
++            if not top:
++                best = max(scores.values())
++                top = sorted(s for s in scores if scores[s] == best)
++            won[top[0]] += rest
++        return won, back
++
++    def _payoutWinners(self, won, back):
++        for s in sorted(won):
++            gain = won[s] + back.get(s, 0)
++            seat = self.seats[s]
++            if seat and seat not in (0, 1):
++                inv = self.air.inventoryManager.getInventory(seat.doId)
++                if inv:
++                    # setGoldInPocket, not addGoldInPocket: the stake already left his
++                    # pocket, and addGoldInPocket would double it on a gold holiday.
++                    if gain:
++                        inv.setGoldInPocket(inv.getGoldInPocket() + gain)
++                    if won[s] > self._contrib.get(s, 0):
++                        # A real win (more back than he put in): quest hook and reputation
++                        if hasattr(self.air, 'questMgr'):
++                            self.air.questMgr.pokerHandWon(seat, won[s])
++                        current = dict(inv.getAccumulators()).get(InventoryType.PokerGame, 0)
++                        inv.b_setAccumulator(InventoryType.PokerGame,
++                            min(current + won[s], 9999))
++            elif seat == 1:
++                # AI winners keep chips on the table stack.
++                self._chipsCount = self._normalizeChipsCount(self._chipsCount)
++                self._chipsCount[s] += gain
++            self._totalWinnings[s] = won[s] if won[s] > 0 else PlayingCardGlobals.PlayerLost
+ 
+         # Human stacks always mirror the gold in their pocket
+         self._chipsCount = self._normalizeChipsCount(self._chipsCount)
+-- 
+2.53.0
+

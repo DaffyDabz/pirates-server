@@ -1,0 +1,85 @@
+From 123ef6a9e65bf41837c844f3d650ea2f144e73e6 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:58:05 -0800
+Subject: [PATCH 251/371] pirates: the Lookout no longer fails when a pirate is
+ already there (0278, patch 22)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedMatchMakerAI.py | 14 +++++++++++---
+ pirates/piratesgui/LookoutRequestLVL1.py    | 13 +++++++++++++
+ 2 files changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/instance/DistributedMatchMakerAI.py b/pirates/instance/DistributedMatchMakerAI.py
+index 14dc8fb..d304eb1 100644
+--- a/pirates/instance/DistributedMatchMakerAI.py
++++ b/pirates/instance/DistributedMatchMakerAI.py
+@@ -168,6 +168,14 @@ class DistributedMatchMakerAI(DistributedObjectGlobalAI):
+         self.send(avId, 'lookoutMatchFailed', [restart])
+         self.tell(avId, text)
+ 
++    def arrived(self, avId, matchId, text):
++        # family server (0278): he joined a match and is already where it is, so no teleport comes to close his
++        # panel (a teleport's beginningTeleport is what does it). First "match found, 0 seconds" for the match he
++        # joined: a client with 0278 takes that as "you're there", ends the search quietly and then ignores the
++        # "match failed" after it. A client without 0278 ignores the first and ends the search on the second, as before.
++        self.send(avId, 'lookoutMatchFound', [0, matchId])
++        self.fail(avId, False, text)
++
+     def nameOf(self, avId):
+         avatar = self.getPlayer(avId)
+         return avatar.getName() if avatar is not None else 'A pirate'
+@@ -864,7 +872,7 @@ class DistributedMatchMakerAI(DistributedObjectGlobalAI):
+         for avId in members:
+             avatar = self.getPlayer(avId)
+             if avatar.parentId == islandDoId:
+-                self.fail(avId, False, 'You\'re already here: the skirmish starts when everyone arrives.')
++                self.arrived(avId, match.matchId, 'You\'re already here: the skirmish starts when everyone arrives.')
+             elif not self.canMove(avatar):
+                 self.leaveParty(self.avatar2request[avId], avId)
+                 self.fail(avId, False, 'You can\'t be moved from where you are, so you were left out of the skirmish.')
+@@ -973,7 +981,7 @@ class DistributedMatchMakerAI(DistributedObjectGlobalAI):
+             if avatar is None:
+                 continue
+             if self.areaUidOf(avatar, [hqUid]):
+-                self.fail(avId, False, 'You\'re at the %s dock: launch a ship from the dinghy here.' % teamName)
++                self.arrived(avId, match.matchId, 'You\'re at the %s dock: launch a ship from the dinghy here.' % teamName)
+             elif not self.canMove(avatar):
+                 self.fail(avId, False, 'You can\'t be moved from where you are.')
+             elif self.moveTo(avatar, hqUid):
+@@ -1061,7 +1069,7 @@ class DistributedMatchMakerAI(DistributedObjectGlobalAI):
+             if avatar is None:
+                 continue
+             if avatar.parentId == interior.doId:
+-                self.fail(avId, False, 'There\'s an open seat right here: walk up to the table and sit down.')
++                self.arrived(avId, match.matchId, 'There\'s an open seat right here: walk up to the table and sit down.')
+             elif not self.canMove(avatar):
+                 self.fail(avId, False, 'You can\'t be moved from where you are.')
+             else:
+diff --git a/pirates/piratesgui/LookoutRequestLVL1.py b/pirates/piratesgui/LookoutRequestLVL1.py
+index a39e0d0..ed13e18 100644
+--- a/pirates/piratesgui/LookoutRequestLVL1.py
++++ b/pirates/piratesgui/LookoutRequestLVL1.py
+@@ -975,6 +975,19 @@ class LookoutRequestLVL1(InventoryPage):
+         self.guiMgr.messageStack.addTextMessage(description, icon = ('lookout', None))
+ 
+     def matchFound(self, matchId, timeToJoin = PiratesGlobals.LOOKOUT_JOIN_TIMEOUT):
++        # family server (patch 0278): "found, 0 seconds" for the match he already joined = he is already where it
++        # is, so no teleport will close the panel. End the search quietly, as a teleport does (the server's
++        # "match failed" right after is then ignored, so he never sees "Match failed... ending search").
++        if self.currMode == PiratesGuiGlobals.REQUEST_JOIN_MODE and timeToJoin == 0 and matchId == self.joinId:
++            self.matchTeleport()
++            localAvatar.b_clearTeleportFlag(PiratesGlobals.TFLookoutJoined)
++            if self.confirmMsg:
++                self.confirmMsg.messageDone()
++                self.confirmMsg = None
++
++            self.invitedTimedOut()
++            return
++
+         if self.currMode == PiratesGuiGlobals.SEARCH_MODE or self.currMode == PiratesGuiGlobals.INVITE_MODE or self.currMode == PiratesGuiGlobals.CHALLENGE_MODE or self.currMode == PiratesGuiGlobals.INVITE_ACCEPTED_MODE:
+             inviting = self.currMode == PiratesGuiGlobals.INVITE_MODE or self.currMode == PiratesGuiGlobals.CHALLENGE_MODE or self.currMode == PiratesGuiGlobals.INVITE_ACCEPTED_MODE
+             if inviting == False and self.guiMgr.isSeaChestAllowed():
+-- 
+2.53.0
+

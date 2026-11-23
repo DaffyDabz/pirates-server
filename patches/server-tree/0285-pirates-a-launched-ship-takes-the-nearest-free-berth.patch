@@ -1,0 +1,88 @@
+From e756125dc7b2132dbc9963124407735188ee94ca Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 15:42:40 -0800
+Subject: [PATCH 285/371] pirates: a launched ship takes the nearest free
+ berth, never one another ship is sitting in (0370)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedShipDeployerAI.py | 44 +++++++++++++++++++---
+ 1 file changed, 39 insertions(+), 5 deletions(-)
+
+diff --git a/pirates/world/DistributedShipDeployerAI.py b/pirates/world/DistributedShipDeployerAI.py
+index 0010a64..832970e 100644
+--- a/pirates/world/DistributedShipDeployerAI.py
++++ b/pirates/world/DistributedShipDeployerAI.py
+@@ -69,7 +69,7 @@ class DeployShipFSM(ShipDeployerOperationFSM):
+         # Launch in front of the dock the pirate launched from: the berth
+         # nearest the dinghy, not a random one that can sit on the far side
+         # of the island (Chapter 3 report, 2026-09-18).
+-        deployerSphere = self.shipDeployer.getNearestSphere(nearPos)
++        deployerSphere = self.shipDeployer.getNearestSphere(nearPos, self.shipId)
+         self.spawnPoint = self.shipDeployer.getOceanSpawnPointFromSphere(*deployerSphere)
+         self.zoneId = self.oceanGrid.getZoneFromXYZ(self.spawnPoint)
+ 
+@@ -304,10 +304,14 @@ class DistributedShipDeployerAI(DistributedNodeAI):
+             return (self.minRadius + self.spacing / 2.0, 0.0, 0.0)
+         return random.choice(self.deploySpheres)
+ 
+-    def getNearestSphere(self, nearPos):
++    def getNearestSphere(self, nearPos, shipId=None):
+         """
+         The berth closest to nearPos, an island-local (x, y) - the dinghy the
+         pirate launched from. Falls back to a random berth without one.
++        Family patch (0370): a berth another ship is still sitting in is skipped for the
++        next nearest free one. Two pirates launching from the same dock got the same
++        berth (11-19 12:06 and 12:07, Port Royal) and the second ship came out inside the
++        first; a kid then found himself inside the island when the ships shoved apart.
+         """
+         if not self.deploySpheres:
+             self.createDeploySpheres()
+@@ -315,11 +319,41 @@ class DistributedShipDeployerAI(DistributedNodeAI):
+             self.notify.info('deploy berth: no launch point, random berth')
+             return self.getRandomSphere()
+         ax, ay = nearPos[0], nearPos[1]
+-        sphere = min(self.deploySpheres, key=lambda s: (s[0] - ax) ** 2 + (s[1] - ay) ** 2)
+-        self.notify.info('deploy berth for launch point (%.0f, %.0f): (%.0f, %.0f)' % (
+-            ax, ay, sphere[0], sphere[1]))
++        ordered = sorted(self.deploySpheres, key=lambda s: (s[0] - ax) ** 2 + (s[1] - ay) ** 2)
++        sphere = ordered[0]
++        taken = self.getShipsNearBerths(shipId)
++        if taken:
++            clear = max(self.spacing, 1.0)
++            for candidate in ordered:
++                cx, cy, cz = self.localToOceanPoint(*candidate)
++                if all((cx - x) ** 2 + (cy - y) ** 2 >= clear * clear for x, y in taken):
++                    sphere = candidate
++                    break
++        self.notify.info('deploy berth for launch point (%.0f, %.0f): (%.0f, %.0f)%s' % (
++            ax, ay, sphere[0], sphere[1], '' if sphere is ordered[0] else ' (nearest was taken)'))
+         return sphere
+ 
++    def getShipsNearBerths(self, shipId=None):
++        """Ocean (x, y) of every other ship near this island's berth ring (family patch 0370)."""
++        spots = []
++        try:
++            oceanGrid = self.island.getParentObj().oceanGrid
++            ix, iy = self.island.getIslandTransform()[:2]
++            reach = self.minRadius + self.spacing * 3.0
++            for do in list(self.air.doId2do.values()):
++                if do.doId == shipId or getattr(do, 'parentId', None) != oceanGrid.doId:
++                    continue
++                if not hasattr(do, 'getCaptainId') or not hasattr(do, 'getPos'):
++                    continue
++                if hasattr(do, 'isEmpty') and do.isEmpty():
++                    continue
++                p = do.getPos(oceanGrid)
++                if (p[0] - ix) ** 2 + (p[1] - iy) ** 2 <= reach * reach:
++                    spots.append((p[0], p[1]))
++        except Exception as e:
++            self.notify.warning('deploy berth: could not list nearby ships (%s)' % e)
++        return spots
++
+     def localToOceanPoint(self, localX, localY, localZ=0.0):
+         """
+         Convert a client-style deployer-local point into ocean/world space
+-- 
+2.53.0
+

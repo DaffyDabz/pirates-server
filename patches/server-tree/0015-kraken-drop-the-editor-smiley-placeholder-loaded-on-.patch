@@ -1,0 +1,29 @@
+From 20f3d67c7f596ae574884ea7e0643ca1bdecbf27 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 15:05:31 -0800
+Subject: [PATCH 015/371] kraken: drop the editor smiley placeholder loaded on
+ the tentacle grab target
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ pirates/kraken/Grabber.py | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/kraken/Grabber.py b/pirates/kraken/Grabber.py
+index 5d2be90..9a70e9e 100644
+--- a/pirates/kraken/Grabber.py
++++ b/pirates/kraken/Grabber.py
+@@ -59,8 +59,8 @@ class Grabber(Creature, TentacleUtils):
+         self.iTask = None
+         self.uniqueNameFunc = uniqueNameFunc
+         self.generateCreature()
+-        self.target = loader.loadModel('models/misc/smiley')
+-        self.target.reparentTo(self.getGrabTargetNode())
++        # an empty grab-target node; the editor smiley placeholder used to be loaded here and showed on the tentacle
++        self.target = self.getGrabTargetNode().attachNewNode('grabTarget')
+     
+     def generateCreature(self):
+         filePrefix = self.ModelInfo[1]
+-- 
+2.53.0
+

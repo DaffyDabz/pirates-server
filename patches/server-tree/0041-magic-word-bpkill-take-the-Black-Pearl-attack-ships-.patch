@@ -1,0 +1,55 @@
+From 5a8f96422f15a7b2eac3980b36db92eb8fa2ddbc Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 21:55:35 -0800
+Subject: [PATCH 041/371] magic word bpkill: take the Black Pearl attack ships,
+ the Goliath or the Black Pearl to 0 hp for testing
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ pirates/ai/PiratesMagicWordManagerAI.py | 33 +++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/pirates/ai/PiratesMagicWordManagerAI.py b/pirates/ai/PiratesMagicWordManagerAI.py
+index 7f4e745..d306845 100644
+--- a/pirates/ai/PiratesMagicWordManagerAI.py
++++ b/pirates/ai/PiratesMagicWordManagerAI.py
+@@ -184,3 +184,36 @@ def bpdestroy(barricadeId=0):
+ 
+     instance.handleBarricadeDestroyed(barricadeId)
+     return "Destroyed barricade %d" % barricadeId
++
++
++@magicWord(category=CATEGORY_SYSTEM_ADMIN, types=[str])
++def bpkill(target='goliath'):
++    """
++    Take a Black Pearl ship down to 0 hp the way damage would: 'ships' (the stage two attack ships), 'goliath'
++    (victory in stage four) or 'pearl' (defeat in stage four). The fight's own polling then reacts to it.
++    """
++    air = spellbook.getManager().air
++
++    from pirates.treasuremap.TreasureMapBlackPearlAI import TreasureMapBlackPearlAI
++    instance = None
++    for obj in air.doId2do.values():
++        if isinstance(obj, TreasureMapBlackPearlAI) and not obj.tornDown:
++            instance = obj
++            break
++
++    if not instance:
++        return "No Black Pearl instance found"
++
++    if target == 'ships':
++        ships = [s for s in instance.attackShips if s is not None and not s.isDeleted()]
++    elif target == 'goliath':
++        ships = [instance.goliath] if instance.goliath else []
++    elif target == 'pearl':
++        ships = [instance.blackPearl] if instance.blackPearl else []
++    else:
++        return "Valid targets: ships, goliath, pearl"
++
++    for ship in ships:
++        ship.b_setHp(0)
++
++    return "Took %d %s ship(s) to 0 hp" % (len(ships), target)
+-- 
+2.53.0
+

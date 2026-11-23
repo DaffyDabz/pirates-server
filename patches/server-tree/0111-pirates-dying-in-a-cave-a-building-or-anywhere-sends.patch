@@ -1,0 +1,62 @@
+From 7d096c6033926653347ae3e5cc3e4f60f4b6ddf9 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:53:20 -0800
+Subject: [PATCH 111/371] pirates: dying in a cave, a building or anywhere
+ sends the pirate to jail, as server-tree patch 0125 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/PlayerPirateGameFSMAI.py | 23 ++++++++++++++++++-----
+ 1 file changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/pirates/pirate/PlayerPirateGameFSMAI.py b/pirates/pirate/PlayerPirateGameFSMAI.py
+index 232d78f..e320dab 100644
+--- a/pirates/pirate/PlayerPirateGameFSMAI.py
++++ b/pirates/pirate/PlayerPirateGameFSMAI.py
+@@ -6,6 +6,7 @@ from pirates.piratesbase import PiratesGlobals
+ from pirates.instance.DistributedInstanceBaseAI import DistributedInstanceBaseAI
+ from pirates.world.DistributedGameAreaAI import DistributedGameAreaAI
+ from pirates.world.DistributedGAInteriorAI import DistributedGAInteriorAI
++from pirates.quest.QuestConstants import LocationIds
+ 
+ 
+ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+@@ -25,11 +26,7 @@ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+         assert(inventory is not None)
+ 
+         parentObj = self.avatar.getParentObj()
+-        interior = parentObj.getJailInterior()
+-        if not interior:
+-            island = self.air.uidMgr.justGetMeMeObject(self.avatar.getReturnLocation())
+-            assert(island is not None)
+-            interior = island.getJailInterior()
++        interior = self.findJailInterior(parentObj)
+ 
+         if not inventory:
+             self.notify.warning('Cannot teleport avatar %d, no inventory was found!' %
+@@ -81,6 +78,22 @@ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+         parentWorld.d_sendLocalAvatarToJail(self.avatar.doId, interior.doId,
+             interior.parentId, interior.zoneId)
+ 
++    def findJailInterior(self, parentObj):
++        # family server: the jail he wakes up in. This asked the parent first (AttributeError when he died on
++        # anything that is not a game area), then only his return location, which stays '' until he has sailed
++        # from one port town to another island: assert(island is not None) failed, setGameState swallowed it and he
++        # lay dead at 0 hp for good. Try the area he died in, the island he is on (a cave or a camp has no jail),
++        # his return port, then Port Royal.
++        if isinstance(parentObj, DistributedGameAreaAI) and parentObj.getJailInterior():
++            return parentObj.getJailInterior()
++
++        for uid in (self.avatar.getCurrentIsland(), self.avatar.getReturnLocation(), LocationIds.PORT_ROYAL_ISLAND):
++            island = self.air.uidMgr.justGetMeMeObject(uid) if uid else None
++            if isinstance(island, DistributedGameAreaAI) and island.getJailInterior():
++                return island.getJailInterior()
++
++        return None
++
+     def exitDeath(self):
+         pass
+ 
+-- 
+2.53.0
+

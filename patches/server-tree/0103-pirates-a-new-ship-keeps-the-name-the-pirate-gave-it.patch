@@ -1,0 +1,184 @@
+From 50e5e8e05f656dc2c627149c84f3afc95226b341 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:12:29 -0800
+Subject: [PATCH 103/371] pirates: a new ship keeps the name the pirate gave
+ it, as server-tree patch 0117 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/economy/DistributedShopKeeperAI.py | 48 ++++++++++++++++++++--
+ pirates/uberdog/DistributedShipLoaderAI.py | 17 +++++---
+ pirates/uberdog/DistributedShipLoaderUD.py |  9 ++--
+ 3 files changed, 60 insertions(+), 14 deletions(-)
+
+diff --git a/pirates/economy/DistributedShopKeeperAI.py b/pirates/economy/DistributedShopKeeperAI.py
+index 8b12166..331c06c 100644
+--- a/pirates/economy/DistributedShopKeeperAI.py
++++ b/pirates/economy/DistributedShopKeeperAI.py
+@@ -131,7 +131,42 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+         # the same sum the store shows: int(cost x quantity), at least 1 gold
+         return max(int(cost * itemQuantity), 1)
+ 
+-    def __purchaseItem(self, avatar, inventory, item):
++    # the longest typed ship name taken; the client's entry box fits about this
++    SHIP_NAME_MAX = 24
++
++    def _shipNameFromHolder(self, names):
++        """
++        The name the pirate gave his new ship in the shipwright's name panel
++        (NamePanelGui): requestMakeSale's names is [(typedName, nameIndices)],
++        a typed name (already run through the client's NameCheck) or a picked
++        [prefix, suffix] pair. Returns '' when there is none or it is unusable,
++        and the ship loader then calls the ship 'Unnamed Ship' as before.
++        """
++        try:
++            typedName, nameIndices = names[0]
++        except (IndexError, TypeError, ValueError):
++            return ''
++
++        typedName = ' '.join((typedName or '').split())
++        if typedName:
++            if len(typedName) > self.SHIP_NAME_MAX:
++                return ''
++            if not all(c.isalnum() or c in " '-" for c in typedName):
++                return ''
++            return typedName
++
++        nameIndices = list(nameIndices or [])
++        if len(nameIndices) != 2:
++            return ''
++
++        from pirates.piratesbase import PLocalizer
++        prefixes = [k for k, v in PLocalizer.PirateShipPrefix.items() if v == nameIndices[0]]
++        suffixes = [k for k, v in PLocalizer.PirateShipSuffix.items() if v == nameIndices[1]]
++        if not prefixes or not suffixes:
++            return ''
++        return '%s %s' % (prefixes[0], suffixes[0])
++
++    def __purchaseItem(self, avatar, inventory, item, shipName=''):
+         itemId, itemQuantity = item
+ 
+         currentGold = inventory.getGoldInPocket()
+@@ -162,8 +197,9 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+                 return RejectCode.TIMEOUT
+ 
+             inventory.setGoldInPocket(currentGold - itemPrice)
+-            self.air.shipLoader.createShip(avatar, itemId)
+-            self.notify.info('avatar %d bought ship class %d for %d gold' % (avatar.doId, itemId, itemPrice))
++            self.air.shipLoader.createShip(avatar, itemId, shipName)
++            self.notify.info('avatar %d bought ship class %d for %d gold, name %r' % (
++                avatar.doId, itemId, itemPrice, shipName or 'Unnamed Ship'))
+             return 2
+ 
+         currentStack = inventory.getStackQuantity(itemId) or 0
+@@ -251,6 +287,10 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+ 
+         response = 2
+ 
++        # the name chosen for a ship bought here; it was ignored and every new
++        # ship was called 'Unnamed Ship' (2026-11-17)
++        shipName = self._shipNameFromHolder(names)
++
+         # Buy items
+         for purchase in buying:
+ 
+@@ -258,7 +298,7 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+             if response != 2:
+                 break
+ 
+-            response = self.__purchaseItem(avatar, inventory, purchase)
++            response = self.__purchaseItem(avatar, inventory, purchase, shipName)
+ 
+         # Sell Items
+         for sell in selling:
+diff --git a/pirates/uberdog/DistributedShipLoaderAI.py b/pirates/uberdog/DistributedShipLoaderAI.py
+index accb79b..311f725 100644
+--- a/pirates/uberdog/DistributedShipLoaderAI.py
++++ b/pirates/uberdog/DistributedShipLoaderAI.py
+@@ -44,7 +44,7 @@ class ShipLoaderOperationFSM(FSM):
+ 
+ class CreateShipFSM(ShipLoaderOperationFSM):
+ 
+-    def enterStart(self, shipClass):
++    def enterStart(self, shipClass, shipName=''):
+         self.modelClass = ShipGlobals.getModelClass(shipClass)
+         if not self.modelClass:
+             self.notify.warning('Failed to create ship for avatar %d, '
+@@ -61,7 +61,7 @@ class CreateShipFSM(ShipLoaderOperationFSM):
+             self.cleanup(0)
+             return
+ 
+-        self.air.shipLoader.sendCreateShip(self.avatar.doId, shipClass)
++        self.air.shipLoader.sendCreateShip(self.avatar.doId, shipClass, shipName)
+ 
+     def exitStart(self):
+         pass
+@@ -142,7 +142,7 @@ class DistributedShipLoaderAI(DistributedObjectGlobalAI):
+         self.avatar2fsm[avatar.doId] = fsmtype(self.air, avatar, callback)
+         self.avatar2fsm[avatar.doId].request('Start', *args, **kwargs)
+ 
+-    def createShip(self, avatar, shipClass):
++    def createShip(self, avatar, shipClass, shipName=''):
+ 
+         def _shipCreatedCallback(shipId):
+             if not shipId:
+@@ -153,10 +153,15 @@ class DistributedShipLoaderAI(DistributedObjectGlobalAI):
+             # a new ship object, the Uberdog will activate the avatar's ships object on login...
+             self.sendActivateShip(avatar.doId, shipId)
+ 
+-        self.runShipLoaderFSM(CreateShipFSM, avatar, shipClass, callback=_shipCreatedCallback)
++        self.runShipLoaderFSM(CreateShipFSM, avatar, shipClass, shipName, callback=_shipCreatedCallback)
+ 
+-    def sendCreateShip(self, avatarId, shipClass):
+-        self.air.netMessenger.send('createShip', [avatarId, shipClass])
++    def sendCreateShip(self, avatarId, shipClass, shipName=''):
++        # the name rides along only when there is one, so an UberDOG that has
++        # not been updated still makes unnamed ships
++        args = [avatarId, shipClass]
++        if shipName:
++            args.append(shipName)
++        self.air.netMessenger.send('createShip', args)
+ 
+     def createShipResponse(self, avatarId, shipId):
+         fsm = self.avatar2fsm.get(avatarId)
+diff --git a/pirates/uberdog/DistributedShipLoaderUD.py b/pirates/uberdog/DistributedShipLoaderUD.py
+index ef962fd..e23ff02 100644
+--- a/pirates/uberdog/DistributedShipLoaderUD.py
++++ b/pirates/uberdog/DistributedShipLoaderUD.py
+@@ -44,7 +44,7 @@ class ShipLoaderOperationFSM(FSM):
+ 
+ class CreateShipFSM(ShipLoaderOperationFSM):
+ 
+-    def enterStart(self, shipClass):
++    def enterStart(self, shipClass, shipName=''):
+         self.modelClass = ShipGlobals.getModelClass(shipClass)
+         if not self.modelClass:
+             self.notify.warning('Failed to create ship for avatar %d, '
+@@ -59,7 +59,8 @@ class CreateShipFSM(ShipLoaderOperationFSM):
+         fields = {
+             'setBaseTeam': (ShipGlobals.PLAYER_TEAM,),
+             'setShipClass': (self.shipConfig['setShipClass'][0],),
+-            'setName': ('Unnamed Ship',),
++            # the name the pirate chose at the shipwright (2026-11-17)
++            'setName': (shipName or 'Unnamed Ship',),
+             'setInventoryId': (0,),
+             'setIsFlagship': (0,),
+             'setMaxHp': (self.shipConfig['setMaxHp'][0],),
+@@ -419,12 +420,12 @@ class DistributedShipLoaderUD(DistributedObjectGlobalUD):
+         self.avatar2fsm[avatarId] = fsmtype(self.air, avatarId, callback)
+         self.avatar2fsm[avatarId].request('Start', *args, **kwargs)
+ 
+-    def createShip(self, avatarId, shipClass):
++    def createShip(self, avatarId, shipClass, shipName=''):
+ 
+         def _shipCreatedCallback(shipId):
+             self.air.netMessenger.send('createShipResponse', [avatarId, shipId])
+ 
+-        self.runShipLoaderFSM(CreateShipFSM, avatarId, shipClass, callback=_shipCreatedCallback)
++        self.runShipLoaderFSM(CreateShipFSM, avatarId, shipClass, shipName, callback=_shipCreatedCallback)
+ 
+     def activateShip(self, avatarId, shipId):
+ 
+-- 
+2.53.0
+

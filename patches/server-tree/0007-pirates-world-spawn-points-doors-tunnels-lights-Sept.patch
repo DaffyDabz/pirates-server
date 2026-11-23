@@ -1,0 +1,109 @@
+From e5e9b51c0aa721794ee878e7cd81f704824c4f17 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 13:03:36 -0800
+Subject: [PATCH 007/371] pirates: world - spawn points, doors, tunnels, lights
+ (Sept 2026 family-server fixes)
+
+- DistributedInstanceBaseAI: Port Royal spawn nodes all carry Index -1, so
+  every pirate spawned on one point; a missing or negative index now takes
+  the next free slot.
+- DistributedDoorBase: stop the enter/exit fade tracks when a door leaves
+  interest mid-fade and give control back to the pirate.
+- DistributedGATunnel: ignore a floor event when the entry locator is missing.
+- WorldCreator: dynamic lights are not treated as static geometry.
+- port_royal_area_jungle_b_1: use the 'sit' anim set on the seated NPC.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedInstanceBaseAI.py        |  8 +++++++-
+ .../worldData/port_royal_area_jungle_b_1.py          |  2 +-
+ pirates/world/DistributedDoorBase.py                 | 12 ++++++++++++
+ pirates/world/DistributedGATunnel.py                 |  3 +++
+ pirates/world/WorldCreator.py                        |  2 +-
+ 5 files changed, 24 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/instance/DistributedInstanceBaseAI.py b/pirates/instance/DistributedInstanceBaseAI.py
+index 136bb5a..6dec69e 100644
+--- a/pirates/instance/DistributedInstanceBaseAI.py
++++ b/pirates/instance/DistributedInstanceBaseAI.py
+@@ -74,7 +74,13 @@ class DistributedInstanceBaseAI(DistributedObjectAI, WorldNodeAI):
+ 
+     def addSpawnPt(self, area, spawnPt, index=None):
+         self.spawnPts[area] = self.spawnPts.setdefault(area, {})
+-        self.spawnPts[area][index or len(self.spawnPts[area])] = spawnPt
++        # Family patch: Port Royal spawn nodes all carry Index -1, so keying on the index put every
++        # spawn on one point. A missing or negative index takes the next free slot instead.
++        if index is None or index < 0:
++            index = len(self.spawnPts[area])
++            while index in self.spawnPts[area]:
++                index += 1
++        self.spawnPts[area][index] = spawnPt
+ 
+     def removeSpawnPt(self, area, index):
+         if area not in self.spawnPts:
+diff --git a/pirates/leveleditor/worldData/port_royal_area_jungle_b_1.py b/pirates/leveleditor/worldData/port_royal_area_jungle_b_1.py
+index 0226bf5..7c9494e 100644
+--- a/pirates/leveleditor/worldData/port_royal_area_jungle_b_1.py
++++ b/pirates/leveleditor/worldData/port_royal_area_jungle_b_1.py
+@@ -53,7 +53,7 @@ objectStruct = {
+                     'Type': 'Townsperson',
+                     'Category': 'Cast',
+                     'Aggro Radius': '12.0000',
+-                    'AnimSet': 'default',
++                    'AnimSet': 'sit',
+                     'CustomModel': 'models/char/td_2000',
+                     'DNA': '1154497344.0jubutler',
+                     'Hpr': VBase3(-178.991, 0.0, 0.0),
+diff --git a/pirates/world/DistributedDoorBase.py b/pirates/world/DistributedDoorBase.py
+index 5d2bb63..ba64e87 100644
+--- a/pirates/world/DistributedDoorBase.py
++++ b/pirates/world/DistributedDoorBase.py
+@@ -47,6 +47,18 @@ class DistributedDoorBase(DistributedInteractive.DistributedInteractive):
+             self.openOtherDoorIval.pause()
+             self.openOtherDoorIval = None
+         
++        # the door can leave interest while its enter/exit fade is still running (e.g. the
++        # pirate crossed a grid cell on the way in); stop the tracks so they don't call
++        # loadOtherSide/sendUpdate on a disabled door, and hand control back to the pirate
++        if self.fadeOutTrack and self.fadeOutTrack.isPlaying():
++            self.fadeOutTrack.pause()
++            if getattr(base, 'localAvatar', None) and localAvatar.gameFSM and localAvatar.gameFSM.state == 'DoorInteract':
++                base.transitions.fadeIn(0.5)
++                localAvatar.gameFSM.request('LandRoam')
++
++        if self.fadeInTrack and self.fadeInTrack.isPlaying():
++            self.fadeInTrack.finish()
++
+         self.fadeOutTrack = None
+         self.fadeInTrack = None
+         if not self.noDoors:
+diff --git a/pirates/world/DistributedGATunnel.py b/pirates/world/DistributedGATunnel.py
+index 2332f1b..bc99517 100644
+--- a/pirates/world/DistributedGATunnel.py
++++ b/pirates/world/DistributedGATunnel.py
+@@ -129,6 +129,9 @@ class DistributedGATunnel(DistributedGAConnector.DistributedGAConnector, ClientA
+                 
+                 entranceNode = self.areaNode[areaIndex]
+                 entryLocator = area.find('**/' + entranceNode + '*')
++                if entryLocator.isEmpty():
++                    self.notify.warning('no entry locator %s in %s; ignoring floor event' % (entranceNode, area))
++                    return None
+                 camera.wrtReparentTo(render)
+                 localAvatar.lookAt(entryLocator, -50, 0, localAvatar.getZ(entryLocator))
+                 camera.wrtReparentTo(localAvatar)
+diff --git a/pirates/world/WorldCreator.py b/pirates/world/WorldCreator.py
+index de50bb0..c58182a 100644
+--- a/pirates/world/WorldCreator.py
++++ b/pirates/world/WorldCreator.py
+@@ -124,7 +124,7 @@ class WorldCreator(WorldCreatorBase.WorldCreatorBase, DirectObject.DirectObject)
+         # Determine if this is static geometry
+         is_static = False
+         objectCat = self.findObjectCategory(objType)
+-        if not dynamic and objectCat in ('PROP_OBJ', 'BUILDING_OBJ'):
++        if not dynamic and objectCat in ('PROP_OBJ', 'BUILDING_OBJ') and objType != 'Light - Dynamic':
+             is_static = True
+ 
+         if dynamic:
+-- 
+2.53.0
+

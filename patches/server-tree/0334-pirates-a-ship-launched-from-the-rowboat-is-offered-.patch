@@ -1,0 +1,52 @@
+From 5e18471fb42b9b14c45f6fb5f1c27bf086fa0593 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 23:25:56 -0800
+Subject: [PATCH 334/371] pirates: a ship launched from the rowboat is offered
+ to friends and crew again; Crew and Friends boarding ticks go back on when it
+ comes out (board-ticks, AI only)
+
+His brother's ship never showed up in his rowboat lists. The four boarding ticks (setAllowCrewState / Friend /
+Guild / Public) are `required broadcast ram ownsend` in pirates.dc with no `db`, so they are never saved with the
+ship. When the UberDOG activates a ship from the database, Astron fills every required field the row lacks with its
+dc default, 0 for these bools, after PlayerShipAI.__init__ had set Crew and Friends on. Nothing else on the AI sets
+them (only the captain's own Boarding Permissions panel), so every launched ship came out with every tick off and
+DistributedDinghyAI's friend and crew lists left it out for everyone.
+
+- PlayerShipAI.announceGenerate puts Crew and Friends back on (b_set, so the games see it too) every time a ship
+  comes out. Guild and Public stay off, as in the original game. A change the captain makes on the panel still holds
+  while the ship stays out. No dc change, no client publish.
+
+AI only; needs an AI restart. Ships already out keep 0 until they are put away and launched again. Test:
+test_board_ticks.py (the real PlayerShipAI.__init__, the four required fields filled from their real pirates.dc
+defaults, the real announceGenerate, the real DistributedDinghyAI lists): live FAIL 4/7 (ticks 0, brother offered
+nothing), patched PASS 7/7.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/PlayerShipAI.py | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/pirates/ship/PlayerShipAI.py b/pirates/ship/PlayerShipAI.py
+index 4a0f26a..a3e66e0 100644
+--- a/pirates/ship/PlayerShipAI.py
++++ b/pirates/ship/PlayerShipAI.py
+@@ -19,6 +19,16 @@ class PlayerShipAI(DistributedShipAI):
+         self.allowGuildState = False
+         self.allowPublicState = False
+ 
++    def announceGenerate(self):
++        DistributedShipAI.announceGenerate(self)
++        # family server (11-20): the four boarding ticks are "required" fields that are never saved, so a ship that
++        # comes out of the database arrives with every tick off (Astron fills a missing required field with its dc
++        # default, 0), whatever __init__ set above. His crewmates' and his brother's rowboats then never offered his
++        # ship. Each time the ship comes out it starts from the original ticks again: Crew and Friends on. A change
++        # he makes on the ship's panel still holds while it stays out.
++        self.b_setAllowCrewState(True)
++        self.b_setAllowFriendState(True)
++
+     def setAllowCrewState(self, allowCrewState):
+         self.allowCrewState = allowCrewState
+ 
+-- 
+2.53.0
+

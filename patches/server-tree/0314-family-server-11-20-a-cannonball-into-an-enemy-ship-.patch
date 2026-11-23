@@ -1,0 +1,34 @@
+From f2ccdb46cba6ba3e6f959e2cd6c0fa0c10046433 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 18:00:23 -0800
+Subject: [PATCH 314/371] family server (11-20): a cannonball into an enemy
+ ship's sails pays its gold, plunder and quest credit (0398)
+
+Server: a sail hit now counts toward the sinking like a hull hit, so the shooter and his crew get their share
+when the ship goes down. Lane: sea. Test: test_sea_enemy.py (the two Take Cover checks wait for sea-0004).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/shipparts/DistributedSailAI.py | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/pirates/shipparts/DistributedSailAI.py b/pirates/shipparts/DistributedSailAI.py
+index a375274..1c054b5 100644
+--- a/pirates/shipparts/DistributedSailAI.py
++++ b/pirates/shipparts/DistributedSailAI.py
+@@ -134,6 +134,12 @@ class DistributedSailAI(DistributedShippartAI, DistributedDestructibleArrayAI, D
+         self._loseShipSailPoints(oldHp - self.getHp())
+ 
+         shipDamage = sailDamage - (ShipBalance.ArmorAbsorb.getValue() * sailDamage)
++        # family server (sea-0003): a ball into the sails counts toward the sinking like one into the
++        # hull, so the shooter and his crew get the gold, reputation, plunder and quest credit
++        creditAttacker = getattr(self.ship, 'creditAttacker', None)
++        if attacker and self.ship.getHp() > 0 and creditAttacker is not None:
++            creditAttacker(attacker, skillId)
++
+         hpBefore = self.ship.getHp()
+         self.ship.b_setHp(self.ship.getHp() + shipDamage)
+         # family server (11-19, 0375): the enemy ship learns who shot it, so it fights back
+-- 
+2.53.0
+

@@ -1,0 +1,341 @@
+From 944d34c4bd320318b1df2fd02a2e5e8b41fdaabd Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 08:23:48 -0800
+Subject: [PATCH 264/371] pirates: the tailor, jeweler, tattoo and barber
+ shops, crew list, messages and PvP scoreboards sort without crashing the game
+ (0353)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/economy/AccessoriesStoreGUI.py  |  4 +++-
+ pirates/economy/BarberStoreGUI.py       |  4 +++-
+ pirates/economy/JewelryStoreGUI.py      |  4 +++-
+ pirates/economy/TattooStoreGUI.py       |  4 +++-
+ pirates/piratesgui/MessageStackPanel.py | 10 ++++++++--
+ pirates/piratesgui/PirateMemberList.py  | 11 +++++++++--
+ pirates/pvp/DistributedPVPBattle.py     |  4 +++-
+ pirates/pvp/DistributedPVPShipBattle.py |  4 +++-
+ pirates/pvp/DistributedPVPTeamBattle.py |  4 +++-
+ pirates/pvp/PVPGameBattle.py            |  4 +++-
+ pirates/pvp/PVPGameCTL.py               |  4 +++-
+ pirates/pvp/PVPGamePirateer.py          |  4 +++-
+ pirates/pvp/PVPGameShipBattle.py        |  4 +++-
+ pirates/pvp/PVPGameTeamBattle.py        |  4 +++-
+ pirates/pvp/Scoreboard.py               |  4 +++-
+ 15 files changed, 56 insertions(+), 17 deletions(-)
+
+diff --git a/pirates/economy/AccessoriesStoreGUI.py b/pirates/economy/AccessoriesStoreGUI.py
+index ffdabce..ea9e213 100644
+--- a/pirates/economy/AccessoriesStoreGUI.py
++++ b/pirates/economy/AccessoriesStoreGUI.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from direct.directnotify.DirectNotifyGlobal import directNotify
+ from direct.gui.DirectGui import *
+ from panda3d.core import *
+@@ -1425,7 +1426,8 @@ class AccessoriesStoreGUI(DirectFrame):
+                 return
+ 
+         if not config.GetBool('tailor-debug', 0):
+-            clothes.sort(self.sortItems)
++            # family server (patch 0353): Python 3 sort takes no compare function; cmp_to_key makes one a key
++            clothes.sort(key=cmp_to_key(self.sortItems))
+ 
+         clothingAmount = 0
+         startPos = Vec3(0.35, 0.0, 1.05)
+diff --git a/pirates/economy/BarberStoreGUI.py b/pirates/economy/BarberStoreGUI.py
+index 56d256a..7251e58 100644
+--- a/pirates/economy/BarberStoreGUI.py
++++ b/pirates/economy/BarberStoreGUI.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from direct.directnotify.DirectNotifyGlobal import directNotify
+ from direct.gui.DirectGui import *
+ from panda3d.core import *
+@@ -603,7 +604,8 @@ class BarberStoreGUI(DirectFrame):
+                             cost,
+                             holiday])
+ 
+-        choices.sort(self.sortItems)
++        # family server (patch 0353): Python 3 sort takes no compare function; cmp_to_key makes one a key
++        choices.sort(key=cmp_to_key(self.sortItems))
+         for choice in choices:
+             uid = choice[0]
+             item = BarberGlobals.barber_id.get(uid)
+diff --git a/pirates/economy/JewelryStoreGUI.py b/pirates/economy/JewelryStoreGUI.py
+index 6814d8e..894e2bb 100644
+--- a/pirates/economy/JewelryStoreGUI.py
++++ b/pirates/economy/JewelryStoreGUI.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from direct.directnotify.DirectNotifyGlobal import directNotify
+ from direct.gui.DirectGui import *
+ from panda3d.core import *
+@@ -1198,7 +1199,8 @@ class JewelryStoreGUI(DirectFrame):
+             else:
+                 return
+ 
+-        jewelry.sort(self.sortItems)
++        # family server (patch 0353): Python 3 sort takes no compare function; cmp_to_key makes one a key
++        jewelry.sort(key=cmp_to_key(self.sortItems))
+         jewelryAmount = 0
+         startPos = Vec3(0.35, 0.0, 1.05)
+         buttonScale = Vec3(0.6, 0.6, 0.6)
+diff --git a/pirates/economy/TattooStoreGUI.py b/pirates/economy/TattooStoreGUI.py
+index ba147eb..f40ccfd 100644
+--- a/pirates/economy/TattooStoreGUI.py
++++ b/pirates/economy/TattooStoreGUI.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from direct.directnotify.DirectNotifyGlobal import directNotify
+ from direct.gui.DirectGui import *
+ from panda3d.core import *
+@@ -1091,7 +1092,8 @@ class TattooStoreGUI(DirectFrame):
+             else:
+                 return
+ 
+-        tattoos.sort(self.sortItems)
++        # family server (patch 0353): Python 3 sort takes no compare function; cmp_to_key makes one a key
++        tattoos.sort(key=cmp_to_key(self.sortItems))
+         for item in self.buttons:
+             item.destroy()
+ 
+diff --git a/pirates/piratesgui/MessageStackPanel.py b/pirates/piratesgui/MessageStackPanel.py
+index 0732ef0..7e05981 100644
+--- a/pirates/piratesgui/MessageStackPanel.py
++++ b/pirates/piratesgui/MessageStackPanel.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from direct.gui.DirectGui import DirectFrame, DirectButton, DGG
+ from direct.gui.OnscreenText import OnscreenText
+ from direct.interval.IntervalGlobal import *
+@@ -54,7 +55,7 @@ class StackMessage(BorderFrame):
+ 
+     def __cmp__(self, other):
+         if other:
+-            return cmp(other['priority'], self['priority'])
++            return ((other['priority'] > self['priority']) - (other['priority'] < self['priority']))
+         else:
+             return -1
+ 
+@@ -447,7 +448,12 @@ class MessageStackPanel(DirectFrame):
+ 
+     def addMessage(self, message, autoDestroy = 1):
+         self.msgStack.append(message)
+-        self.msgStack.sort()
++        # family server (patch 0353): Python 3 never calls __cmp__; NodePath's own < sorted by memory address, so
++        # a high-priority message was not put on top. Sort with the message's __cmp__ (higher priority first).
++        try:
++            self.msgStack.sort(key=cmp_to_key(lambda a, b: a.__cmp__(b)))
++        except Exception:
++            pass
+         index = self._getMessageIndex(message)
+         message.setPos(self._getSlotPos(index))
+         message.createIval(self['fadeLerpTime'], Functor(self.removeMessage, message, autoDestroy)).start()
+diff --git a/pirates/piratesgui/PirateMemberList.py b/pirates/piratesgui/PirateMemberList.py
+index b78931d..a0b6096 100644
+--- a/pirates/piratesgui/PirateMemberList.py
++++ b/pirates/piratesgui/PirateMemberList.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from direct.showbase.ShowBaseGlobal import *
+ from direct.gui.DirectGui import *
+ from panda3d.core import *
+@@ -116,7 +117,7 @@ class PirateMemberButton(GuiButton.GuiButton):
+         elif self.mode == MODE_FRIEND_AVATAR and other.mode == MODE_FRIEND_PLAYER:
+             return 1
+         else:
+-            return cmp(self['text'].lower(), other['text'].lower())
++            return ((self['text'].lower() > other['text'].lower()) - (self['text'].lower() < other['text'].lower()))
+ 
+     def updateGuild(self):
+         if self.mode == MODE_GUILD:
+@@ -434,7 +435,13 @@ class PirateMemberList(DirectObject):
+         if numMembers == 0:
+             return
+         
+-        self.members.sort()
++        # family server (patch 0353): Python 3 never calls __cmp__; NodePath's own < sorted by memory address, so
++        # the list was in no order. Sort with the button's __cmp__: online first, the captain / guild rank on top,
++        # then by name.
++        try:
++            self.members.sort(key=cmp_to_key(lambda a, b: a.__cmp__(b)))
++        except Exception:
++            pass
+         self.memberFrame['canvasSize'] = (0, 0.0, 0, numMembers * self.memberHeight)
+         self.placement = self.memberHeight * numMembers
+         for index in range(numMembers):
+diff --git a/pirates/pvp/DistributedPVPBattle.py b/pirates/pvp/DistributedPVPBattle.py
+index db7b977..7c91889 100644
+--- a/pirates/pvp/DistributedPVPBattle.py
++++ b/pirates/pvp/DistributedPVPBattle.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from pirates.pvp.DistributedPVPInstance import DistributedPVPInstance
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.pvp import PVPGlobals
+@@ -51,7 +52,8 @@ class DistributedPVPBattle(DistributedPVPInstance):
+                 'Player': playerId,
+                 'Score': stats[PVPGlobals.SCORE]})
+         
+-        scoreList.sort(self.sortScores)
++        # family server (patch 0353): Python 3 sort takes no compare function; cmp_to_key makes one a key
++        scoreList.sort(key=cmp_to_key(self.sortScores))
+         return scoreList
+ 
+     def createScoreboardItem(self, item, parent, itemType = None, columnWidths = [], color = None):
+diff --git a/pirates/pvp/DistributedPVPShipBattle.py b/pirates/pvp/DistributedPVPShipBattle.py
+index 214bec4..41f33b8 100644
+--- a/pirates/pvp/DistributedPVPShipBattle.py
++++ b/pirates/pvp/DistributedPVPShipBattle.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from pirates.pvp.DistributedPVPInstance import DistributedPVPInstance
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.piratesbase import PLocalizer
+@@ -101,7 +102,8 @@ class DistributedPVPShipBattle(DistributedPVPInstance):
+                 'Team': teamName,
+                 'Score': teamScore})
+         
+-        scoreList.sort(self.sortScores)
++        # family server (patch 0353): Python 3 sort takes no compare function; cmp_to_key makes one a key
++        scoreList.sort(key=cmp_to_key(self.sortScores))
+         return scoreList
+ 
+     def createScoreboardItem(self, item, parent, itemType = None, columnWidths = [], color = None):
+diff --git a/pirates/pvp/DistributedPVPTeamBattle.py b/pirates/pvp/DistributedPVPTeamBattle.py
+index af9b995..cc3fb33 100644
+--- a/pirates/pvp/DistributedPVPTeamBattle.py
++++ b/pirates/pvp/DistributedPVPTeamBattle.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from pirates.pvp.DistributedPVPInstance import DistributedPVPInstance
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.piratesbase import PLocalizer
+@@ -70,7 +71,8 @@ class DistributedPVPTeamBattle(DistributedPVPInstance):
+                 'Team': teamName,
+                 'Score': teamScore})
+         
+-        scoreList.sort(self.sortScores)
++        # family server (patch 0353): Python 3 sort takes no compare function; cmp_to_key makes one a key
++        scoreList.sort(key=cmp_to_key(self.sortScores))
+         return scoreList
+ 
+     def createScoreboardItem(self, item, parent, itemType = None, columnWidths = [], color = None):
+diff --git a/pirates/pvp/PVPGameBattle.py b/pirates/pvp/PVPGameBattle.py
+index cbdfe5d..39e5d6b 100644
+--- a/pirates/pvp/PVPGameBattle.py
++++ b/pirates/pvp/PVPGameBattle.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from pirates.pvp.PVPGameBase import PVPGameBase
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.pvp import PVPGlobals
+@@ -62,7 +63,8 @@ class PVPGameBattle(PVPGameBase):
+                 'Player': playerId,
+                 'Score': stats[PVPGlobals.SCORE]})
+         
+-        scoreList.sort(self.sortScores)
++        # family server (patch 0353): Python 3 sort takes no compare function; cmp_to_key makes one a key
++        scoreList.sort(key=cmp_to_key(self.sortScores))
+         return scoreList
+ 
+     def createScoreboardItem(self, item, parent, itemType = None, columnWidths = [], color = None):
+diff --git a/pirates/pvp/PVPGameCTL.py b/pirates/pvp/PVPGameCTL.py
+index 419944f..5d50314 100644
+--- a/pirates/pvp/PVPGameCTL.py
++++ b/pirates/pvp/PVPGameCTL.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from pirates.pvp.PVPGameBase import PVPGameBase
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.piratesbase import PLocalizer
+@@ -174,7 +175,8 @@ class PVPGameCTL(PVPGameBase):
+                 'Team': teams[currIdx],
+                 'Score': scores[currIdx]})
+         
+-        self.scoreList.sort(self.sortScores)
++        # family server (patch 0353): Python 3 sort takes no compare function; cmp_to_key makes one a key
++        self.scoreList.sort(key=cmp_to_key(self.sortScores))
+         print('got new score list %s' % self.scoreList)
+         messenger.send(self.getItemChangeMsg())
+ 
+diff --git a/pirates/pvp/PVPGamePirateer.py b/pirates/pvp/PVPGamePirateer.py
+index e0b85de..55cc5ab 100644
+--- a/pirates/pvp/PVPGamePirateer.py
++++ b/pirates/pvp/PVPGamePirateer.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from direct.gui.DirectGui import *
+ from panda3d.core import *
+ from direct.interval.IntervalGlobal import *
+@@ -152,7 +153,8 @@ class PVPGamePirateer(PVPGameBase):
+                 'Team': teams[currIdx],
+                 'Score': scores[currIdx]})
+         
+-        self.scoreList.sort(self.sortScores)
++        # family server (patch 0353): Python 3 sort takes no compare function; cmp_to_key makes one a key
++        self.scoreList.sort(key=cmp_to_key(self.sortScores))
+         print('got new score list %s' % self.scoreList)
+         messenger.send(self.getItemChangeMsg())
+ 
+diff --git a/pirates/pvp/PVPGameShipBattle.py b/pirates/pvp/PVPGameShipBattle.py
+index 8d6fb23..8903ae8 100644
+--- a/pirates/pvp/PVPGameShipBattle.py
++++ b/pirates/pvp/PVPGameShipBattle.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from pirates.pvp.PVPGameBase import PVPGameBase
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.piratesbase import PLocalizer
+@@ -101,7 +102,8 @@ class PVPGameShipBattle(PVPGameBase):
+                 'Team': teams[currIdx],
+                 'Score': scores[currIdx]})
+         
+-        self.scoreList.sort(self.sortScores)
++        # family server (patch 0353): Python 3 sort takes no compare function; cmp_to_key makes one a key
++        self.scoreList.sort(key=cmp_to_key(self.sortScores))
+         print('got new score list %s' % self.scoreList)
+         messenger.send(self.getItemChangeMsg())
+ 
+diff --git a/pirates/pvp/PVPGameTeamBattle.py b/pirates/pvp/PVPGameTeamBattle.py
+index c6b2da1..b197c99 100644
+--- a/pirates/pvp/PVPGameTeamBattle.py
++++ b/pirates/pvp/PVPGameTeamBattle.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from pirates.pvp.PVPGameBase import PVPGameBase
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.piratesbase import PLocalizer
+@@ -105,7 +106,8 @@ class PVPGameTeamBattle(PVPGameBase):
+                 'Team': teamName,
+                 'Score': teamScore})
+         
+-        scoreList.sort(self.sortScores)
++        # family server (patch 0353): Python 3 sort takes no compare function; cmp_to_key makes one a key
++        scoreList.sort(key=cmp_to_key(self.sortScores))
+         return scoreList
+ 
+     def createScoreboardItem(self, item, parent, itemType = None, columnWidths = [], color = None):
+diff --git a/pirates/pvp/Scoreboard.py b/pirates/pvp/Scoreboard.py
+index 0272832..2cb55a7 100644
+--- a/pirates/pvp/Scoreboard.py
++++ b/pirates/pvp/Scoreboard.py
+@@ -1,3 +1,4 @@
++from functools import cmp_to_key
+ from direct.distributed.DistributedObject import DistributedObject
+ from pirates.piratesgui.StatRowHeadingGui import StatRowHeadingGui
+ from pirates.piratesgui.StatRowGui import StatRowGui
+@@ -90,7 +91,8 @@ class Scoreboard(DistributedObject):
+                     'ID': id,
+                     'Score': score})
+         
+-        scores.sort(self.sortTeamScores)
++        # family server (patch 0353): Python 3 sort takes no compare function; cmp_to_key makes one a key
++        scores.sort(key=cmp_to_key(self.sortTeamScores))
+         return scores
+ 
+     def getTeamName(self, team):
+-- 
+2.53.0
+

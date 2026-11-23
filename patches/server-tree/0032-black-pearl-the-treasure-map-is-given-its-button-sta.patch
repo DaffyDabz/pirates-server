@@ -1,0 +1,292 @@
+From 46d9a2fce4a4d3183557f6ff80500beda9e0d670 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 20:47:09 -0800
+Subject: [PATCH 032/371] black pearl: the treasure map is given, its button
+ starts the fight, and stages one and two can end
+
+- The c3.6 TreasureMapReward called a trade method that never existed, so no Black Pearl map was ever given.
+  LocalTrade gains giveNewTreasureMap; maps live under the inventory (not in the database) while the owner is on,
+  stale map ids are dropped at login, and a pirate on the boss quest gets the map again at every login.
+- The map's requestStart read a missing TM_GAME_STYLES; it now joins a fight still at its start or builds one.
+- Killing the last Navy guard never checked stage one; it does now (the ship capture is still needed).
+- Nothing reported a sunk attack ship, so stage two never ended; a 2 s check counts each ship sunk or gone once.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/trades/TradeAI.py                     |  5 ++
+ .../treasuremap/DistributedTreasureMapAI.py   | 90 +++++++++++++++++--
+ .../treasuremap/TreasureMapBlackPearlAI.py    | 30 ++++++-
+ pirates/uberdog/PirateInventoryAI.py          | 22 +++++
+ 4 files changed, 140 insertions(+), 7 deletions(-)
+
+diff --git a/pirates/trades/TradeAI.py b/pirates/trades/TradeAI.py
+index 54e2d9d..c625a11 100644
+--- a/pirates/trades/TradeAI.py
++++ b/pirates/trades/TradeAI.py
+@@ -128,6 +128,11 @@ class LocalTrade(TradeBase):
+ 
+         self.giveStack(card, 1)
+ 
++    def giveNewTreasureMap(self, dclassName, mapId=0):
++        # TreasureMapReward (c3.6deliverMap); LocalTrade never had it, so the Black Pearl map was never given
++        from pirates.treasuremap.DistributedTreasureMapAI import giveTreasureMap
++        giveTreasureMap(self.air, self.avatar, mapId)
++
+ 
+ class TradeAI(DistributedObjectAI, TradeBase):
+     notify = DirectNotifyGlobal.directNotify.newCategory('TradeAI')
+diff --git a/pirates/treasuremap/DistributedTreasureMapAI.py b/pirates/treasuremap/DistributedTreasureMapAI.py
+index 70b2d4e..18a8780 100644
+--- a/pirates/treasuremap/DistributedTreasureMapAI.py
++++ b/pirates/treasuremap/DistributedTreasureMapAI.py
+@@ -2,8 +2,10 @@ from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from direct.directnotify import DirectNotifyGlobal
+ 
+ from otp.ai.MagicWordGlobal import *
++from otp.distributed.OtpDoGlobals import OTP_ZONE_ID_MANAGEMENT
+ 
+ from pirates.piratesbase import PiratesGlobals
++from pirates.uberdog.UberDogGlobals import InventoryCategory
+ 
+ 
+ class DistributedTreasureMapAI(DistributedObjectAI):
+@@ -19,6 +21,7 @@ class DistributedTreasureMapAI(DistributedObjectAI):
+     def __init__(self, air):
+         DistributedObjectAI.__init__(self, air)
+ 
++        self.ownerId = 0
+         self.mapId = 0
+         self.isEnabled = 1
+         self.objectiveIds = []
+@@ -28,9 +31,19 @@ class DistributedTreasureMapAI(DistributedObjectAI):
+         DistributedObjectAI.generate(self)
+ 
+     def delete(self):
++        self.ignoreAll()
+         self.participants = []
+         DistributedObjectAI.delete(self)
+ 
++    def _ownerGone(self, inventory):
++        # the owner logged off: take the map out of the inventory list (it is not a database object) and delete it
++        if not inventory.isDeleted():
++            maps = inventory.getDoIdListCategory(InventoryCategory.TREASURE_MAPS)
++            if self.doId in maps:
++                inventory.b_setDoIdListCategory(InventoryCategory.TREASURE_MAPS, [d for d in maps if d != self.doId])
++
++        self.requestDelete()
++
+     # =========================================================================
+     # DC Fields
+     # =========================================================================
+@@ -38,6 +51,32 @@ class DistributedTreasureMapAI(DistributedObjectAI):
+     def getParentingRules(self):
+         return ['', '']
+ 
++    # DistributedTreasureMap is a DistributedInventory in the dc; its required fields (an empty inventory)
++
++    def setOwnerId(self, ownerId):
++        self.ownerId = ownerId
++
++    def getOwnerId(self):
++        return self.ownerId
++
++    def getInventoryVersion(self):
++        return 0
++
++    def getCategoryLimits(self):
++        return []
++
++    def getDoIds(self):
++        return []
++
++    def getAccumulators(self):
++        return []
++
++    def getStackLimits(self):
++        return []
++
++    def getStacks(self):
++        return []
++
+     def setMapId(self, mapId):
+         self.mapId = mapId
+ 
+@@ -111,14 +150,27 @@ class DistributedTreasureMapAI(DistributedObjectAI):
+         if avatarId not in self.participants:
+             self.participants.append(avatarId)
+ 
+-        # Get the treasure map style info
+-        mapStyle = PiratesGlobals.TM_GAME_STYLES.get(self.mapId, {})
+-        mapName = mapStyle.get('MapName', 'BlackpearlWorld')
++        # family server: PiratesGlobals has no TM_GAME_STYLES (this raised AttributeError) and the Black Pearl is
++        # the only treasure map world. Join a fight still at its start, else build one (the blackpearlai helpers).
++        from pirates.ai import PiratesMagicWordManagerAI as bpHelpers
++        from pirates.treasuremap.TreasureMapBlackPearlAI import TreasureMapBlackPearlAI
++        for obj in list(self.air.doId2do.values()):
++            if not isinstance(obj, TreasureMapBlackPearlAI):
++                continue
++
++            if obj.state not in ('Off', 'WaitClientsReady', 'StageOne'):
++                # a finished instance is never deleted and its world uids stay taken: one fight per server run
++                self.notify.warning('Black Pearl %d is in %s, avatar %d cannot join' % (obj.doId, obj.state, avatarId))
++                return
+ 
+-        self.notify.info('Starting treasure map instance: %s' % mapName)
++            if obj.isReady:
++                bpHelpers._teleportToBlackPearl(self.air, avatar, obj)
++            else:
++                obj.pendingTeleportCallbacks.append(lambda: bpHelpers._teleportToBlackPearl(self.air, avatar, obj))
+ 
+-        # Request creation of the treasure map instance world
+-        self._createTreasureMapInstance(avatar, mapName)
++            return
++
++        bpHelpers._createBlackPearlInstance(self.air, avatar)
+ 
+     def _createTreasureMapInstance(self, avatar, mapName):
+         """Create the treasure map instance and teleport the player there"""
+@@ -172,6 +224,32 @@ class DistributedTreasureMapAI(DistributedObjectAI):
+             self.notify.warning('No islands found in treasure map instance')
+ 
+ 
++def giveTreasureMap(air, avatar, mapId=0):
++    """family server: give an avatar a treasure map (TreasureMapReward, and a pirate on a boss quest at login).
++    The map is not a database object: it lives under the inventory (zone 2, where the client looks) while the
++    avatar is on and is made again at the next login. One map per mapId; returns the map."""
++    inventory = avatar.getInventory()
++    if not inventory:
++        DistributedTreasureMapAI.notify.warning('giveTreasureMap: avatar %d has no inventory' % avatar.doId)
++        return None
++
++    live = [doId for doId in inventory.getDoIdListCategory(InventoryCategory.TREASURE_MAPS)
++            if isinstance(air.doId2do.get(doId), DistributedTreasureMapAI)]
++    for doId in live:
++        if air.doId2do[doId].getMapId() == mapId:
++            return air.doId2do[doId]
++
++    treasureMap = DistributedTreasureMapAI(air)
++    treasureMap.setOwnerId(avatar.doId)
++    treasureMap.setMapId(mapId)
++    treasureMap.generateWithRequiredAndId(air.allocateChannel(), inventory.doId, OTP_ZONE_ID_MANAGEMENT)
++    treasureMap.acceptOnce(avatar.getDeleteEvent(), treasureMap._ownerGone, extraArgs=[inventory])
++    inventory.b_setDoIdListCategory(InventoryCategory.TREASURE_MAPS, live + [treasureMap.doId])
++    DistributedTreasureMapAI.notify.info('gave treasure map %d (mapId %d) to avatar %d' % (
++        treasureMap.doId, mapId, avatar.doId))
++    return treasureMap
++
++
+ @magicWord(category=CATEGORY_SYSTEM_ADMIN, types=[int])
+ def treasuremap(mapId=0):
+     """Start a treasure map instance"""
+diff --git a/pirates/treasuremap/TreasureMapBlackPearlAI.py b/pirates/treasuremap/TreasureMapBlackPearlAI.py
+index a465ec9..67bcb8d 100644
+--- a/pirates/treasuremap/TreasureMapBlackPearlAI.py
++++ b/pirates/treasuremap/TreasureMapBlackPearlAI.py
+@@ -93,6 +93,7 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+         self.shipCaptured = False
+         self.npcsKilled = False
+         self.attackShipsSunk = 0
++        self.attackShipsSunkIds = set()
+         self.barricadesDestroyed = []
+ 
+         # Barrier sync for multi-player
+@@ -168,6 +169,7 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+         taskMgr.remove(self.uniqueName('stageTwoDelay'))
+         taskMgr.remove(self.uniqueName('stageFourCutscene'))
+         taskMgr.remove(self.uniqueName('checkVictory'))
++        taskMgr.remove(self.uniqueName('checkAttackShips'))
+ 
+         # Clean up Navy guards
+         for guard in self.navyGuards:
+@@ -543,6 +545,7 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+             self.notify.info('All Navy guards killed! Ship captured!')
+             self.npcsKilled = True
+             self.d_handleNPCsKilled()
++            self._checkStageOneComplete()
+ 
+     def _getBlackPearlIsland(self):
+         """Get the Black Pearl island (standard DistributedIslandAI)"""
+@@ -722,6 +725,10 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+ 
+     def handleAttackShipDestroyed(self, shipDoId):
+         """Called when an attack ship is destroyed"""
++        if shipDoId in self.attackShipsSunkIds:
++            return
++
++        self.attackShipsSunkIds.add(shipDoId)
+         self.attackShipsSunk += 1
+         self.d_handleAttackShipSunk()
+         self.notify.info('Attack ship %d destroyed (%d/%d)' % (
+@@ -829,9 +836,30 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+         """Stage Two: Fight attack ships"""
+         DistributedTreasureMapInstanceAI.enterStageTwo(self)
+         self.notify.info('Entering Stage Two - Defeat the attack ships')
++        # family server: nothing told the instance when an attack ship sank (NPCShipAI.takeDamage only sets
++        # 'Sinking'), so stage two never ended. Watch the ships' hp (a task, so no state change inside this enter).
++        taskMgr.doMethodLater(2.0, self._checkAttackShips, self.uniqueName('checkAttackShips'))
++
++    def _checkAttackShips(self, task):
++        """Count each attack ship that has sunk (hp 0) or is gone; the last one ends stage two"""
++        for shipDoId, ship in zip(self.attackShipIds, self.attackShips):
++            if shipDoId in self.attackShipsSunkIds:
++                continue
++
++            if ship is None or ship.isDeleted() or ship.getHp() <= 0:
++                self.handleAttackShipDestroyed(shipDoId)
++
++        if len(self.attackShipsSunkIds) >= len(self.attackShipIds):
++            # also when no attack ship could be built (_createAttackShips skips a ship whose config fails)
++            self._allAttackShipsDestroyed()
++
++        if self.state != 'StageTwo':
++            return Task.done
++
++        return Task.again
+ 
+     def exitStageTwo(self):
+-        pass
++        taskMgr.remove(self.uniqueName('checkAttackShips'))
+ 
+     def enterStageThree(self):
+         """Stage Three: Destroy the barricades/drawbridges"""
+diff --git a/pirates/uberdog/PirateInventoryAI.py b/pirates/uberdog/PirateInventoryAI.py
+index 0c123d7..2f28823 100644
+--- a/pirates/uberdog/PirateInventoryAI.py
++++ b/pirates/uberdog/PirateInventoryAI.py
+@@ -141,11 +141,33 @@ class PirateInventoryAI(DistributedInventoryAI):
+ 
+             return
+ 
++        # family server: treasure maps are not database objects; drop map ids saved from a past session, or the
++        # client waits for them forever and the inventory never reports ready
++        maps = self.getDoIdListCategory(InventoryCategory.TREASURE_MAPS)
++        liveMaps = [doId for doId in maps if doId in self.air.doId2do]
++        if liveMaps != maps:
++            self.b_setDoIdListCategory(InventoryCategory.TREASURE_MAPS, liveMaps)
++
+         # populate the avatar's quest list
+         # family server (2026-09-18): the tutorial is skipped, so nothing ever
+         # hands out the first MainStory quest. Once saved quests are active, give
+         # a pirate with no quests and no quest history the Chapter 2 opener.
+         def _questsActivated(*args):
++            # family server: a pirate on a boss quest (c3.7recoverPearl) gets its treasure map at every login
++            try:
++                from pirates.quest import QuestTaskDNA
++                from pirates.treasuremap.DistributedTreasureMapAI import giveTreasureMap
++                for quest in self.air.questMgr.getQuestsFromTaskDNAType(avatar, QuestTaskDNA.BossBattleTaskDNA):
++                    for task in quest.getQuestDNA().getTaskDNAs():
++                        mapId = getattr(task, 'treasureMapId', None)
++                        if mapId is not None:
++                            giveTreasureMap(self.air, avatar, mapId)
++            except Exception:
++                # a treasure map must never break a login
++                import traceback
++                self.notify.warning('boss quest treasure map for avatar %d failed:\n%s' % (
++                    avatar.doId, traceback.format_exc()))
++
+             if self.getQuestList() or avatar.getQuestHistory() or avatar.getQuestLadderHistory():
+                 return
+             self.notify.info('first quest: giving c2_visit_will_turner to avatar %d' % avatar.doId)
+-- 
+2.53.0
+

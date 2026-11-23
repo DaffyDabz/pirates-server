@@ -1,0 +1,85 @@
+From 4e4157951921c973f54b109fa865cedef86e5f3c Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 01:38:37 -0800
+Subject: [PATCH 339/371] family server: a second ship job for the same pirate
+ waits its turn on the UberDOG instead of being dropped
+
+The UberDOG's ship loader dropped a second job for a pirate whose job was still running: it logged "already
+running" and sent no answer, so the AI's job for it waited for good. Right after a buy the AI sends the new
+ship's activation straight to the UberDOG without a loader job of its own, so a second buy, or his other ship
+waiting its turn after a re-login during the buy, landed on the busy UberDOG and was dropped. The AI loader then
+stayed busy for that pirate until a restart: the shipwright refused every ship and his ships stopped coming to
+the dock (claude2 from 01:05 on 11-21).
+
+The job now waits in a per-pirate queue (avatar2queue) and cleanup() starts the next one. Offline sim with the
+real AI + UberDOG loader modules (boats' sim_loader.py): HEAD fails both cases (second buy during the new ship's
+activation; re-login during a buy), patched passes both. UberDOG restart; an AI restart frees jobs already stuck.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/DistributedShipLoaderUD.py | 28 +++++++++++++++++++---
+ 1 file changed, 25 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/uberdog/DistributedShipLoaderUD.py b/pirates/uberdog/DistributedShipLoaderUD.py
+index 662e2c7..83361e2 100644
+--- a/pirates/uberdog/DistributedShipLoaderUD.py
++++ b/pirates/uberdog/DistributedShipLoaderUD.py
+@@ -41,6 +41,9 @@ class ShipLoaderOperationFSM(FSM):
+         if self.callback:
+             self.callback(*args, **kwargs)
+ 
++        # family server (11-21): the next job waiting for this pirate
++        self.air.shipLoader._runNextShipLoaderFSM(self.avatarId)
++
+ 
+ class CreateShipFSM(ShipLoaderOperationFSM):
+ 
+@@ -408,6 +411,9 @@ class DistributedShipLoaderUD(DistributedObjectGlobalUD):
+         DistributedObjectGlobalUD.__init__(self, air)
+ 
+         self.avatar2fsm = {}
++        # family server (11-21): jobs waiting for the job running for that pirate: avatarId -> [(fsmtype, args,
++        # kwargs), ...], run in the order they came
++        self.avatar2queue = {}
+ 
+     def announceGenerate(self):
+         DistributedObjectGlobalUD.announceGenerate(self)
+@@ -418,9 +424,14 @@ class DistributedShipLoaderUD(DistributedObjectGlobalUD):
+     def runShipLoaderFSM(self, fsmtype, avatarId, *args, **kwargs):
+         fsm = self.avatar2fsm.get(avatarId)
+         if fsm is not None:
+-            self.notify.warning('Failed to run ship loader fsm, '
+-                'an FSM: %s is already running for avatar %d!' % (fsm.__class__.__name__, avatarId))
+-
++            # family server (11-21): a second job for the same pirate was dropped here with no answer, so the AI's job
++            # for it waited for good. Right after a buy the AI sends the new ship's activation without a loader job of
++            # its own, so a second buy, or his other ship waiting its turn, landed here while the new ship loaded:
++            # the shipwright then refused every ship (loader busy) and his ships stopped coming to the dock until a
++            # restart. The job now waits its turn.
++            self.notify.warning('ship loader busy for avatar %d (%s), %s waits its turn' % (
++                avatarId, fsm.__class__.__name__, fsmtype.__name__))
++            self.avatar2queue.setdefault(avatarId, []).append((fsmtype, args, kwargs))
+             return
+ 
+         callback = kwargs.pop('callback', None)
+@@ -428,6 +439,17 @@ class DistributedShipLoaderUD(DistributedObjectGlobalUD):
+         self.avatar2fsm[avatarId] = fsmtype(self.air, avatarId, callback)
+         self.avatar2fsm[avatarId].request('Start', *args, **kwargs)
+ 
++    def _runNextShipLoaderFSM(self, avatarId):
++        queue = self.avatar2queue.get(avatarId)
++        if not queue or avatarId in self.avatar2fsm:
++            return
++
++        fsmtype, args, kwargs = queue.pop(0)
++        if not queue:
++            del self.avatar2queue[avatarId]
++
++        self.runShipLoaderFSM(fsmtype, avatarId, *args, **kwargs)
++
+     def createShip(self, avatarId, shipClass, shipName=''):
+ 
+         def _shipCreatedCallback(shipId):
+-- 
+2.53.0
+

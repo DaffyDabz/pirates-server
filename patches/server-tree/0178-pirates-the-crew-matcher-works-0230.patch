@@ -1,0 +1,396 @@
+From c2a5d576acffe1e7e45da287342e63c3641f5af0 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:27:12 -0800
+Subject: [PATCH 178/371] pirates: the crew matcher works (0230)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/band/DistributedCrewMatchAI.py        | 353 ++++++++++++++++++
+ .../band/DistributedPirateBandManagerAI.py    |   5 +
+ 2 files changed, 358 insertions(+)
+
+diff --git a/pirates/band/DistributedCrewMatchAI.py b/pirates/band/DistributedCrewMatchAI.py
+index 0e733d3..b11684e 100644
+--- a/pirates/band/DistributedCrewMatchAI.py
++++ b/pirates/band/DistributedCrewMatchAI.py
+@@ -1,8 +1,361 @@
+ from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from direct.directnotify import DirectNotifyGlobal
+ 
++from pirates.band import BandConstance
++from pirates.piratesbase import PLocalizer
++from pirates.reputation import ReputationGlobals
++from pirates.uberdog.UberDogGlobals import InventoryType
++
++# the two PvP islands: a crew recruiting on one of them looks for PvP crewmates (crewType 2),
++# as the client's own message says (CrewMatchEnabledForCrewPVP)
++PVP_ISLAND_LIST = ['1196970080.56sdnaik', '1196970035.53sdnaik']
++
++CREW_TYPE_NORMAL = 1
++CREW_TYPE_PVP = 2
++
++
+ class DistributedCrewMatchAI(DistributedObjectAI):
++    """family server (2026-11-18): the crew matcher behind the Crew page's "Start a crew",
++    "Recruit crewmates" and "Join a crew" buttons. It was an empty stub, so every press
++    went nowhere. One per district (made in OTP_ZONE_ID_MANAGEMENT next to the crew
++    manager), so its lists are this district's.
++
++    Two lookout lists:
++      crews   - captains looking for crewmates: a pirate who heads a crew, or one who
++                pressed "Start a crew" and has no crew yet (a crew of one, kept here only:
++                the crew manager's real crew is made when the first crewmate joins)
++      lookout - pirates looking for a crew ("Join a crew"), oldest first
++
++    A crew is matched to a pirate when the crew type (normal or PvP) is the same, the
++    pirate's level is within the captain's range (0 = any level), and his sailing and
++    cannon levels reach the captain's minimums. Joining goes through the existing crew
++    manager (DistributedPirateBandManagerAI.createBand / addMember), so the crew HUD,
++    crew chat and the dinghy's crew ships work as for an invited crewmate."""
+     notify = DirectNotifyGlobal.directNotify.newCategory('DistributedCrewMatchAI')
+ 
++    MAX_RANGE = 40
++    MAX_SKILL_LEVEL = 30
++
+     def __init__(self, air):
+         DistributedObjectAI.__init__(self, air)
++        self.crews = {}         # sponsorId -> {'range', 'sail', 'cannon', 'crewType'}
++        self.crewsOfOne = set() # sponsorIds who pressed "Start a crew" and have no crew yet
++        self.lookout = {}       # avId -> crewType, in the order they started waiting
++        self.offered = {}       # avId -> set of sponsorIds offered to him (responseCrewFound)
++        self.initialOffer = {}  # avId -> sponsorId offered by requestInitialAvatarAdd
++
++    # --- helpers ---------------------------------------------------------
++
++    def getBandManager(self):
++        return getattr(self.air, 'bandManager', None)
++
++    def getPlayer(self, avId):
++        # an online pirate in this district, or None (the crew manager's own check)
++        bandManager = self.getBandManager()
++        if bandManager is None:
++            return None
++
++        return bandManager.getPlayer(avId)
++
++    def getSender(self):
++        avId = self.air.getAvatarIdFromSender()
++        avatar = self.getPlayer(avId)
++        if avatar:
++            # the crew manager needs the pirate's client channel to give him his crew
++            # member object (crew chat); remember it as the crew manager itself does
++            bandManager = self.getBandManager()
++            if bandManager is not None:
++                try:
++                    bandManager.channels[avId] = self.air.getMsgSender()
++                except Exception:
++                    pass
++
++        return avId, avatar
++
++    def inBand(self, avId):
++        bandManager = self.getBandManager()
++        return bandManager is not None and avId in bandManager.avatar2band
++
++    @staticmethod
++    def clamp(value, low, high):
++        try:
++            value = int(value)
++        except (TypeError, ValueError):
++            return low
++
++        return max(low, min(high, value))
++
++    def getLevel(self, avatar):
++        inventory = avatar.getInventory()
++        if inventory:
++            try:
++                return ReputationGlobals.getLevelFromTotalReputation(
++                    InventoryType.OverallRep, inventory.getReputation(InventoryType.OverallRep))[0]
++            except Exception:
++                pass
++
++        try:
++            return int(avatar.getLevel() or 1)
++        except Exception:
++            return 1
++
++    def getSkillLevel(self, avatar, repType):
++        inventory = avatar.getInventory()
++        if not inventory:
++            return 1
++
++        try:
++            return max(1, ReputationGlobals.getLevelFromTotalReputation(repType, inventory.getReputation(repType))[0])
++        except Exception:
++            return 1
++
++    def getCrewTypeAt(self, avatar):
++        if avatar.getCurrentIsland() in PVP_ISLAND_LIST:
++            return CREW_TYPE_PVP
++
++        return CREW_TYPE_NORMAL
++
++    def getLocation(self, avatar):
++        # '' (at sea, or an unnamed spot) makes the client say "... would you like to join
++        # the crew of X?" without a location
++        return PLocalizer.LocationNames.get(avatar.getCurrentIsland(), '')
++
++    def getName(self, avatar):
++        return avatar.getName() or PLocalizer.CrewMatchEmptyName
++
++    def crewIsOpen(self, sponsorId):
++        """True if sponsorId can take one more crewmate: he is online and either heads a
++        crew with room, or has a crew of one waiting."""
++        if not self.getPlayer(sponsorId):
++            return False
++
++        bandManager = self.getBandManager()
++        if bandManager is None:
++            return False
++
++        bandId, band = bandManager.getBandOf(sponsorId)
++        if band:
++            return band['manager'] == sponsorId and len(band['members']) < BandConstance.MAX_BAND_MEMBERS
++
++        return sponsorId in self.crewsOfOne
++
++    def matches(self, sponsorId, avId, crewType):
++        crew = self.crews.get(sponsorId)
++        if not crew or avId == sponsorId or crew['crewType'] != crewType:
++            return False
++
++        sponsor = self.getPlayer(sponsorId)
++        avatar = self.getPlayer(avId)
++        if not sponsor or not avatar or self.inBand(avId) or not self.crewIsOpen(sponsorId):
++            return False
++
++        if crew['range'] and abs(self.getLevel(avatar) - self.getLevel(sponsor)) > crew['range']:
++            return False
++
++        if self.getSkillLevel(avatar, InventoryType.SailingRep) < crew['sail']:
++            return False
++
++        if self.getSkillLevel(avatar, InventoryType.CannonRep) < crew['cannon']:
++            return False
++
++        return True
++
++    def findCrewFor(self, avId, crewType, skip=()):
++        """The best crew for avId: the nearest level, then the one listed first."""
++        avatar = self.getPlayer(avId)
++        if not avatar:
++            return None
++
++        level = self.getLevel(avatar)
++        best = None
++        for order, sponsorId in enumerate(self.crews):
++            if sponsorId in skip or not self.matches(sponsorId, avId, crewType):
++                continue
++
++            key = (abs(self.getLevel(self.getPlayer(sponsorId)) - level), order)
++            if best is None or key < best[0]:
++                best = (key, sponsorId)
++
++        return best and best[1]
++
++    def offerCrew(self, avId, sponsorId):
++        sponsor = self.getPlayer(sponsorId)
++        self.offered.setdefault(avId, set()).add(sponsorId)
++        self.sendUpdateToAvatarId(avId, 'responseCrewFound', [self.getName(sponsor), sponsorId, self.getLocation(sponsor)])
++        self.notify.info('crew match: offered the crew of %s (%d) to %d' % (sponsor.getName(), sponsorId, avId))
++
++    def offerToLookout(self, sponsorId):
++        """A crew was listed: offer it to every waiting pirate it suits, oldest first, as
++        many as it has room for."""
++        bandManager = self.getBandManager()
++        bandId, band = bandManager.getBandOf(sponsorId) if bandManager is not None else (None, None)
++        room = BandConstance.MAX_BAND_MEMBERS - (len(band['members']) if band else 1)
++        for avId, crewType in list(self.lookout.items()):
++            if room <= 0:
++                break
++
++            if sponsorId in self.offered.get(avId, ()):
++                continue
++
++            if self.matches(sponsorId, avId, crewType):
++                self.offerCrew(avId, sponsorId)
++                room -= 1
++
++    def forgetAvatar(self, avId):
++        self.lookout.pop(avId, None)
++        self.offered.pop(avId, None)
++        self.initialOffer.pop(avId, None)
++
++    def forgetCrew(self, sponsorId):
++        self.crews.pop(sponsorId, None)
++        for offered in self.offered.values():
++            offered.discard(sponsorId)
++
++        for avId, offeredId in list(self.initialOffer.items()):
++            if offeredId == sponsorId:
++                del self.initialOffer[avId]
++
++    def join(self, avId, sponsorId):
++        """avId joins sponsorId's crew. Returns True if he is in it now."""
++        avatar = self.getPlayer(avId)
++        sponsor = self.getPlayer(sponsorId)
++        bandManager = self.getBandManager()
++        if not avatar or not sponsor or bandManager is None or avId == sponsorId:
++            return False
++
++        if sponsorId not in self.crews or self.inBand(avId) or not self.crewIsOpen(sponsorId):
++            return False
++
++        bandId, band = bandManager.getBandOf(sponsorId)
++        if not band:
++            # the crew of one becomes a real crew now, with the sponsor as its captain
++            bandId = bandManager.createBand(sponsor)
++            self.crewsOfOne.discard(sponsorId)
++
++        bandManager.addMember(bandId, avatar, 0)
++        if not self.inBand(avId):
++            return False
++
++        self.forgetAvatar(avId)
++        self.sendUpdateToAvatarId(sponsorId, 'notifySponsorNewMember', [self.getName(avatar)])
++        self.notify.info('crew match: %s (%d) joined the crew of %s (%d), crew %d'
++            % (avatar.getName(), avId, sponsor.getName(), sponsorId, bandId))
++        return True
++
++    # --- client -> AI: a captain recruiting ------------------------------
++
++    def requestCrewAdd(self, range, sailValue, cannonValue):
++        avId, avatar = self.getSender()
++        if not avatar:
++            return
++
++        if not self.crewIsOpen(avId):
++            # not a captain with room, and no "Start a crew" pressed
++            self.sendUpdateToAvatarId(avId, 'responseCrewAdd', [0])
++            return
++
++        # listing again (new range or minimums) keeps who was offered it already, so
++        # nobody gets the same invitation twice
++        self.crews[avId] = {
++            'range': self.clamp(range, 0, self.MAX_RANGE),
++            'sail': self.clamp(sailValue, 0, self.MAX_SKILL_LEVEL),
++            'cannon': self.clamp(cannonValue, 0, self.MAX_SKILL_LEVEL),
++            'crewType': self.getCrewTypeAt(avatar)}
++        self.forgetAvatar(avId)
++        self.sendUpdateToAvatarId(avId, 'responseCrewAdd', [1])
++        self.notify.info('crew match: %s (%d) is recruiting %s' % (avatar.getName(), avId, self.crews[avId]))
++        self.offerToLookout(avId)
++
++    def requestCrewDelete(self):
++        avId, avatar = self.getSender()
++        listed = avId in self.crews
++        self.forgetCrew(avId)
++        if avatar:
++            self.sendUpdateToAvatarId(avId, 'responseCrewDelete', [int(listed)])
++
++    def requestCrewOfOneCreation(self):
++        avId, avatar = self.getSender()
++        if not avatar or self.inBand(avId):
++            return
++
++        self.crewsOfOne.add(avId)
++        self.forgetAvatar(avId)
++
++    def requestCrewOfOneDelete(self):
++        avId, avatar = self.getSender()
++        if avId not in self.crewsOfOne:
++            return
++
++        self.crewsOfOne.discard(avId)
++        if not self.inBand(avId):
++            self.forgetCrew(avId)
++
++    # --- client -> AI: a pirate looking for a crew -----------------------
++
++    def requestInitialAvatarAdd(self, crewType):
++        avId, avatar = self.getSender()
++        if not avatar:
++            return
++
++        crewType = CREW_TYPE_PVP if crewType == CREW_TYPE_PVP else CREW_TYPE_NORMAL
++        sponsorId = None if self.inBand(avId) else self.findCrewFor(avId, crewType)
++        if sponsorId:
++            sponsor = self.getPlayer(sponsorId)
++            self.initialOffer[avId] = sponsorId
++            self.sendUpdateToAvatarId(avId, 'responseInitialAvatarAdd',
++                [1, self.getName(sponsor), self.getLocation(sponsor), crewType])
++            self.notify.info('crew match: %d is looking for a crew, offered the crew of %d' % (avId, sponsorId))
++        else:
++            # the client then says "no crew found" and puts him on the lookout list
++            self.sendUpdateToAvatarId(avId, 'responseInitialAvatarAdd', [0, '', '', crewType])
++
++    def requestInitialAvatarAddResponse(self, response, crewType):
++        avId, avatar = self.getSender()
++        sponsorId = self.initialOffer.pop(avId, None)
++        if not avatar or not response:
++            return
++
++        joined = sponsorId is not None and self.join(avId, sponsorId)
++        self.sendUpdateToAvatarId(avId, 'responseInitialAvatarAddResponse', [int(joined)])
++
++    def requestPutAvatarOnLookoutList(self, crewType):
++        avId, avatar = self.getSender()
++        if not avatar or self.inBand(avId):
++            return
++
++        crewType = CREW_TYPE_PVP if crewType == CREW_TYPE_PVP else CREW_TYPE_NORMAL
++        declined = self.initialOffer.pop(avId, None)
++        if declined:
++            # he said no to the first crew offered: do not offer it again
++            self.offered.setdefault(avId, set()).add(declined)
++
++        if avId not in self.lookout:
++            self.lookout[avId] = crewType
++            self.notify.info('crew match: %s (%d) is on the lookout for a crew (type %d)' % (avatar.getName(), avId, crewType))
++        else:
++            self.lookout[avId] = crewType
++
++        sponsorId = self.findCrewFor(avId, crewType, skip=self.offered.get(avId, ()))
++        if sponsorId:
++            self.offerCrew(avId, sponsorId)
++
++    def requestdeleteAvatarFromLookoutList(self):
++        avId, avatar = self.getSender()
++        self.forgetAvatar(avId)
++
++    def requestAcceptInvite(self, crewOwnAvId):
++        avId, avatar = self.getSender()
++        if not avatar:
++            return
++
++        joined = crewOwnAvId in self.offered.get(avId, ()) and self.join(avId, crewOwnAvId)
++        # 0 makes the client say "that crew is no longer available" and show the next offer
++        self.sendUpdateToAvatarId(avId, 'responseInitialAvatarAddResponse', [int(joined)])
++
++    # --- AI side ---------------------------------------------------------
++
++    def avatarOffline(self, avId):
++        # called by the crew manager when a pirate leaves this district
++        self.forgetAvatar(avId)
++        self.forgetCrew(avId)
++        self.crewsOfOne.discard(avId)
+diff --git a/pirates/band/DistributedPirateBandManagerAI.py b/pirates/band/DistributedPirateBandManagerAI.py
+index ac9b15f..36cfcdd 100644
+--- a/pirates/band/DistributedPirateBandManagerAI.py
++++ b/pirates/band/DistributedPirateBandManagerAI.py
+@@ -244,6 +244,11 @@ class DistributedPirateBandManagerAI(DistributedObjectAI):
+         if avatarId in self.avatar2band:
+             self.removeMember(avatarId)
+ 
++        # family server (0230): take him off the crew matcher's lookout lists too
++        crewMatch = getattr(self.air, 'crewMatch', None)
++        if crewMatch is not None:
++            crewMatch.avatarOffline(avatarId)
++
+     def updateHp(self, avatarId):
+         # keep the crew HUD's health bars in step with the pirate's own health
+         member = self.getMember(avatarId)
+-- 
+2.53.0
+

@@ -1,0 +1,192 @@
+From 465f7c2dd5a2593c536afef421133d9bbecb90dd Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:27:12 -0800
+Subject: [PATCH 179/371] pirates: badge icons reach the ship and other
+ pirates, server side (0231)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/DistributedPlayerPirateAI.py | 126 ++++++++++++++++++++
+ pirates/world/DistributedShipDeployerAI.py  |   6 +
+ 2 files changed, 132 insertions(+)
+
+diff --git a/pirates/pirate/DistributedPlayerPirateAI.py b/pirates/pirate/DistributedPlayerPirateAI.py
+index e09cb99..23964f2 100644
+--- a/pirates/pirate/DistributedPlayerPirateAI.py
++++ b/pirates/pirate/DistributedPlayerPirateAI.py
+@@ -23,6 +23,7 @@ from pirates.uberdog.UberDogGlobals import InventoryCategory, InventoryType
+ from pirates.battle import WeaponGlobals
+ from pirates.reputation import ReputationGlobals
+ from pirates.piratesbase import Freebooter
++from pirates.pirate import TitleGlobals
+ 
+ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI, HumanDNAAI, DistributedQuestAvatarAI):
+     notify = DirectNotifyGlobal.directNotify.newCategory('DistributedPlayerPirateAI')
+@@ -58,6 +59,11 @@ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI,
+         self.activeShipId = 0
+         self.crewShipId = 0
+         self.questRewardFlags = 0
++        # family server (0231): the badge he shows by his name and on his ship
++        # ((-1, -1) = none; the database starts everyone at (0, 0), also none)
++        self.badgeIcon = (-1, -1)
++        self.shipBadgeIcon = (-1, -1)
++        self.founder = 0
+ 
+     def announceGenerate(self):
+         DistributedPlayerAI.announceGenerate(self)
+@@ -136,8 +142,116 @@ class DistributedPlayerPirateAI(DistributedPlayerAI, DistributedBattleAvatarAI,
+         DistributedBattleAvatarAI.setCurrentTarget(self, currentTargetDoId)
+ 
+     def d_setFounder(self, founder):
++        self.founder = founder  # family server (0231): the Founder badge needs it
+         self.sendUpdate('setFounder', [founder])
+ 
++    # family server (0231): badge icons. A badge is (titleId, rank); the Titles
++    # page (B) asks for one with requestBadgeIcon / requestShipBadgeIcon. Only a
++    # badge he has earned is saved; anything else is refused and his page is put back.
++    def setBadgeIcon(self, titleId, rank):
++        self.badgeIcon = (titleId, rank)
++
++    def d_setBadgeIcon(self, titleId, rank):
++        self.sendUpdate('setBadgeIcon', [titleId, rank])
++
++    def b_setBadgeIcon(self, titleId, rank):
++        self.setBadgeIcon(titleId, rank)
++        self.d_setBadgeIcon(titleId, rank)
++
++    def getBadgeIcon(self):
++        return self.badgeIcon
++
++    def setShipBadgeIcon(self, titleId, rank):
++        self.shipBadgeIcon = (titleId, rank)
++
++    def d_setShipBadgeIcon(self, titleId, rank):
++        self.sendUpdate('setShipBadgeIcon', [titleId, rank])
++
++    def b_setShipBadgeIcon(self, titleId, rank):
++        self.setShipBadgeIcon(titleId, rank)
++        self.d_setShipBadgeIcon(titleId, rank)
++
++    def getShipBadgeIcon(self):
++        return self.shipBadgeIcon
++
++    def getEarnedBadges(self):
++        """The badges he may show: [(titleId, highest rank earned), ...]."""
++        inv = self.getInventory()
++        earned = []
++        for titleId in sorted(TitleGlobals.TitlesDict):
++            invType = TitleGlobals.getInventoryType(titleId)
++            if invType is None:
++                exp = 1 if self.founder else 0
++            elif inv is None:
++                exp = 0
++            else:
++                exp = inv.getStackQuantity(invType) or 0
++
++            rank = TitleGlobals.getRank(titleId, exp)
++            if rank >= 1 and TitleGlobals.getIconName(titleId, rank):
++                earned.append((titleId, rank))
++
++        return earned
++
++    def checkBadge(self, titleId, rank):
++        """(-1, -1) to take the badge off, the badge itself if he has earned it,
++        or None to refuse it."""
++        if titleId <= 0 or rank <= 0:
++            return (-1, -1)
++
++        for earnedId, earnedRank in self.getEarnedBadges():
++            if earnedId == titleId and rank <= earnedRank:
++                if TitleGlobals.getIconName(titleId, rank):
++                    return (titleId, rank)
++
++        return None
++
++    def shownBadge(self, badge):
++        titleId, rank = badge
++        if titleId <= 0 or rank <= 0:
++            return (-1, -1)
++
++        return (titleId, rank)
++
++    def requestBadgeIcon(self, titleId, rank):
++        if self.air.getAvatarIdFromSender() != self.doId:
++            self.notify.warning('requestBadgeIcon for %d from someone else' % self.doId)
++            return
++
++        badge = self.checkBadge(titleId, rank)
++        if badge is None:
++            self.notify.warning('%d asked for badge %s/%s he has not earned' % (self.doId, titleId, rank))
++            self.d_setBadgeIcon(*self.shownBadge(self.badgeIcon))
++            return
++
++        self.b_setBadgeIcon(*badge)
++        self.notify.info('%d shows badge %s/%s by his name' % (self.doId, badge[0], badge[1]))
++
++    def requestShipBadgeIcon(self, titleId, rank):
++        if self.air.getAvatarIdFromSender() != self.doId:
++            self.notify.warning('requestShipBadgeIcon for %d from someone else' % self.doId)
++            return
++
++        badge = self.checkBadge(titleId, rank)
++        if badge is None:
++            self.notify.warning('%d asked for ship badge %s/%s he has not earned' % (self.doId, titleId, rank))
++            self.d_setShipBadgeIcon(*self.shownBadge(self.shipBadgeIcon))
++            return
++
++        self.b_setShipBadgeIcon(*badge)
++        self.notify.info('%d flies badge %s/%s on his ship' % (self.doId, badge[0], badge[1]))
++        for ship in self.getCaptainedShips():
++            ship.b_setBadge(*badge)
++
++    def getCaptainedShips(self):
++        """His ships out on the water right now."""
++        shipManager = getattr(self.air, 'shipManager', None)
++        if shipManager is None:
++            return []
++
++        return [ship for ship in shipManager.getPlayerShips()
++                if ship.getCaptainId() == self.doId]
++
+     def setInventoryId(self, inventoryId):
+         self.inventoryId = inventoryId
+ 
+@@ -871,6 +985,18 @@ def setDoubleXP(val):
+     target.b_setTempDoubleXPReward(val * 60)
+     return "Set %s's Double XP Reward to %s minutes" % (target.getName(), val)
+ 
++@magicWord(category=CATEGORY_SYSTEM_ADMIN)
++def badges():
++    """
++    Lists the badges you have earned and the ones you show (family server, 0231)
++    """
++
++    invoker = spellbook.getInvoker()
++    earned = ', '.join(['%s %d/%d' % (TitleGlobals.getTitleName(titleId), titleId, rank)
++                        for titleId, rank in invoker.getEarnedBadges()]) or 'none'
++    return 'Earned: %s. Name badge: %s/%s. Ship badge: %s/%s' % ((earned,) +
++        tuple(invoker.getBadgeIcon()) + tuple(invoker.getShipBadgeIcon()))
++
+ @magicWord(category=CATEGORY_SYSTEM_ADMIN, types=[int])
+ def setFounder(state):
+     """
+diff --git a/pirates/world/DistributedShipDeployerAI.py b/pirates/world/DistributedShipDeployerAI.py
+index 116f080..0010a64 100644
+--- a/pirates/world/DistributedShipDeployerAI.py
++++ b/pirates/world/DistributedShipDeployerAI.py
+@@ -123,6 +123,12 @@ class DeployShipFSM(ShipDeployerOperationFSM):
+         # set the ship's captain
+         self.ship.b_setCaptainId(self.avatar.doId)
+ 
++        # family server (0231): fly the badge the captain picked on the Titles page
++        if hasattr(self.avatar, 'getShipBadgeIcon'):
++            titleId, rank = self.avatar.getShipBadgeIcon()
++            if titleId > 0 and rank > 0:
++                self.ship.b_setBadge(titleId, rank)
++
+         # move the ship to it's appropriate locations
+         self.ship.setPos(self.oceanGrid, *self.spawnPoint)
+         self.oceanGrid.addObjectToOceanGrid(self.ship)
+-- 
+2.53.0
+

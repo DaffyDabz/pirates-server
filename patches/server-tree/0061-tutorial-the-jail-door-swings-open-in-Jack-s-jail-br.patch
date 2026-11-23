@@ -1,0 +1,50 @@
+From eea659f332e9f67583b89f5319eba748b1f4491b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 01:10:23 -0800
+Subject: [PATCH 061/371] tutorial: the jail door swings open in Jack's
+ jail-break scene instead of crashing the game
+
+LocalPirate.openJailDoor looked for the cell door two levels above the pirate.
+Since 0072 the tutorial jail interior stands in its own container, so the door
+came back empty and LerpHprInterval asserted (!is_empty) in "1.1.2: Jail Break
+(continued)". Look for the jail in the whole scene when the door is not there,
+and leave the door shut rather than crash if it is still not found.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/LocalPirate.py | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/pirate/LocalPirate.py b/pirates/pirate/LocalPirate.py
+index 3776343..236077e 100644
+--- a/pirates/pirate/LocalPirate.py
++++ b/pirates/pirate/LocalPirate.py
+@@ -1264,12 +1264,24 @@ class LocalPirate(DistributedPlayerPirate, LocalAvatar):
+         if jail == None or jail.isEmpty():
+             return
+         jail_door = jail.find('**/jail_door0' + stringIndex)
++        if jail_door.isEmpty():
++            # family server (11-17): the tutorial jail interior stands in its own container, not above the pirate,
++            # and an empty door crashed the game in Jack's jail-break scene. Look for the jail in the whole scene,
++            # and leave the door shut if it is not there
++            jail = render.find('**/*navy_jail_interior*')
++            if jail.isEmpty():
++                return
++            jail_door = jail.find('**/jail_door0' + stringIndex)
++            if jail_door.isEmpty():
++                return
++
+         jail_lock = jail.find('**/lock0' + stringIndex)
+         jail_door_collision = jail.find('**/door_collision_0' + stringIndex)
+         seq = Sequence(LerpHprInterval(jail_door, 1, VBase3(120, jail_door.getP(), jail_door.getR()), blendType='easeInOut'), duration=1.0)
+         seq.start()
+         self.openJailDoorTrack = seq
+-        jail_door_collision.setR(30)
++        if not jail_door_collision.isEmpty():
++            jail_door_collision.setR(30)
+         if not jail_lock.isEmpty():
+             jail_lock.stash()
+ 
+-- 
+2.53.0
+

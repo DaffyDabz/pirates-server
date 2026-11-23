@@ -1,0 +1,148 @@
+From 6e163a5b6d86f0131646dcb6c42bf6cb93031a65 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 21:36:47 -0800
+Subject: [PATCH 038/371] ships: a pirate whose ship sinks at sea lands on his
+ return island and stays connected
+
+A sunk ship was deleted with its crew still parented to it, so Astron
+deleted their avatars too and ejected them (153). The old sink handler
+asked the teleport manager to move them first, but the manager looks for
+the world above the pirate's parent (the ship), finds none and does
+nothing.
+
+Now the sinking task waits 20 s for the crew's sinking scene, then sends
+each pirate aboard sendCrewToIsland (the message docking uses) to his
+return island, or Port Royal if he has none, retrying every 15 s. The
+ship deletes itself once nobody is parented to it. _playerDeparted
+ignores a ship that is already deleted (it raised "duplicate delete()")
+and leaves a sinking ship to the task instead of putting it away.
+
+Proof: hidden bot run SINK1 (11-16): sinking scene, then LandRoam on
+Port Royal 23 s after the sink, still there and connected 120 s later,
+quests unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShipAI.py | 32 +++++++++++++++++++++++++++
+ pirates/ship/GameFSMShipAI.py     | 36 +++++++++++++++++++------------
+ 2 files changed, 54 insertions(+), 14 deletions(-)
+
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index 7661f1d..3c24c13 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -24,6 +24,7 @@ from pirates.shipparts.DistributedShipRepairSpotAI import DistributedShipRepairS
+ from pirates.battle.DistributedShipBroadsideAI import DistributedShipBroadsideAI
+ from pirates.battle.DistributedShipCannonAI import DistributedShipCannonAI
+ from pirates.world.DistributedIslandAI import DistributedIslandAI
++from pirates.quest.QuestConstants import LocationIds
+ from pirates.uberdog.DistributedInventoryBase import DistributedInventoryBase
+ from pirates.ship.GameFSMShipAI import GameFSMShipAI
+ from pirates.uberdog.UberDogGlobals import InventoryCategory, InventoryType
+@@ -502,6 +503,11 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+     def _playerDeparted(self, avatar):
+         assert(isinstance(avatar, DistributedPlayerPirateAI))
+         self.ignore(avatar.getDeleteEvent())
++        if self.air is None or self.air.doId2do.get(self.doId) is not self:
++            # this ship is deleted already (a crewman's delete came after it); moving
++            # it again raised "duplicate delete()" (2026-11-16)
++            return
++
+         self.removeCrewMember(avatar)
+         for spot in self.repairSpots:
+             if spot.userId == avatar.doId:
+@@ -514,6 +520,9 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+ 
+         # properly handle disabling the ship when no players remain on it:
+         if len(self.crew) == 0:
++            if self.gameState[0] == 'Sinking':
++                return    # the sinking task deletes a sunk ship once nobody is aboard
++
+             self.b_setGameState('PutAway', 0)
+             self.b_setLocation(self.parentId, 0)
+ 
+@@ -961,6 +970,29 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+     def d_sendCrewToIsland(self, avatarId, islandDoId, posH):
+         self.sendUpdateToAvatarId(avatarId, 'sendCrewToIsland', [islandDoId, posH])
+ 
++    def getPiratesAboard(self):
++        # the pirates parented to this ship: deleting the ship deletes them too
++        if self.air is None:
++            return []
++
++        return [av for av in self.air.getDoList(self.doId, classType=DistributedPlayerPirateAI)
++                if av is not None]
++
++    def sendCrewAshore(self, avatar):
++        # a sunk ship's pirate lands on his return island (the last port town he stood
++        # in; Port Royal if he has none), the way dropAnchor lands a docking crew
++        world = self.getParentObj()
++        world = world.getParentObj() if world is not None else None
++        for uid in (avatar.getReturnLocation(), LocationIds.PORT_ROYAL_ISLAND):
++            island = self.air.uidMgr.justGetMeMeObject(uid) if uid else None
++            if isinstance(island, DistributedIslandAI) and island.getParentObj() is world:
++                self.d_sendCrewToIsland(avatar.doId, island.doId, world.getSpawnPt(uid))
++                self.notify.warning('sunk ship %s: sending %s ashore at %s' % (self.doId, avatar.doId, uid))
++                return True
++
++        self.notify.warning('sunk ship %s: no return island in this world for %s' % (self.doId, avatar.doId))
++        return False
++
+     def setClientController(self, clientControllerDoId):
+         self.clientControllerDoId = clientControllerDoId
+ 
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index 57abbd9..b1f56df 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -2755,25 +2755,33 @@ class GameFSMShipAI(FSM.FSM):
+         def _shipSunk(task):
+             # a sunk player ship still carries its crew: deleting it with them aboard
+             # deleted their avatars too and the game ejected them ("session object
+-            # unexpectedly deleted", 2026-09-22). Wash the crew ashore at their return
+-            # port first; the ship is put away once the last one has left.
+-            crew = [self.air.doId2do.get(avId) for avId in list(getattr(self.ship, 'crew', []) or [])]
+-            crew = [av for av in crew if av is not None]
+-            self._sunkTries = getattr(self, '_sunkTries', 0) + 1
+-            if crew and self._sunkTries <= 3:
+-                task.delayTime = 30
+-                for av in crew:
++            # unexpectedly deleted", 2026-09-22). So the ship first sends each pirate
++            # aboard to his return island, the way docking lands a crew, and is deleted
++            # only once nobody stands on it. (Asking the teleport manager instead never
++            # worked: it looks for the world above the pirate's parent, which is the
++            # ship, finds none and gives up; 2026-11-16.)
++            aboard = self.ship.getPiratesAboard()
++            if not aboard:
++                self.ship.requestDelete()
++                return Task.done
++
++            self._sunkTries += 1
++            if self._sunkTries <= 5:
++                for av in aboard:
+                     try:
+-                        uid = av.getReturnLocation() if hasattr(av, 'getReturnLocation') else ''
+-                        self.air.teleportMgr.d_initiateTeleport(av, locationUid=uid or '1150922126.8dzlu')
++                        self.ship.sendCrewAshore(av)
+                     except Exception as e:
+                         self.notify.warning('sunk ship %s: could not send %s ashore: %s' % (self.ship.doId, av.doId, e))
+-                return Task.again     # (leaving the ship puts it away and ends this task)
++            elif self._sunkTries == 6:
++                self.notify.warning('sunk ship %s: %s still aboard; it stays until they leave'
++                    % (self.ship.doId, [av.doId for av in aboard]))
+ 
+-            self.ship.requestDelete()
+-            return Task.done
++            task.delayTime = 15
++            return Task.again
+ 
+-        self._sinkingTask = taskMgr.doMethodLater(60, _shipSunk, 
++        # the crew's sinking scene runs about 15 s and ends on a black screen
++        delay = 20 if self.ship.getPiratesAboard() else 60
++        self._sinkingTask = taskMgr.doMethodLater(delay, _shipSunk,
+                                                    self.ship.uniqueName('shipSunk'))
+     def exitSinking(self):
+         if self._sinkingTask is not None:
+-- 
+2.53.0
+

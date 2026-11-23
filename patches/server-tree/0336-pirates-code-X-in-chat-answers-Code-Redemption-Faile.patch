@@ -1,0 +1,53 @@
+From be53efeb4b19cac851d04dab8a57ed8a80b0b62a Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 23:51:43 -0800
+Subject: [PATCH 336/371] pirates: "/code X" in chat answers "Code Redemption
+ Failed" at once instead of nothing; nothing is sent outside (code-0001,
+ UberDOG only)
+
+Typing /code and a code showed "Redeeming Code X" and then nothing, forever. CodeRedemptionUD.sendCodeForRedemption
+looked the sender up in the UberDOG's doId2do, where player avatars never are, so it returned at once. Past that it
+called requestCodeVerification without its avatar argument (a TypeError) and posted the code to an outside site
+(api.piratesclassic.com) whose answer handler is a TODO.
+
+- No code server runs for the family game, so every code now answers status 0 to the sender at once
+  (notifyClientCodeRedeemStatus -> the client's own CodeRedemptionBad line, "Code Redemption Failed"), through
+  sendUpdateToAvatarId, the same reply path the friends manager uses. One UD info line per try. No sender avatar ->
+  nothing sent. Nothing is posted outside.
+
+UberDOG only; needs an UberDOG restart. No AI restart, no client publish. Test: test_code.py (stand-in UberDOG):
+live FAIL (answered nothing), patched PASS 2/2.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/coderedemption/CodeRedemptionUD.py | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/pirates/coderedemption/CodeRedemptionUD.py b/pirates/coderedemption/CodeRedemptionUD.py
+index e05a8e2..b6e8cb7 100644
+--- a/pirates/coderedemption/CodeRedemptionUD.py
++++ b/pirates/coderedemption/CodeRedemptionUD.py
+@@ -48,12 +48,15 @@ class CodeRedemptionUD(DistributedObjectGlobalUD):
+             callback=handleVerifyCallback)
+ 
+     def sendCodeForRedemption(self, code, username):
+-        avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
+-        if not avatar:
++        # family server (11-20, code-0001): "/code X" in chat said "Redeeming Code X" and then nothing. Player avatars
++        # are not in the UberDOG's doId2do, so this returned at once; past that it called requestCodeVerification
++        # without its avatar and posted the code to an outside site whose answer is a TODO. No code server runs for
++        # the family game, so every code answers "failed" to the sender at once.
++        avatarId = self.air.getAvatarIdFromSender()
++        if not avatarId:
+             return
+-
+-        code = code.lower()
+-        self.requestCodeVerification(code, username)
++        self.notify.info('code redemption: avatar %s tried a code; no code server, answered failed' % avatarId)
++        self.d_notifyClientCodeRedeemStatus(avatarId, 0)
+ 
+     def d_notifyClientCodeRedeemStatus(self, avatarId, status):
+         self.notify.debug('Sending redeemp notify status (%s) to avatar (%s)' % (status, avatarId))
+-- 
+2.53.0
+

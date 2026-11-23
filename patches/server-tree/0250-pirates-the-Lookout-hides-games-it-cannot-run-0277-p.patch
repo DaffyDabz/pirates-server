@@ -1,0 +1,35 @@
+From 620e96b3113fb3ecb99047ebe8ac7d328b4b858b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:58:05 -0800
+Subject: [PATCH 250/371] pirates: the Lookout hides games it cannot run (0277,
+ patch 22)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/GameTypeGlobals.py | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/pirates/world/GameTypeGlobals.py b/pirates/world/GameTypeGlobals.py
+index a2cc800..5caa955 100644
+--- a/pirates/world/GameTypeGlobals.py
++++ b/pirates/world/GameTypeGlobals.py
+@@ -252,11 +252,11 @@ GameTypes = {
+         'style': gatherGameStyleInfo,
+         'hidden': True}}
+ pvpMode = ConfigVariableBool('pvp-testing-level', 0).getValue()
+-if pvpMode < 1:
+-    del GameTypes[PiratesGlobals.GAME_TYPE_PVP]['style'][PiratesGlobals.GAME_STYLE_CTL]
+-
+-if pvpMode < 2:
+-    del GameTypes[PiratesGlobals.GAME_TYPE_PVP]['style'][PiratesGlobals.GAME_STYLE_PIRATEER]
++# family server (patch 0277): the match maker (0272) runs Skirmish, Team Battle and Sea Battle, not Capture the
++# Loot or Pirateer, so both stay off the Lookout even when pvp-testing-level is set (it used to show Capture the
++# Loot, which only answered "That game isn't on this server yet").
++for unrunStyle in (PiratesGlobals.GAME_STYLE_CTL, PiratesGlobals.GAME_STYLE_PIRATEER):
++    GameTypes[PiratesGlobals.GAME_TYPE_PVP]['style'].pop(unrunStyle, None)
+ 
+ # family server (patch 0283): Sea Battle stays in the Lookout. pvp-testing-level is read as a Bool
+ # (0 or 1), so the old "below 3" test always removed it. The family server runs Sea Battle (0250) and
+-- 
+2.53.0
+

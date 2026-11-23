@@ -1,0 +1,61 @@
+From cb05b825e0f00cbf0215633344923ec6081b8678 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 07:31:25 -0800
+Subject: [PATCH 255/371] pirates: a pirate leaving jail closes his own cell
+ door (0342)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedJailInteriorAI.py | 21 +++++++++++++++++----
+ 1 file changed, 17 insertions(+), 4 deletions(-)
+
+diff --git a/pirates/world/DistributedJailInteriorAI.py b/pirates/world/DistributedJailInteriorAI.py
+index 9af3897..654bf7b 100644
+--- a/pirates/world/DistributedJailInteriorAI.py
++++ b/pirates/world/DistributedJailInteriorAI.py
+@@ -18,12 +18,18 @@ class DistributedJailInteriorAI(DistributedGAInteriorAI):
+     def handleChildLeave(self, childObj, zoneId):
+         if isinstance(childObj, DistributedPlayerPirateAI) and not childObj.isNpc:
+             if childObj.getJailCellIndex() < 100:
+-                cellDoor = self.getCellDoor(avatarId=childObj.doId)
++                # family server (11-19, 0342): the door he kicked open, else his own cell's door. It was a random
++                # door when he had not kicked one (he logged off in his cell), which could close another pirate's
++                # open door with that pirate's kick mark still on it, so the door could not be kicked again and he
++                # was shut in. A closed door can always be kicked again (its mark is cleared).
++                cellDoor = self.getCellDoor(avatarId=childObj.doId, cellIndex=childObj.getJailCellIndex())
++                childObj.b_setJailCellIndex(100)
+                 if not cellDoor:
+-                    self.notify.warning('Cannot reset cell door for avatar %d, no cell door found!' % avatar.doId)
++                    self.notify.warning('Cannot reset cell door for avatar %d, no cell door found!' % childObj.doId)
++                    DistributedGAInteriorAI.handleChildLeave(self, childObj, zoneId)
+                     return
+ 
+-                childObj.b_setJailCellIndex(100)
++                cellDoor.setAvatarId(0)
+                 cellDoor.b_setHealth(cellDoor.getMaxHealth())
+ 
+         DistributedGAInteriorAI.handleChildLeave(self, childObj, zoneId)
+@@ -43,12 +49,19 @@ class DistributedJailInteriorAI(DistributedGAInteriorAI):
+ 
+         del self.cellDoors[cellDoor.doId]
+ 
+-    def getCellDoor(self, cellDoorId=None, avatarId=None):
++    def getCellDoor(self, cellDoorId=None, avatarId=None, cellIndex=None):
+         if avatarId is not None:
+             for cellDoor in list(self.cellDoors.values()):
+                 if cellDoor.getAvatarId() == avatarId:
+                     return cellDoor
+ 
++        if cellIndex is not None:
++            for cellDoor in list(self.cellDoors.values()):
++                if cellDoor.getCellIndex() == cellIndex:
++                    return cellDoor
++
++            return None
++
+         if len(self.cellDoors) == 0:
+             return None
+ 
+-- 
+2.53.0
+

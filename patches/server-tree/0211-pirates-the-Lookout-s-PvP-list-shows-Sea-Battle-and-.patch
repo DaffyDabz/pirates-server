@@ -1,0 +1,30 @@
+From 6df674d51774e34e4669c2006dc3f41d31502952 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:47:19 -0800
+Subject: [PATCH 211/371] pirates: the Lookout's PvP list shows Sea Battle and
+ puts the pirate on the team with room (0283, patch 20)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/GameTypeGlobals.py | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/world/GameTypeGlobals.py b/pirates/world/GameTypeGlobals.py
+index e068edb..a2cc800 100644
+--- a/pirates/world/GameTypeGlobals.py
++++ b/pirates/world/GameTypeGlobals.py
+@@ -258,8 +258,9 @@ if pvpMode < 1:
+ if pvpMode < 2:
+     del GameTypes[PiratesGlobals.GAME_TYPE_PVP]['style'][PiratesGlobals.GAME_STYLE_PIRATEER]
+ 
+-if pvpMode < 3:
+-    del GameTypes[PiratesGlobals.GAME_TYPE_PVP]['style'][PiratesGlobals.GAME_STYLE_SHIP_BATTLE]
++# family server (patch 0283): Sea Battle stays in the Lookout. pvp-testing-level is read as a Bool
++# (0 or 1), so the old "below 3" test always removed it. The family server runs Sea Battle (0250) and
++# the match maker sends a Lookout request to a team dock (0272); with Sea Battle off it says so.
+ 
+ 
+ def getGameTypes():
+-- 
+2.53.0
+

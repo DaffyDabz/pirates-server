@@ -1,0 +1,32 @@
+diff --git a/libotp/Nametag.py b/libotp/Nametag.py
+index 040d002..5eb6ab6 100644
+--- a/libotp/Nametag.py
++++ b/libotp/Nametag.py
+@@ -142,7 +142,8 @@ class Nametag(ClickablePopup):
+         else:
+             self.m_popup_region = self._createRegion(frame)
+ 
+-        self.m_popup_region.setSort(int(sort))
++        # Family patch: sort can overflow a C long when the tag is far off screen.
++        self.m_popup_region.setSort(max(-2147483648, min(2147483647, int(sort))))
+         self.m_seq = self.m_group.getRegionSeq()
+ 
+     def startFlash(self, np):
+diff --git a/libotp/Nametag3d.py b/libotp/Nametag3d.py
+index 7b13145..7fbf2d2 100644
+--- a/libotp/Nametag3d.py
++++ b/libotp/Nametag3d.py
+@@ -39,7 +39,12 @@ class Nametag3d(Nametag, PandaNode):
+         return self.m_billboard_offset
+ 
+     def cullCallback(self, traverse_data):
+-        if self.isGroupManaged():
++        # Family patch: the wrapper Panda hands back here can lack the Python-side attributes.
++        try:
++            managed = self.isGroupManaged()
++        except AttributeError:
++            return True
++        if managed:
+             # sort = CullBinManager.getGlobalPtr().getBinSort(traverse_data._state.getBinIndex())
+             # np = traverse_data._node_path.getNodePath()
+             traverser = traverse_data.getTrav()

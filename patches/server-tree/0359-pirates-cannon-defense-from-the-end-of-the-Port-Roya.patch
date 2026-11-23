@@ -1,0 +1,1302 @@
+From 2e6ac9c4a18cbef523ccd3eab17cb1a41db95c4d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 21:18:16 -0800
+Subject: [PATCH 359/371] pirates: cannon defense from the end of the Port
+ Royal docks (a gold pile takes a pirate and friends to a private cannon
+ island with 4 cannons; 6 waves of raider ships come for the gold; sink them
+ to keep it, everyone who took part is paid gold, max about 660), ported from
+ the original game: AI + client + DC classes 255/256 at the end of pirates.dc
+ (client patch 56 = v499 published first, then a full restart; rollback =
+ want-cannon-defense 0 + AI restart)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ astron/dclass/pirates.dc                      |  12 +
+ .../worldData/PortRoyalCannonIsland.py        |   3 +
+ .../worldData/PortRoyalCannonWorld.py         |   3 +
+ .../leveleditor/worldData/PortRoyalIsland.py  |  11 +
+ pirates/minigame/DefendGlobals.py             | 133 ++++
+ pirates/minigame/DistributedDefendEntrance.py |  43 ++
+ .../minigame/DistributedDefendEntranceAI.py   | 144 +++++
+ pirates/minigame/DistributedDefendWorld.py    | 191 ++++++
+ pirates/minigame/DistributedDefendWorldAI.py  | 586 ++++++++++++++++++
+ pirates/world/GameAreaBuilderAI.py            |  17 +
+ pirates/world/WorldCreatorAI.py               |   3 +
+ 11 files changed, 1146 insertions(+)
+ create mode 100644 pirates/leveleditor/worldData/PortRoyalCannonIsland.py
+ create mode 100644 pirates/leveleditor/worldData/PortRoyalCannonWorld.py
+ create mode 100644 pirates/minigame/DefendGlobals.py
+ create mode 100644 pirates/minigame/DistributedDefendEntrance.py
+ create mode 100644 pirates/minigame/DistributedDefendEntranceAI.py
+ create mode 100644 pirates/minigame/DistributedDefendWorld.py
+ create mode 100644 pirates/minigame/DistributedDefendWorldAI.py
+
+diff --git a/astron/dclass/pirates.dc b/astron/dclass/pirates.dc
+index 34ffcdf..fa793a5 100644
+--- a/astron/dclass/pirates.dc
++++ b/astron/dclass/pirates.dc
+@@ -71,6 +71,8 @@ from pirates.minigame import DistributedRepairGame/AI
+ from pirates.minigame import DistributedRepairBench/AI
+ from pirates.minigame import DistributedPotionGame/AI
+ from pirates.minigame import DistributedPotionCraftingTable/AI
++from pirates.minigame import DistributedDefendEntrance/AI
++from pirates.minigame import DistributedDefendWorld/AI
+ from pirates.creature import DistributedCreature/AI
+ from pirates.creature import DistributedAlligator/AI
+ from pirates.creature import DistributedBat/AI
+@@ -2230,3 +2232,13 @@ dclass DistributedPotionCraftingTable : DistributedInteractive {
+   setParentingRules(string, string) broadcast ram;
+   checkExit() clsend airecv;
+ };
++
++dclass DistributedDefendEntrance : DistributedInteractive {
++  setParentingRules(string, string) broadcast ram;
++};
++
++dclass DistributedDefendWorld : DistributedInstanceWorld {
++  setDefendState(uint8 phase, uint8 wave, uint16 secondsLeft, uint16 shipsLeft, uint16 shipsSunk, uint32 goldLeft) required broadcast ram;
++  setDefendResult(uint8 won, uint16 shipsSunk, uint32 goldKept, uint32 goldReward) broadcast;
++  requestLeave() airecv clsend;
++};
+diff --git a/pirates/leveleditor/worldData/PortRoyalCannonIsland.py b/pirates/leveleditor/worldData/PortRoyalCannonIsland.py
+new file mode 100644
+index 0000000..3d5eff4
+--- /dev/null
++++ b/pirates/leveleditor/worldData/PortRoyalCannonIsland.py
+@@ -0,0 +1,3 @@
++from panda3d.core import Point3, VBase3, Vec4, Vec3
++objectStruct = {'Objects': {'1257979851.56akelts': {'Type': 'Island','Name': 'CANNONS RULE','File': '','Environment': 'OpenSky','Minimap': False,'Minimap Prefix': '','Objects': {'1259627393.88Bill': {'Type': 'Locator Node','Name': 'portal_exterior_2','Hpr': VBase3(-76.56, 0.0, 0.0),'Pos': Point3(960.046, 290.095, 37.54),'Scale': VBase3(1.0, 1.0, 1.0)},'1259627393.89Bill': {'Type': 'Locator Node','Name': 'portal_exterior_3','Hpr': VBase3(-68.249, 0.0, 0.0),'Pos': Point3(1500.08, -65.698, 4.606),'Scale': VBase3(1.0, 1.0, 1.0)},'1259627393.8Bill': {'Type': 'Locator Node','Name': 'portal_exterior_1','Hpr': VBase3(-17.995, 0.0, 0.0),'Pos': Point3(298.146, -13.465, 5.794),'Scale': VBase3(1.0, 1.0, 1.0)},'1259785386.66Bill': {'Type': 'Cannon Defense','DisableCollision': False,'Hpr': VBase3(0.0, 0.0, 0.0),'Objects': {'1259785422.56Bill': {'Type': 'Defense Cannon','GridPos': Point3(-316.0, -568.5, 29.976),'Hpr': VBase3(270.0, 0.0, 0.0),'MaxPower': '1.0','MinPower': '0.2','Pos': Point3(16.0, -7.5, -0.024),'Scale': VBase3(0.9, 0.9, 0.9),'VisSize': '','Visual': {'Model': 'models/shipparts/cannon_bronze_hi'}},'1259785550.89Bill': {'Type': 'Player Spawn Node','Hpr': VBase3(270.0, 0.0, 0.0),'Index': -1,'Pos': Point3(-12.644, 0.43, -0.024),'Scale': VBase3(1.0, 1.0, 1.0),'Spawnables': 'All','VisSize': '','Visual': {'Color': (0.5, 0.5, 0.5, 1),'Model': 'models/misc/smiley'}},'1259785634.7Bill': {'Type': 'Defense Cannon','GridPos': Point3(-316.0, -553.5, 30.0),'Hpr': VBase3(270.0, 0.0, 0.0),'MaxPower': '1.0','MinPower': '0.2','Pos': Point3(16.0, 7.5, 0.0),'Scale': VBase3(0.9, 0.9, 0.9),'VisSize': '','Visual': {'Model': 'models/shipparts/cannon_bronze_hi'}},'1259785835.34Bill': {'Type': 'Defense Cannon','GridPos': Point3(-316.0, -538.5, 29.976),'Hpr': VBase3(270.0, 0.0, 0.0),'MaxPower': '1.0','MinPower': '0.2','Pos': Point3(16.0, 22.5, -0.024),'Scale': VBase3(0.9, 0.9, 0.9),'VisSize': '','Visual': {'Model': 'models/shipparts/cannon_bronze_hi'}},'1259786106.45Bill': {'Type': 'Defense Cannon','GridPos': Point3(-315.363, -583.5, 29.976),'Hpr': VBase3(270.0, 0.0, 0.0),'MaxPower': '1.0','MinPower': '0.2','Pos': Point3(16.637, -22.5, -0.024),'Scale': VBase3(0.9, 0.9, 0.9),'VisSize': '','Visual': {'Model': 'models/shipparts/cannon_bronze_hi'}}},'Pos': Point3(550.0, -525.0, 155.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Model': 'models/buildings/pir_m_gam_can_cannonOverlay_portRoyal'}},'1259861633.94Bill': {'Type': 'Prop_Island','DisableCollision': False,'Holiday': '','Hpr': VBase3(171.87, 0.0, 0.0),'Pos': Point3(1500.0, -950.0, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': 'Large','VisZone': '20','Visual': {'Model': 'models/islands/pir_m_are_isl_cannon_complementaryIsland'}},'1262879133.72Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(735.982, -761.265, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262879143.75Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(785.76, -715.768, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262879153.05Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(812.89, -650.16, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262885173.8Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(825.0, -546.33, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262885199.23Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'Wait-Point','Pos': Point3(819.47, -477.565, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262885214.56Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(801.4, -416.653, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262885220.48Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(795.0, -384.0, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262893283.78Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(812.875, -350.143, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262893295.3Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'Mine','Pos': Point3(843.573, -333.0, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262893313.38Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(878.613, -331.0, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262893384.22Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(916.946, -348.529, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896543.81Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(958.439, -407.441, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896562.45Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1057.1, -471.589, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896579.55Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1247.713, -504.169, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896610.42Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1601.81, -545.696, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896621.88Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'Depart','Pos': Point3(1817.723, -618.976, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896633.92Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1894.019, -725.29, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896770.33Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'Spawn','Pos': Point3(770.724, -985.842, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896777.86Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(862.931, -886.222, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896784.53Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(922.176, -715.163, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896790.56Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'Wait-Point','Pos': Point3(949.989, -576.406, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896804.8Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(984.03, -374.188, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896864.72Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'Mine','Pos': Point3(1011.845, -331.545, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896870.16Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1079.439, -335.657, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896873.69Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1119.652, -374.101, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896965.5Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1244.933, -433.01, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896986.2Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1576.302, -462.179, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262896999.75Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1731.352, -402.374, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262897002.72Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'Depart','Pos': Point3(1827.716, -144.909, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262897076.89Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'Spawn','Pos': Point3(1022.641, -1011.273, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262897082.55Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1047.41, -849.467, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262897090.17Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'Wait-Point','Pos': Point3(1076.421, -637.579, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262899159.31Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1121.793, -444.43, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262899164.31Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1138.16, -359.39, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262899170.47Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'Mine','Pos': Point3(1191.313, -317.655, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262899177.66Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1238.571, -313.365, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262899214.66Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1301.941, -353.612, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262899225.75Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1474.414, -336.733, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1262899232.41Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'Depart','Pos': Point3(1639.229, -191.206, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1263851954.81Bill': {'Type': 'Cannon Defense Movement Node','Name': 'Unknown','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'Spawn','Pos': Point3(566.647, -936.097, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1263851958.5Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(667.699, -837.218, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1263852000.83Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1938.9, -841.25, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1263852072.77Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1755.75, 149.626, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1264528580.61Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1953.557, -931.463, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1265059603.98Bill': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'Depart','Pos': Point3(1841.009, 150.664, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1266454311.13laura': {'Type': 'Building Exterior','File': '','ExtUid': '1266454311.13laura0','Holiday': '','Hpr': VBase3(316.064, 0.0, 0.0),'Objects': {'1266454311.14laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(1061.956, -172.991, 13.755),'Hpr': VBase3(-180.0, 0.0, 0.0),'Pos': Point3(-2.385, -6.663, 0.992),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(1064.342, -166.329, 12.762),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_i','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1266454611.64laura': {'Type': 'Building Exterior','File': '','ExtUid': '1266454611.64laura0','Holiday': '','Hpr': VBase3(-26.514, 0.0, 0.0),'Objects': {'1266454611.67laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(978.438, -145.222, 18.603),'Hpr': VBase3(-91.631, -1.219, 0.206),'Pos': Point3(12.513, -7.087, 5.3),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(965.925, -138.135, 13.303),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_f','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1266454868.84laura': {'Type': 'Building Exterior','File': '','ExtUid': '1266454868.84laura0','Holiday': '','Hpr': VBase3(198.435, 0.0, 0.0),'Pos': Point3(1109.408, -210.0, 13.62),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_e','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1266455097.48laura': {'Type': 'Building Exterior','File': '','ExtUid': '1266455097.48laura0','Holiday': '','Hpr': VBase3(143.13, 0.0, 0.0),'Objects': {'1266455097.52laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(1291.221, -6.968, 22.182),'Hpr': VBase3(-90.0, 0.0, 0.0),'Pos': Point3(12.363, 6.985, 0.805),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(1278.858, -13.953, 21.377),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_a','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1266455137.78laura': {'Type': 'Building Exterior','File': '','ExtUid': '1266455137.78laura0','Holiday': '','Hpr': VBase3(163.301, 0.0, 0.0),'Pos': Point3(1255.846, -49.76, 17.734),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_b','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1266455245.98laura': {'Type': 'Building Exterior','File': '','ExtUid': '1266455245.98laura0','Holiday': '','Hpr': VBase3(136.042, 0.0, 0.0),'Pos': Point3(1054.589, -145.922, 13.261),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_c','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1266455443.69laura': {'Type': 'Building Exterior','File': '','ExtUid': '1266455443.69laura0','Holiday': '','Hpr': VBase3(153.435, 0.0, 0.0),'Pos': Point3(944.91, -130.615, 13.289),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_e','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1266455563.5laura': {'Type': 'Building Exterior','File': '','ExtUid': '1266455563.5laura0','Holiday': '','Hpr': Point3(0.0, 0.0, 0.0),'Objects': {'1266455563.53laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(931.789, -187.945, 12.481),'Hpr': VBase3(-180.0, 0.0, 0.0),'Pos': Point3(5.329, -23.997, -0.083),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(1256.314, -75.539, 12.564),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_m','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1266455662.39laura': {'Type': 'Building Exterior','File': '','ExtUid': '1266455662.39laura0','Holiday': '','Hpr': VBase3(81.703, 0.0, 0.0),'Pos': Point3(943.119, -155.003, 12.717),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_h','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1266455800.42laura': {'Type': 'Tree','DisableCollision': False,'Holiday': '','Hpr': Point3(0.0, 0.0, 0.0),'Pos': Point3(1101.322, -189.127, 14.563),'Scale': VBase3(0.65, 0.65, 0.65),'VisSize': '','Visual': {'Model': 'models/vegetation/gen_tree_e'}},'1267038155.81laura': {'Type': 'Door Locator Node','Name': 'door_locator','Hpr': VBase3(-180.0, 0.0, 0.0),'Pos': Point3(38.583, 2.984, 2.0),'Scale': VBase3(1.0, 1.0, 1.0)},'1267038598.66laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267038598.66laura0','Holiday': '','Hpr': VBase3(78.311, 0.0, 0.0),'Objects': {'1267038598.69laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(873.891, -159.98, 18.08),'Hpr': VBase3(-180.0, 0.0, 0.0),'Pos': Point3(5.329, -23.997, -0.083),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(841.9, -135.983, 18.163),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_m','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267040489.14laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267040489.14laura0','Holiday': '','Hpr': VBase3(-10.491, 0.0, 0.0),'Objects': {'1267040489.16laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(820.346, -97.478, 21.289),'Hpr': VBase3(117.94, 0.0, 0.0),'Pos': Point3(-21.6, -9.147, 0.011),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(811.038, -129.597, 21.278),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_corner_a','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267109071.64laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267109071.64laura0','Holiday': '','Hpr': VBase3(79.824, 0.0, 0.0),'Pos': Point3(872.882, -121.888, 21.153),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_d','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267109196.08laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267109196.08laura0','Holiday': '','Hpr': VBase3(88.924, 0.0, 0.0),'Pos': Point3(834.152, -54.757, 22.925),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Color': (1.0, 0.800000011920929, 0.800000011920929, 1.0),'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_g','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267109260.59laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267109260.59laura0','Holiday': '','Hpr': VBase3(4.814, 0.0, 0.0),'Objects': {'1267109260.61laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(851.993, -66.733, 23.527),'Hpr': VBase3(-180.0, 0.0, 0.0),'Pos': Point3(-1.897, -15.523, -0.102),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(816.999, -33.704, 23.629),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_corner_b','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267109471.55laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267109471.55laura0','Holiday': '','Hpr': VBase3(-177.22, 0.0, 0.0),'Pos': Point3(829.127, -87.336, 23.143),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Color': (0.800000011920929, 0.8999999761581421, 0.699999988079071, 1.0),'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_e','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267109719.91laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267109719.91laura0','Holiday': '','Hpr': VBase3(-84.835, 0.0, 0.0),'Objects': {'1267109719.94laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(1038.523, -29.113, 19.717),'Hpr': VBase3(-180.0, 0.0, 0.0),'Pos': Point3(-12.206, -0.124, -0.046),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(997.842, -23.685, 19.762),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_corner_d','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267109788.11laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267109788.11laura0','Holiday': '','Hpr': VBase3(-28.072, 0.0, 0.0),'Objects': {'1267109788.14laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(1160.659, 51.425, 24.365),'Hpr': VBase3(-180.0, 0.0, 0.0),'Pos': Point3(0.728, 0.186, -0.064),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(1159.932, 51.239, 24.429),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_corner_e','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267109812.02laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267109812.02laura0','Holiday': '','Hpr': VBase3(-27.408, 0.0, 0.0),'Objects': {'1267109812.05laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(1190.871, 54.687, 23.227),'Hpr': VBase3(-180.0, 0.0, 0.0),'Pos': Point3(0.728, 0.186, -0.064),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(1175.12, 44.136, 23.291),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_corner_e','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267109862.72laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267109862.72laura0','Holiday': '','Hpr': VBase3(-26.565, 0.0, 0.0),'Objects': {'1267109862.75laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(1146.461, 65.809, 25.427),'Hpr': VBase3(-180.0, 0.0, 0.0),'Pos': Point3(0.728, 0.186, -0.064),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(1143.956, 58.802, 25.49),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_corner_e','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267109962.45laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267109962.45laura0','Holiday': '','Hpr': Point3(0.0, 0.0, 0.0),'Objects': {'1267109962.48laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(1142.56, 51.617, 28.387),'Hpr': VBase3(-180.0, 0.0, 0.0),'Pos': Point3(38.583, 2.984, 2.0),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(1085.302, 45.755, 26.387),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_j','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267110054.0laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267110054.0laura0','Holiday': '','Hpr': VBase3(50.434, 0.0, 0.0),'Objects': {'1267110054.03laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(706.214, -146.017, 21.961),'Hpr': VBase3(-180.0, 0.0, 0.0),'Pos': Point3(12.899, -22.494, 0.283),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(696.756, -38.176, 28.795),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/jail_exterior','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267110247.88laura': {'Type': 'Tree','DisableCollision': False,'Holiday': '','Hpr': VBase3(-100.176, 0.0, 0.0),'Pos': Point3(979.298, 25.154, 22.004),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Model': 'models/vegetation/gen_tree_e'}},'1267110516.8laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267110516.8laura0','Holiday': '','Hpr': VBase3(-103.04, 0.0, 0.0),'Pos': Point3(806.256, 4.634, 27.315),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_corner_f','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267113909.8laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267113909.8laura0','Holiday': '','Hpr': VBase3(161.326, 0.0, 0.0),'Objects': {'1267113909.84laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(1028.697, -24.636, 20.843),'Hpr': VBase3(117.94, 0.0, 0.0),'Pos': Point3(-21.6, -9.147, 0.011),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(1035.842, -36.059, 20.832),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Color': (0.6000000238418579, 0.800000011920929, 1.0, 1.0),'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_corner_a','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267114017.04laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267114017.04laura0','Holiday': '','Hpr': VBase3(105.255, 0.0, 0.0),'Objects': {'1267114017.07laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(1164.108, -85.349, 25.025),'Hpr': VBase3(-91.631, -1.219, 0.206),'Pos': Point3(12.513, -7.087, 5.3),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(1163.96, -123.539, 19.725),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_f','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267114077.91laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267114077.91laura0','Holiday': '','Hpr': VBase3(21.801, 0.0, 0.0),'Pos': Point3(1142.989, -132.835, 18.684),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_h','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267115354.04laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267115354.04laura0','Holiday': '','Hpr': VBase3(327.095, 0.0, 0.0),'Objects': {'1267115354.07laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(904.686, 178.804, 31.757),'Hpr': VBase3(-180.0, 0.0, 0.0),'Pos': Point3(-2.385, -6.663, 0.992),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(947.29, 79.441, 30.765),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_i','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267115417.26laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267115417.26laura0','Holiday': '','Hpr': VBase3(-64.654, 0.0, 0.0),'Objects': {'1267115417.27laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(729.189, 164.734, 46.349),'Hpr': VBase3(-91.631, -1.219, 0.206),'Pos': Point3(12.513, -7.087, 5.3),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(716.676, 171.821, 41.049),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_f','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267115513.97laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267115513.97laura0','Holiday': '','Hpr': VBase3(271.131, 0.0, 0.0),'Objects': {'1267115513.99laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(797.938, 218.804, 42.664),'Hpr': VBase3(-90.0, 0.0, 0.0),'Pos': Point3(12.363, 6.985, 0.805),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(741.875, 189.02, 41.858),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_a','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267115617.76laura': {'Type': 'Building Exterior','File': '','ExtUid': '1267115617.76laura0','Holiday': '','Hpr': VBase3(-12.529, 0.0, 0.0),'Objects': {'1267115617.8laura': {'Type': 'Door Locator Node','Name': 'door_locator','GridPos': Point3(875.108, 157.205, 38.398),'Hpr': VBase3(-180.0, 0.0, 0.0),'Pos': Point3(5.329, -23.997, -0.083),'Scale': VBase3(1.0, 1.0, 1.0)}},'Pos': Point3(869.779, 181.202, 38.481),'Scale': VBase3(0.75, 0.75, 0.75),'VisSize': '','Visual': {'Door': 'models/buildings/shanty_guildhall_door','Model': 'models/buildings/english_m','SignFrame': '','SignImage': 'models/buildings/sign1_eng_a_icon_barber'}},'1267115692.65laura': {'Type': 'Tree','DisableCollision': False,'Holiday': '','Hpr': Point3(0.0, 0.0, 0.0),'Pos': Point3(860.168, 200.186, 40.513),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Model': 'models/vegetation/gen_tree_a'}},'1267115795.54laura': {'Type': 'Tunnel Block','DisableCollision': False,'Holiday': '','Hpr': VBase3(-138.652, 0.0, 0.0),'Pos': Point3(645.386, -94.719, 25.502),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Model': 'models/tunnels/tunnel_block_cave_small'}},'1267115875.93laura': {'Type': 'Tree','DisableCollision': False,'Holiday': '','Hpr': Point3(0.0, 0.0, 0.0),'Pos': Point3(760.973, 76.631, 37.912),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Model': 'models/vegetation/gen_tree_b'}},'1267115949.18laura': {'Type': 'Tree','DisableCollision': False,'Holiday': '','Hpr': Point3(0.0, 0.0, 0.0),'Pos': Point3(1075.68, -110.528, 22.564),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Model': 'models/vegetation/gen_tree_c'}},'1275942787.18zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-36.136, 0.0, 0.0),'NodeType': 'Spawn','Pos': Point3(665.621, -957.12, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275942831.24zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-40.073, 0.0, 0.0),'NodeType': 'None','Pos': Point3(751.893, -852.124, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275942874.57zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-26.534, 0.0, 0.0),'NodeType': 'None','Pos': Point3(848.761, -718.302, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275942911.73zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-15.805, 0.0, 0.0),'NodeType': 'Wait-Point','Pos': Point3(888.248, -549.189, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275942932.07zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-19.505, 0.0, 0.0),'NodeType': 'None','Pos': Point3(855.359, -414.414, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275942960.51zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-68.133, 0.0, 0.0),'NodeType': 'None','Pos': Point3(867.551, -367.597, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275943062.42zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-47.264, 0.0, 0.0),'NodeType': 'Mine','Pos': Point3(924.437, -324.233, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275943088.2zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-109.374, 0.0, 0.0),'NodeType': 'None','Pos': Point3(970.766, -324.884, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275943116.03zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-115.751, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1022.751, -379.093, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275943159.81zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-102.661, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1105.282, -424.517, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275943222.62zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-99.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1244.324, -466.82, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275943256.93zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-100.716, 0.0, 0.0),'NodeType': 'Depart','Pos': Point3(2501.407, -587.002, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275943402.98zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-18.527, 0.0, 0.0),'NodeType': 'Spawn','Pos': Point3(890.83, -1000.905, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275943419.35zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-12.551, 0.0, 0.0),'NodeType': 'Wait-Point','Pos': Point3(979.357, -754.09, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275943468.1zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-17.259, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1052.96, -417.792, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275943493.67zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-38.921, 0.0, 0.0),'NodeType': 'Mine','Pos': Point3(1108.505, -325.328, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275944295.15zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-137.843, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1243.271, -408.967, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275944327.82zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(173.731, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1348.057, -588.374, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275944383.65zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(174.229, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1165.553, -1013.109, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275944429.6zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-169.298, 0.0, 0.0),'NodeType': 'Depart','Pos': Point3(1230.796, -1276.605, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1275944468.82zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': VBase3(-157.096, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1887.094, -1609.479, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1276711766.91zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'Depart','Pos': Point3(1987.996, -541.145, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}},'1276712142.73zpavlov': {'Type': 'Cannon Defense Movement Node','Hpr': Point3(0.0, 0.0, 0.0),'NodeType': 'None','Pos': Point3(1151.117, -317.066, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': '','Visual': {'Color': (0.65, 0, 0, 1),'Model': 'models/misc/smiley'}}},'Undockable': False,'VisSize': '','Visibility': 'Grid','Visual': {'Model': 'models/islands/pir_m_are_isl_cannon'}}},'Node Links': [['1275942831.24zpavlov', '1275942787.18zpavlov', 'Direction 1'], ['1275942874.57zpavlov', '1275942831.24zpavlov', 'Direction 1'], ['1275942911.73zpavlov', '1275942874.57zpavlov', 'Direction 1'], ['1275942932.07zpavlov', '1275942911.73zpavlov', 'Direction 1'], ['1275942960.51zpavlov', '1275942932.07zpavlov', 'Direction 1'], ['1275943062.42zpavlov', '1275942960.51zpavlov', 'Direction 1'], ['1275943159.81zpavlov', '1275943116.03zpavlov', 'Direction 1'], ['1275943222.62zpavlov', '1275943159.81zpavlov', 'Direction 1'], ['1275943419.35zpavlov', '1275943402.98zpavlov', 'Direction 1'], ['1275943468.1zpavlov', '1275943419.35zpavlov', 'Direction 1'], ['1263851958.5Bill', '1263851954.81Bill', 'Direction 1'], ['1262879133.72Bill', '1263851958.5Bill', 'Direction 1'], ['1262879143.75Bill', '1262879133.72Bill', 'Direction 1'], ['1262879153.05Bill', '1262879143.75Bill', 'Direction 1'], ['1262885173.8Bill', '1262879153.05Bill', 'Direction 1'], ['1262885214.56Bill', '1262885199.23Bill', 'Direction 1'], ['1262885220.48Bill', '1262885214.56Bill', 'Direction 1'], ['1262893283.78Bill', '1262885220.48Bill', 'Direction 1'], ['1262893295.3Bill', '1262893283.78Bill', 'Direction 1'], ['1262893313.38Bill', '1262893295.3Bill', 'Direction 1'], ['1262893384.22Bill', '1262893313.38Bill', 'Direction 1'], ['1262896543.81Bill', '1262893384.22Bill', 'Direction 1'], ['1262896562.45Bill', '1262896543.81Bill', 'Direction 1'], ['1262896579.55Bill', '1262896562.45Bill', 'Direction 1'], ['1262896610.42Bill', '1262896579.55Bill', 'Direction 1'], ['1262896621.88Bill', '1262896610.42Bill', 'Direction 1'], ['1262896633.92Bill', '1262896621.88Bill', 'Direction 1'], ['1263852000.83Bill', '1262896633.92Bill', 'Direction 1'], ['1264528580.61Bill', '1263852000.83Bill', 'Direction 1'], ['1262896777.86Bill', '1262896770.33Bill', 'Direction 1'], ['1262896784.53Bill', '1262896777.86Bill', 'Direction 1'], ['1262896790.56Bill', '1262896784.53Bill', 'Direction 1'], ['1262896804.8Bill', '1262896790.56Bill', 'Direction 1'], ['1262896864.72Bill', '1262896804.8Bill', 'Direction 1'], ['1262896870.16Bill', '1262896864.72Bill', 'Direction 1'], ['1262896873.69Bill', '1262896870.16Bill', 'Direction 1'], ['1262896965.5Bill', '1262896873.69Bill', 'Direction 1'], ['1262896986.2Bill', '1262896965.5Bill', 'Direction 1'], ['1262896999.75Bill', '1262896986.2Bill', 'Direction 1'], ['1262897002.72Bill', '1262896999.75Bill', 'Direction 1'], ['1262897082.55Bill', '1262897076.89Bill', 'Direction 1'], ['1262897090.17Bill', '1262897082.55Bill', 'Direction 1'], ['1262899159.31Bill', '1262897090.17Bill', 'Direction 1'], ['1262899164.31Bill', '1262899159.31Bill', 'Direction 1'], ['1262899170.47Bill', '1262899164.31Bill', 'Direction 1'], ['1262899177.66Bill', '1262899170.47Bill', 'Direction 1'], ['1262899214.66Bill', '1262899177.66Bill', 'Direction 1'], ['1262899225.75Bill', '1262899214.66Bill', 'Direction 1'], ['1262899232.41Bill', '1262899225.75Bill', 'Direction 1'], ['1262885199.23Bill', '1262885173.8Bill', 'Direction 1'], ['1275943088.2zpavlov', '1275943062.42zpavlov', 'Direction 1'], ['1275943116.03zpavlov', '1275943088.2zpavlov', 'Direction 1'], ['1265059603.98Bill', '1262897002.72Bill', 'Direction 1'], ['1263852072.77Bill', '1262899232.41Bill', 'Direction 1'], ['1276712142.73zpavlov', '1275943493.67zpavlov', 'Direction 1'], ['1275943493.67zpavlov', '1275943468.1zpavlov', 'Direction 1'], ['1275944295.15zpavlov', '1276712142.73zpavlov', 'Direction 1'], ['1275944327.82zpavlov', '1275944295.15zpavlov', 'Direction 1'], ['1275944429.6zpavlov', '1275944383.65zpavlov', 'Direction 1'], ['1275944468.82zpavlov', '1275944429.6zpavlov', 'Direction 1'], ['1275944383.65zpavlov', '1275944327.82zpavlov', 'Direction 1'], ['1275943256.93zpavlov', '1276711766.91zpavlov', 'Direction 1'], ['1276711766.91zpavlov', '1275943222.62zpavlov', 'Direction 1']],'Layers': {},'ObjectIds': {'1257979851.56akelts': '["Objects"]["1257979851.56akelts"]','1259627393.88Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1259627393.88Bill"]','1259627393.89Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1259627393.89Bill"]','1259627393.8Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1259627393.8Bill"]','1259785386.66Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1259785386.66Bill"]','1259785422.56Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1259785386.66Bill"]["Objects"]["1259785422.56Bill"]','1259785550.89Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1259785386.66Bill"]["Objects"]["1259785550.89Bill"]','1259785634.7Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1259785386.66Bill"]["Objects"]["1259785634.7Bill"]','1259785835.34Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1259785386.66Bill"]["Objects"]["1259785835.34Bill"]','1259786106.45Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1259785386.66Bill"]["Objects"]["1259786106.45Bill"]','1259861633.94Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1259861633.94Bill"]','1262879133.72Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262879133.72Bill"]','1262879143.75Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262879143.75Bill"]','1262879153.05Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262879153.05Bill"]','1262885173.8Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262885173.8Bill"]','1262885199.23Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262885199.23Bill"]','1262885214.56Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262885214.56Bill"]','1262885220.48Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262885220.48Bill"]','1262893283.78Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262893283.78Bill"]','1262893295.3Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262893295.3Bill"]','1262893313.38Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262893313.38Bill"]','1262893384.22Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262893384.22Bill"]','1262896543.81Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896543.81Bill"]','1262896562.45Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896562.45Bill"]','1262896579.55Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896579.55Bill"]','1262896610.42Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896610.42Bill"]','1262896621.88Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896621.88Bill"]','1262896633.92Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896633.92Bill"]','1262896770.33Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896770.33Bill"]','1262896777.86Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896777.86Bill"]','1262896784.53Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896784.53Bill"]','1262896790.56Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896790.56Bill"]','1262896804.8Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896804.8Bill"]','1262896864.72Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896864.72Bill"]','1262896870.16Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896870.16Bill"]','1262896873.69Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896873.69Bill"]','1262896965.5Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896965.5Bill"]','1262896986.2Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896986.2Bill"]','1262896999.75Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262896999.75Bill"]','1262897002.72Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262897002.72Bill"]','1262897076.89Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262897076.89Bill"]','1262897082.55Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262897082.55Bill"]','1262897090.17Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262897090.17Bill"]','1262899159.31Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262899159.31Bill"]','1262899164.31Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262899164.31Bill"]','1262899170.47Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262899170.47Bill"]','1262899177.66Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262899177.66Bill"]','1262899214.66Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262899214.66Bill"]','1262899225.75Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262899225.75Bill"]','1262899232.41Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1262899232.41Bill"]','1263851954.81Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1263851954.81Bill"]','1263851958.5Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1263851958.5Bill"]','1263852000.83Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1263852000.83Bill"]','1263852072.77Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1263852072.77Bill"]','1264528580.61Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1264528580.61Bill"]','1265059603.98Bill': '["Objects"]["1257979851.56akelts"]["Objects"]["1265059603.98Bill"]','1266454311.13laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1266454311.13laura"]','1266454311.13laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1266454311.13laura"]','1266454311.14laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1266454311.13laura"]["Objects"]["1266454311.14laura"]','1266454611.64laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1266454611.64laura"]','1266454611.64laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1266454611.64laura"]','1266454611.67laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1266454611.64laura"]["Objects"]["1266454611.67laura"]','1266454868.84laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1266454868.84laura"]','1266454868.84laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1266454868.84laura"]','1266455097.48laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455097.48laura"]','1266455097.48laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455097.48laura"]','1266455097.52laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455097.48laura"]["Objects"]["1266455097.52laura"]','1266455137.78laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455137.78laura"]','1266455137.78laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455137.78laura"]','1266455245.98laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455245.98laura"]','1266455245.98laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455245.98laura"]','1266455443.69laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455443.69laura"]','1266455443.69laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455443.69laura"]','1266455563.53laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455563.5laura"]["Objects"]["1266455563.53laura"]','1266455563.5laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455563.5laura"]','1266455563.5laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455563.5laura"]','1266455662.39laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455662.39laura"]','1266455662.39laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455662.39laura"]','1266455800.42laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1266455800.42laura"]','1267038155.81laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267038155.81laura"]','1267038598.66laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267038598.66laura"]','1267038598.66laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267038598.66laura"]','1267038598.69laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267038598.66laura"]["Objects"]["1267038598.69laura"]','1267040489.14laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267040489.14laura"]','1267040489.14laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267040489.14laura"]','1267040489.16laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267040489.14laura"]["Objects"]["1267040489.16laura"]','1267109071.64laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109071.64laura"]','1267109071.64laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109071.64laura"]','1267109196.08laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109196.08laura"]','1267109196.08laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109196.08laura"]','1267109260.59laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109260.59laura"]','1267109260.59laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109260.59laura"]','1267109260.61laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109260.59laura"]["Objects"]["1267109260.61laura"]','1267109471.55laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109471.55laura"]','1267109471.55laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109471.55laura"]','1267109719.91laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109719.91laura"]','1267109719.91laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109719.91laura"]','1267109719.94laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109719.91laura"]["Objects"]["1267109719.94laura"]','1267109788.11laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109788.11laura"]','1267109788.11laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109788.11laura"]','1267109788.14laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109788.11laura"]["Objects"]["1267109788.14laura"]','1267109812.02laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109812.02laura"]','1267109812.02laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109812.02laura"]','1267109812.05laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109812.02laura"]["Objects"]["1267109812.05laura"]','1267109862.72laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109862.72laura"]','1267109862.72laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109862.72laura"]','1267109862.75laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109862.72laura"]["Objects"]["1267109862.75laura"]','1267109962.45laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109962.45laura"]','1267109962.45laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109962.45laura"]','1267109962.48laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267109962.45laura"]["Objects"]["1267109962.48laura"]','1267110054.03laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267110054.0laura"]["Objects"]["1267110054.03laura"]','1267110054.0laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267110054.0laura"]','1267110054.0laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267110054.0laura"]','1267110247.88laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267110247.88laura"]','1267110516.8laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267110516.8laura"]','1267110516.8laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267110516.8laura"]','1267113909.84laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267113909.8laura"]["Objects"]["1267113909.84laura"]','1267113909.8laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267113909.8laura"]','1267113909.8laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267113909.8laura"]','1267114017.04laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267114017.04laura"]','1267114017.04laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267114017.04laura"]','1267114017.07laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267114017.04laura"]["Objects"]["1267114017.07laura"]','1267114077.91laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267114077.91laura"]','1267114077.91laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267114077.91laura"]','1267115354.04laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115354.04laura"]','1267115354.04laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115354.04laura"]','1267115354.07laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115354.04laura"]["Objects"]["1267115354.07laura"]','1267115417.26laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115417.26laura"]','1267115417.26laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115417.26laura"]','1267115417.27laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115417.26laura"]["Objects"]["1267115417.27laura"]','1267115513.97laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115513.97laura"]','1267115513.97laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115513.97laura"]','1267115513.99laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115513.97laura"]["Objects"]["1267115513.99laura"]','1267115617.76laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115617.76laura"]','1267115617.76laura0': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115617.76laura"]','1267115617.8laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115617.76laura"]["Objects"]["1267115617.8laura"]','1267115692.65laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115692.65laura"]','1267115795.54laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115795.54laura"]','1267115875.93laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115875.93laura"]','1267115949.18laura': '["Objects"]["1257979851.56akelts"]["Objects"]["1267115949.18laura"]','1275942787.18zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275942787.18zpavlov"]','1275942831.24zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275942831.24zpavlov"]','1275942874.57zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275942874.57zpavlov"]','1275942911.73zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275942911.73zpavlov"]','1275942932.07zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275942932.07zpavlov"]','1275942960.51zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275942960.51zpavlov"]','1275943062.42zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275943062.42zpavlov"]','1275943088.2zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275943088.2zpavlov"]','1275943116.03zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275943116.03zpavlov"]','1275943159.81zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275943159.81zpavlov"]','1275943222.62zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275943222.62zpavlov"]','1275943256.93zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275943256.93zpavlov"]','1275943402.98zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275943402.98zpavlov"]','1275943419.35zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275943419.35zpavlov"]','1275943468.1zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275943468.1zpavlov"]','1275943493.67zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275943493.67zpavlov"]','1275944295.15zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275944295.15zpavlov"]','1275944327.82zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275944327.82zpavlov"]','1275944383.65zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275944383.65zpavlov"]','1275944429.6zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275944429.6zpavlov"]','1275944468.82zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1275944468.82zpavlov"]','1276711766.91zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1276711766.91zpavlov"]','1276712142.73zpavlov': '["Objects"]["1257979851.56akelts"]["Objects"]["1276712142.73zpavlov"]'}}
++extraInfo = {'camPos': Point3(508.936, -545.501, 204.945),'camHpr': VBase3(-84.6086, -4.54039, 2.14115e-06),'focalLength': 1.39999997616,'skyState': 4,'fog': 0}
+\ No newline at end of file
+diff --git a/pirates/leveleditor/worldData/PortRoyalCannonWorld.py b/pirates/leveleditor/worldData/PortRoyalCannonWorld.py
+new file mode 100644
+index 0000000..20b8f8a
+--- /dev/null
++++ b/pirates/leveleditor/worldData/PortRoyalCannonWorld.py
+@@ -0,0 +1,3 @@
++from panda3d.core import Point3, VBase3, Vec4, Vec3
++objectStruct = {'Objects': {'1257979946.82akelts': {'Type': 'Region','Name': 'default','Objects': {'1257979851.56akelts': {'Type': 'Island','File': 'PortRoyalCannonIsland','Environment': 'OpenSky','Hpr': Point3(0.0, 0.0, 0.0),'Minimap': False,'Pos': Point3(-57.511, -247.029, 0.0),'Scale': VBase3(1.0, 1.0, 1.0),'Undockable': False,'VisSize': '','Visibility': 'Section','Objects': {'1262901143.69Bill': {'Type': 'LOD Sphere','Hpr': VBase3(136.467, 0.0, 0.0),'Pos': Point3(524.742, 2115.765, 580.947),'Radi': [4500.0, 5000.0, 7500.0],'Scale': VBase3(1.0, 1.0, 1.0),'VisSize': ''}},'Visual': {'Model': 'models/islands/pir_m_are_isl_cannon'}}},'Visual': {}}},'Layers': {},'ObjectIds': {'1257979946.82akelts': '["Objects"]["1257979946.82akelts"]','1257979967.65akelts': '["Objects"]["1257979946.82akelts"]["Objects"]["1257979967.65akelts"]','1262901143.69Bill': '["Objects"]["1257979946.82akelts"]["Objects"]["1257979851.56akelts"]["Objects"]["1262901143.69Bill"]'}}
++extraInfo = {'camPos': Point3(-16593, -18881, 24236.9),'camHpr': VBase3(-41.6118, -40.3382, -8.96071e-06),'focalLength': 1.39951908588,'skyState': -2,'fog': 0}
+\ No newline at end of file
+diff --git a/pirates/leveleditor/worldData/PortRoyalIsland.py b/pirates/leveleditor/worldData/PortRoyalIsland.py
+index 9038807..776ec7b 100644
+--- a/pirates/leveleditor/worldData/PortRoyalIsland.py
++++ b/pirates/leveleditor/worldData/PortRoyalIsland.py
+@@ -97,6 +97,17 @@ objectStruct = {
+                         'Model': 'models/minigames/pir_m_gam_pot_table'
+                     }
+                 },
++                '1321900003.01cl': {
++                    'Type': 'DefendEntrance',
++                    'Hpr': VBase3(0.0, 0.0, 0.0),
++                    'Pos': Point3(10.0, -1680.0, 13.7),
++                    'Scale': VBase3(1.0, 1.0, 1.0),
++                    'VisSize': '',
++                    'VisZone': '0',
++                    'Visual': {
++                        'Model': 'models/minigames/pir_m_gam_can_goldPile'
++                    }
++                },
+                 '1151101067.25dzlu': {
+                     'Type': 'Tree',
+                     'DisableCollision': False,
+diff --git a/pirates/minigame/DefendGlobals.py b/pirates/minigame/DefendGlobals.py
+new file mode 100644
+index 0000000..37e2011
+--- /dev/null
++++ b/pirates/minigame/DefendGlobals.py
+@@ -0,0 +1,133 @@
++"""
++Constants for the Port Royal cannon defense, ported from the original game's cannon island.
++
++A pirate steps onto the entrance on Port Royal and is taken to a private copy of the cannon island. Four
++cannons stand on its cliff. Waves of raider ships sail in from the south, up to a gold pile, grab some gold
++and sail away again. Sink them before they grab it all.
++
++The original game's own wave tables, 12 ship types and 13 kinds of ammunition are a much bigger thing than this
++first version; this file holds the first version's numbers, all of them tunable here.
++"""
++from pirates.ship import ShipGlobals
++
++# --- the cannon island world (pirates/leveleditor/worldData/PortRoyalCannonWorld.py) ---
++WORLD_FILE = 'PortRoyalCannonWorld'
++REGION_UID = '1257979946.82akelts'
++ISLAND_UID = '1257979851.56akelts'
++# where the world file puts the island; the island's own node positions are island-local
++ISLAND_OFFSET = (-57.511, -247.029)
++
++# the four cannons on the cliff: (uid in the island file, island-local x, y, z), all facing east (Hpr 270, 0, 0).
++# The island file's own GridPos for them is stale, so these are the container's position plus each cannon's own
++CANNONS = (
++    ('1259785422.56Bill', 566.0, -532.5, 154.976),
++    ('1259785634.7Bill', 566.0, -517.5, 155.0),
++    ('1259785835.34Bill', 566.0, -502.5, 154.976),
++    ('1259786106.45Bill', 566.637, -547.5, 154.976),
++)
++CANNON_HPR = (270.0, 0.0, 0.0)
++# where a pirate lands when he arrives: x, y, z, heading. Just behind the cannons.
++SPAWN_PT = (537.4, -524.6, 155.5, 270.0)
++
++# --- the ships' sea roads, island-local x, y (the island file's own Spawn / Wait-Point / Mine / Depart nodes) ---
++# each road: from the sea at the south, up to the gold pile (the node marked as the mine), then away to the east.
++# index of the Mine node in each road is MINE_INDEX
++ROADS = (
++    ((567, -936), (668, -837), (736, -761), (786, -716), (813, -650), (825, -546), (819, -478), (801, -417),
++     (795, -384), (813, -350), (844, -333), (879, -331), (917, -349), (958, -407), (1057, -472), (1248, -504),
++     (1602, -546), (1818, -619)),
++    ((771, -986), (863, -886), (922, -715), (950, -576), (984, -374), (1012, -332), (1079, -336), (1120, -374),
++     (1245, -433), (1576, -462), (1731, -402), (1828, -145)),
++    ((1023, -1011), (1047, -849), (1076, -638), (1122, -444), (1138, -359), (1191, -318), (1239, -313),
++     (1302, -354), (1474, -337), (1639, -191)),
++    ((666, -957), (752, -852), (849, -718), (888, -549), (855, -414), (868, -368), (924, -324), (971, -325),
++     (1023, -379), (1105, -425), (1244, -467), (2501, -587)),
++    ((891, -1001), (979, -754), (1053, -418), (1109, -325), (1243, -409), (1348, -588), (1166, -1013),
++     (1231, -1277)),
++)
++MINE_INDEX = (10, 5, 5, 6, 3)
++
++# --- the fight ---
++START_GOLD = 1000
++
++# the kinds of raider: the ship, its name, hit points, speed in units a second, the gold it grabs at the pile and
++# the reward for sinking it. The ship's own stock hit points are thousands; a defense needs hundreds, so they are
++# set here (the island cannon's round shot is measured against them in the AI test).
++RAIDERS = {
++    'small': dict(shipClass=ShipGlobals.NPC_INTERCEPTORL1, name='Cutthroat Sloop', hp=500, speed=70.0,
++                  steal=40, reward=10),
++    'merchant': dict(shipClass=ShipGlobals.NPC_MERCHANTL1, name='Plunder Galleon', hp=900, speed=50.0,
++                     steal=100, reward=20),
++    'warship': dict(shipClass=ShipGlobals.NPC_WARSHIPL1, name='Raider Warship', hp=1600, speed=45.0,
++                    steal=160, reward=40),
++}
++
++# the waves: (raider kind, how many) in the order they set sail
++WAVES = (
++    (('small', 3),),
++    (('small', 4),),
++    (('small', 3), ('merchant', 1)),
++    (('small', 4), ('merchant', 2)),
++    (('merchant', 3), ('warship', 1)),
++    (('merchant', 4), ('warship', 2)),
++)
++
++# --- timing, seconds ---
++LOBBY_SECONDS = 25         # to get to a cannon before the first wave
++BREAK_SECONDS = 12         # between waves
++WAVE_MAX_SECONDS = 180     # a wave that drags on is over: the raiders left sail away without grabbing more
++RESULT_SECONDS = 40        # the result panel, then everyone is sent home
++SPAWN_GAP = 5.0            # between two raiders setting sail
++TICK = 1.0
++
++# --- reward, gold into the pirate's pocket, the same for everyone who took part ---
++REWARD_PER_TEN_GOLD_KEPT = 1   # one gold per ten gold of the pile still there at the end
++WIN_BONUS = 100
++MAX_REWARD = 1000
++
++# --- the phase the world tells its pirates ---
++PHASE_LOBBY = 0
++PHASE_WAVE = 1
++PHASE_BREAK = 2
++PHASE_WON = 3
++PHASE_LOST = 4
++
++# --- words (inline: the original's text is in its own localizer, this version keeps its few words here) ---
++ENTRANCE_TEXT = 'Defend the gold'
++HELP_LOBBY = 'Man a cannon! Raiders are coming for the gold.'
++HELP_WAVE = 'Sink the raiders before they grab the gold!'
++HELP_BREAK = 'Reload! The next wave is coming.'
++WON_TITLE = 'The gold is safe!'
++LOST_TITLE = 'The gold is gone!'
++LEAVE_TEXT = 'Go home'
++
++
++def islandToOcean(x, y):
++    """An island-local point in the instance ocean's own numbers"""
++    return (x + ISLAND_OFFSET[0], y + ISLAND_OFFSET[1])
++
++
++def waveShipCount(wave):
++    """How many raiders wave number `wave` (0-based) sends"""
++    return sum(count for kind, count in WAVES[wave])
++
++
++def waveShipKinds(wave):
++    """The raiders of wave number `wave` (0-based), one kind per ship, in the order they set sail. Smallest first
++    so a pirate has time to find the range."""
++    kinds = []
++    for kind, count in WAVES[wave]:
++        kinds.extend([kind] * count)
++
++    return kinds
++
++
++def rewardFor(sunkKinds, goldLeft, won):
++    """The gold paid to each pirate: the reward of each ship sunk, a tenth of the gold kept, a bonus for holding
++    through every wave. Capped."""
++    reward = sum(RAIDERS[kind]['reward'] for kind in sunkKinds)
++    reward += (max(0, goldLeft) // 10) * REWARD_PER_TEN_GOLD_KEPT
++    if won:
++        reward += WIN_BONUS
++
++    return min(MAX_REWARD, reward)
+diff --git a/pirates/minigame/DistributedDefendEntrance.py b/pirates/minigame/DistributedDefendEntrance.py
+new file mode 100644
+index 0000000..f091ca3
+--- /dev/null
++++ b/pirates/minigame/DistributedDefendEntrance.py
+@@ -0,0 +1,43 @@
++from panda3d.core import NodePath
++from pirates.distributed.DistributedInteractive import DistributedInteractive
++from pirates.minigame import DefendGlobals
++
++
++class DistributedDefendEntrance(DistributedInteractive):
++    """The heap of gold on Port Royal: step up to it to defend it from raiders"""
++    notify = directNotify.newCategory('DistributedDefendEntrance')
++    PileModel = 'models/minigames/pir_m_gam_can_goldPile'
++
++    def __init__(self, cr):
++        DistributedInteractive.__init__(self, cr)
++        self.interactRadius = 10
++        self.diskRadius = 20
++        self.pileModel = None
++
++    def generate(self):
++        DistributedInteractive.generate(self)
++        NodePath.__init__(self, 'DefendEntrance')
++        self.setInteractOptions(proximityText=DefendGlobals.ENTRANCE_TEXT, sphereScale=self.interactRadius,
++                                diskRadius=self.diskRadius)
++
++    def announceGenerate(self):
++        DistributedInteractive.announceGenerate(self)
++        # a server-made object (the island art has none), so it brings its own model
++        self.pileModel = loader.loadModel(self.PileModel)
++        self.pileModel.setScale(1.5, 1.5, 3.0)
++        self.pileModel.reparentTo(self)
++        self.setAllowInteract(1)
++
++    def disable(self):
++        DistributedInteractive.disable(self)
++        if self.pileModel:
++            self.pileModel.removeNode()
++            self.pileModel = None
++
++        self.detachNode()
++
++    def setParentingRules(self, rule1, rule2):
++        pass
++
++    def handleEndInteractKey(self):
++        self.requestExit()
+diff --git a/pirates/minigame/DistributedDefendEntranceAI.py b/pirates/minigame/DistributedDefendEntranceAI.py
+new file mode 100644
+index 0000000..99b8e54
+--- /dev/null
++++ b/pirates/minigame/DistributedDefendEntranceAI.py
+@@ -0,0 +1,144 @@
++from direct.directnotify import DirectNotifyGlobal
++from direct.task import Task
++from pirates.distributed.DistributedInteractiveAI import DistributedInteractiveAI
++from pirates.minigame import DefendGlobals
++from pirates.minigame.DistributedDefendWorldAI import DistributedDefendWorldAI
++
++
++class DistributedDefendEntranceAI(DistributedInteractiveAI):
++    """
++    The gold pile on Port Royal. A pirate who steps up to it is taken to a cannon defense: the one still at its
++    start or going on, or, if there is none, a fresh one (the Black Pearl entrance does the same).
++    """
++    notify = DirectNotifyGlobal.directNotify.newCategory('DistributedDefendEntranceAI')
++    MULTIUSE = True
++
++    BUILD_TIMEOUT = 30.0     # a new instance that has not come up by then is given up on
++    RETRY_INTERVAL = 0.3     # while a torn-down instance is still being deleted
++    MAX_RETRIES = 100
++
++    def __init__(self, air):
++        DistributedInteractiveAI.__init__(self, air)
++
++        self.building = False
++        self.waiting = []
++
++    def delete(self):
++        taskMgr.remove(self.uniqueName('buildTimeout'))
++        taskMgr.remove(self.uniqueName('startWhenClear'))
++        self.waiting = []
++        self.ignoreAll()
++        DistributedInteractiveAI.delete(self)
++
++    def setParentingRules(self, rule1, rule2):
++        pass
++
++    def handleRequestInteraction(self, avatar, interactType, instant):
++        return self.sendToDefense(avatar)
++
++    def handleRequestExit(self, avatar):
++        return self.ACCEPT
++
++    def sendToDefense(self, avatar):
++        """Teleport the avatar to a cannon defense. ACCEPT when one is on its way, DENY when the only one there is
++        is over with pirates still in it (the pirate tries again in a moment)"""
++        if self.building:
++            if avatar.doId not in self.waiting:
++                self.waiting.append(avatar.doId)
++
++            return self.ACCEPT
++
++        for obj in list(self.air.doId2do.values()):
++            if not isinstance(obj, DistributedDefendWorldAI) or obj.tornDown:
++                continue
++
++            if obj.isJoinable():
++                self._teleportWhenReady(avatar.doId, obj)
++                return self.ACCEPT
++
++            if obj.hasPlayersInside():
++                self.notify.info('Cannon defense %d is over with pirates in it, avatar %d waits' % (
++                    obj.doId, avatar.doId))
++                return self.DENY
++
++            # nobody is in it: it is over or abandoned
++            obj.teardown()
++
++        self.building = True
++        self.waiting = [avatar.doId]
++        self._startWhenClear(0)
++        return self.ACCEPT
++
++    def _teleportWhenReady(self, avatarId, instance):
++        if instance.isReady:
++            self._teleportTo(avatarId, instance)
++        else:
++            instance.pendingTeleportCallbacks.append(lambda: self._teleportTo(avatarId, instance))
++
++    def _teleportTo(self, avatarId, instance):
++        avatar = self.air.doId2do.get(avatarId)
++        if not avatar or instance.tornDown:
++            return
++
++        self.notify.info('Teleporting avatar %d to cannon defense %d' % (avatarId, instance.doId))
++        instance.addParticipant(avatarId)
++        spawnPt = instance.getSpawnPt(DefendGlobals.ISLAND_UID, 0)
++        self.air.teleportMgr.d_initiateTeleport(
++            avatar,
++            instanceType=instance.getType(),
++            instanceName=instance.getFileName(),
++            locationUid=DefendGlobals.ISLAND_UID,
++            spawnPt=spawnPt)
++
++    def _startWhenClear(self, tries):
++        """Build a fresh instance once no torn-down one is left in the tables (Astron tells this AI about each
++        deleted object a moment after the delete is requested)"""
++        old = [obj for obj in list(self.air.doId2do.values())
++               if isinstance(obj, DistributedDefendWorldAI) and obj.tornDown]
++        if old:
++            if tries >= self.MAX_RETRIES:
++                self.notify.warning('Cannon defense %d is still deleting after 30 s, not starting a new one' %
++                                    old[0].doId)
++                self._giveUp()
++                return
++
++            def retry(task):
++                self._startWhenClear(tries + 1)
++                return Task.done
++
++            taskMgr.doMethodLater(self.RETRY_INTERVAL, retry, self.uniqueName('startWhenClear'))
++            return
++
++        self._createInstance()
++
++    def _createInstance(self):
++        """Load the cannon island world: the world creator makes the instance, and the uid callback fires once it
++        is generated (the same way the Black Pearl instance is made)"""
++        self.notify.info('Building a cannon defense')
++        taskMgr.doMethodLater(self.BUILD_TIMEOUT, self._buildTimedOut, self.uniqueName('buildTimeout'))
++        self.air.worldCreator.loadObjectsFromFile(DefendGlobals.WORLD_FILE + '.py')
++        self.air.uidMgr.addUidCallback(DefendGlobals.REGION_UID, self._onInstanceCreated)
++
++    def _onInstanceCreated(self, instanceDoId):
++        taskMgr.remove(self.uniqueName('buildTimeout'))
++        waiting = self.waiting
++        self.building = False
++        self.waiting = []
++        instance = self.air.doId2do.get(instanceDoId)
++        if not instance:
++            self.notify.warning('Failed to get the cannon defense instance %d' % instanceDoId)
++            return
++
++        self.notify.info('Cannon defense instance %d created for %d pirates' % (instanceDoId, len(waiting)))
++        for avatarId in waiting:
++            self._teleportWhenReady(avatarId, instance)
++
++    def _buildTimedOut(self, task):
++        self.notify.warning('The cannon defense did not come up in %d s' % self.BUILD_TIMEOUT)
++        self._giveUp()
++        return Task.done
++
++    def _giveUp(self):
++        self.air.uidMgr.removeUidCallback(DefendGlobals.REGION_UID, self._onInstanceCreated)
++        self.building = False
++        self.waiting = []
+diff --git a/pirates/minigame/DistributedDefendWorld.py b/pirates/minigame/DistributedDefendWorld.py
+new file mode 100644
+index 0000000..d7fd7c7
+--- /dev/null
++++ b/pirates/minigame/DistributedDefendWorld.py
+@@ -0,0 +1,191 @@
++import random
++from direct.gui.DirectGui import DirectLabel
++from panda3d.core import NodePath, TextNode
++from pirates.instance.DistributedInstanceWorld import DistributedInstanceWorld
++from pirates.minigame import DefendGlobals
++from pirates.piratesbase import PiratesGlobals
++from pirates.piratesgui import PiratesGuiGlobals
++from pirates.piratesgui.GuiPanel import GuiPanel
++from pirates.piratesgui.RequestButton import RequestButton
++
++
++class DefendResultPanel(GuiPanel):
++    """The panel at the end of a cannon defense: how it went, the gold paid, and the way home"""
++
++    def __init__(self, world, won, shipsSunk, goldKept, goldReward):
++        GuiPanel.__init__(self, '', 1.5, 1.0, showClose=False, titleSize=1.5)
++        self.setPos((-0.75, 0, -0.4))
++        self.world = world
++        title = DefendGlobals.WON_TITLE if won else DefendGlobals.LOST_TITLE
++        self.title = DirectLabel(parent=self, relief=None, text=title,
++                                 text_scale=PiratesGuiGlobals.TextScaleTitleJumbo,
++                                 text_font=PiratesGlobals.getPirateOutlineFont(), text_align=TextNode.ACenter,
++                                 text_fg=PiratesGuiGlobals.TextFG1, text_shadow=PiratesGuiGlobals.TextLT14,
++                                 pos=(0.75, 0, 0.8), textMayChange=0)
++        lines = ['Ships sunk: %d' % shipsSunk,
++                 'Gold kept: %d' % goldKept,
++                 'Your reward: %d gold' % goldReward]
++        for i, line in enumerate(lines):
++            DirectLabel(parent=self, relief=None, text=line, text_scale=PiratesGuiGlobals.TextScaleTitleMed,
++                        text_align=TextNode.ACenter, text_fg=PiratesGuiGlobals.TextFG2,
++                        text_shadow=PiratesGuiGlobals.TextShadow, pos=(0.75, 0, 0.58 - i * 0.14),
++                        textMayChange=0)
++
++        self.bLeave = RequestButton(width=1.5, text=DefendGlobals.LEAVE_TEXT, command=self.world.leave)
++        self.bLeave.reparentTo(self)
++        self.bLeave.setPos(0.6, 0, 0.05)
++        self.bLeave.setScale(1.2, 1.2, 1.2)
++
++    def destroy(self):
++        self.bLeave.destroy()
++        GuiPanel.destroy(self)
++
++
++class DistributedDefendWorld(DistributedInstanceWorld):
++    """
++    The client half of a cannon defense: the private copy of the cannon island. It keeps the heap of gold on
++    the beach in step with what is left, and shows the wave, the ships and the gold on top of the screen. The
++    cannons and the ships are ordinary objects of the island.
++    """
++    notify = directNotify.newCategory('DistributedDefendWorld')
++
++    # POR's own spots for the ten heaps on the beach (world numbers) and the order they shrink in
++    PILE_ORDER = (5, 3, 7, 6, 4, 1, 9, 2, 8, 0)
++    PILE_MODEL = 'models/minigames/pir_m_gam_can_goldPile'
++
++    def __init__(self, cr):
++        DistributedInstanceWorld.__init__(self, cr)
++        self.state = [DefendGlobals.PHASE_LOBBY, 0, 0, 0, 0, DefendGlobals.START_GOLD]
++        self.piles = []
++        self.hudText = None
++        self.helpText = None
++        self.leaveButton = None
++        self.resultPanel = None
++        self.shipVisibilitySet = False
++
++    def generate(self):
++        DistributedInstanceWorld.generate(self)
++        # the raiders sail past a long way out: show every ship, not only the near ones
++        base.setOverrideShipVisibility(True)
++        self.shipVisibilitySet = True
++
++    def announceGenerate(self):
++        DistributedInstanceWorld.announceGenerate(self)
++        self.makePiles()
++        self.makeHud()
++        self.refresh()
++
++    def disable(self):
++        self.destroyHud()
++        self.removePiles()
++        if self.shipVisibilitySet:
++            self.shipVisibilitySet = False
++            try:
++                base.setOverrideShipVisibility(False)
++            except (AttributeError, NameError):
++                base.overrideShipVisibility = False
++
++        DistributedInstanceWorld.disable(self)
++
++    def delete(self):
++        self.destroyHud()
++        self.removePiles()
++        DistributedInstanceWorld.delete(self)
++
++    # --- what the world tells us ---
++    def setDefendState(self, phase, wave, secondsLeft, shipsLeft, shipsSunk, goldLeft):
++        self.state = [phase, wave, secondsLeft, shipsLeft, shipsSunk, goldLeft]
++        self.refresh()
++
++    def setDefendResult(self, won, shipsSunk, goldKept, goldReward):
++        self.destroyResult()
++        self.resultPanel = DefendResultPanel(self, won, shipsSunk, goldKept, goldReward)
++        self.resultPanel.show()
++
++    def leave(self):
++        self.sendUpdate('requestLeave')
++
++    # --- the heaps of gold ---
++    def makePiles(self):
++        self.removePiles()
++        for i in range(10):
++            pile = loader.loadModel(self.PILE_MODEL)
++            pile.setScale(3.0, 3.0, 9.0)
++            pile.setPos(660.0 + i * 30.0 + i % 2 * 10, -465.0 - i % 2 * 30.0, 25.0 - i % 2 * 5.0)
++            pile.setHpr(random.random() * 360, 0, 0)
++            pile.reparentTo(self)
++            pile.setLightOff()
++            self.piles.append(pile)
++
++    def removePiles(self):
++        for pile in self.piles:
++            pile.removeNode()
++
++        self.piles = []
++
++    def setPileSizes(self, goldLeft):
++        """Ten heaps: each holds a tenth of the starting gold; the one the gold runs down in is partly shrunk"""
++        tenth = DefendGlobals.START_GOLD / 10.0
++        for i in range(len(self.piles)):
++            pile = self.piles[self.PILE_ORDER[i]]
++            if goldLeft > (i + 1) * tenth:
++                pile.unstash()
++                pile.setScale(3.0, 3.0, 3.0)
++            elif goldLeft > i * tenth:
++                pile.unstash()
++                part = (goldLeft - i * tenth) / DefendGlobals.START_GOLD
++                pile.setScale(1.0 + 20.0 * part, 1.0 + 20.0 * part, 0.5 + 25.0 * part)
++            else:
++                pile.stash()
++
++    # --- the screen ---
++    def makeHud(self):
++        self.destroyHud()
++        self.hudText = DirectLabel(parent=base.a2dTopCenter, relief=None, text='',
++                                   text_scale=PiratesGuiGlobals.TextScaleTitleMed,
++                                   text_font=PiratesGlobals.getPirateOutlineFont(), text_align=TextNode.ACenter,
++                                   text_fg=PiratesGuiGlobals.TextFG1, text_shadow=PiratesGuiGlobals.TextShadow,
++                                   pos=(0, 0, -0.14), textMayChange=1)
++        self.helpText = DirectLabel(parent=base.a2dTopCenter, relief=None, text='',
++                                    text_scale=PiratesGuiGlobals.TextScaleLarge, text_align=TextNode.ACenter,
++                                    text_fg=PiratesGuiGlobals.TextFG2, text_shadow=PiratesGuiGlobals.TextShadow,
++                                    pos=(0, 0, -0.24), textMayChange=1)
++        self.leaveButton = RequestButton(width=0.7, text=DefendGlobals.LEAVE_TEXT, command=self.leave)
++        self.leaveButton.reparentTo(base.a2dBottomRight)
++        self.leaveButton.setPos(-0.85, 0, 0.1)
++
++    def destroyResult(self):
++        if self.resultPanel:
++            self.resultPanel.destroy()
++            self.resultPanel = None
++
++    def destroyHud(self):
++        self.destroyResult()
++        for name in ('hudText', 'helpText', 'leaveButton'):
++            item = getattr(self, name, None)
++            if item:
++                item.destroy()
++                setattr(self, name, None)
++
++    def refresh(self):
++        phase, wave, secondsLeft, shipsLeft, shipsSunk, goldLeft = self.state
++        self.setPileSizes(goldLeft)
++        if not self.hudText:
++            return
++
++        total = len(DefendGlobals.WAVES)
++        if phase == DefendGlobals.PHASE_LOBBY:
++            top = 'Get ready!  First wave in %d' % secondsLeft
++            help = DefendGlobals.HELP_LOBBY
++        elif phase == DefendGlobals.PHASE_WAVE:
++            top = 'Wave %d of %d   Ships left: %d   Gold: %d' % (wave + 1, total, shipsLeft, goldLeft)
++            help = DefendGlobals.HELP_WAVE
++        elif phase == DefendGlobals.PHASE_BREAK:
++            top = 'Wave %d done!  Next wave in %d   Gold: %d' % (wave + 1, secondsLeft, goldLeft)
++            help = DefendGlobals.HELP_BREAK
++        else:
++            top = DefendGlobals.WON_TITLE if phase == DefendGlobals.PHASE_WON else DefendGlobals.LOST_TITLE
++            help = ''
++
++        self.hudText['text'] = top
++        self.helpText['text'] = help
+diff --git a/pirates/minigame/DistributedDefendWorldAI.py b/pirates/minigame/DistributedDefendWorldAI.py
+new file mode 100644
+index 0000000..41bed62
+--- /dev/null
++++ b/pirates/minigame/DistributedDefendWorldAI.py
+@@ -0,0 +1,586 @@
++import math
++import time
++
++from direct.directnotify import DirectNotifyGlobal
++from direct.task import Task
++
++from pirates.minigame import DefendGlobals
++from pirates.piratesbase import PiratesGlobals
++from pirates.ship import ShipGlobals
++from pirates.treasuremap.DistributedTreasureMapInstanceAI import DistributedTreasureMapInstanceAI
++
++
++class DistributedDefendWorldAI(DistributedTreasureMapInstanceAI):
++    """
++    The private copy of the cannon island a pirate is taken to from Port Royal.
++
++    It is a treasure map instance on purpose: DistributedGameAreaAI._isBlackPearlInstance tells those from the main
++    world by that class, and pirates inside one are not put through the main world's grid zone handling.
++
++    Four cannons stand on the cliff. Waves of raider ships sail in on the island's sea roads, up to the gold pile,
++    grab some gold and sail away again. The raiders are plain enemy ships moved by this class along the roads (the
++    ships' own steering finds its own way, not the island's roads); the cannons are the ones every island has.
++    """
++    notify = DirectNotifyGlobal.directNotify.newCategory('DistributedDefendWorldAI')
++    notify.setInfo(True)
++
++    SETUP_DELAY = 2.0
++    MONITOR_INTERVAL = 5.0     # how often to look for an empty instance
++    EMPTY_GRACE_TIME = 60.0    # an instance nobody is inside is torn down after this long
++    MOVE_INTERVAL = 0.2        # how often the raiders are moved and their position sent
++    TURN_RATE = 90.0           # degrees a second a raider turns at a bend of its road
++
++    def __init__(self, air):
++        DistributedTreasureMapInstanceAI.__init__(self, air)
++
++        self.fileName = DefendGlobals.WORLD_FILE
++        self.type = PiratesGlobals.INSTANCE_TM
++
++        # ready state for teleporting, as the Black Pearl instance has it
++        self.isReady = False
++        self.pendingTeleportCallbacks = []
++        self.tornDown = False
++        self.lastActivity = time.time()
++        self.insideCount = 0
++
++        self.cannons = []
++
++        # the fight
++        self.phase = DefendGlobals.PHASE_LOBBY
++        self.wave = 0
++        self.phaseEnds = None
++        self.nextSpawn = 0.0
++        self.roadCounter = 0
++        self.queue = []
++        self.raiders = []
++        self.goldLeft = DefendGlobals.START_GOLD
++        self.shipsSunk = 0
++        self.sunkKinds = []
++        self.won = False
++        self.reward = 0
++        self.paid = set()
++        self.lastMove = None
++        self.lastSent = None
++
++    def _now(self):
++        return time.time()
++
++    # ------------------------------------------------------------------ set up and tear down
++
++    def announceGenerate(self):
++        DistributedTreasureMapInstanceAI.announceGenerate(self)
++        self.notify.info('DistributedDefendWorldAI generated with doId %d' % self.doId)
++        taskMgr.doMethodLater(self.SETUP_DELAY, self._setupInstance, self.uniqueName('setupInstance'))
++
++    def _setupInstance(self, task):
++        island = self._getIsland()
++        if island:
++            self._createCannons(island)
++        else:
++            self.notify.warning('Could not find the cannon island - no cannons')
++
++        self.isReady = True
++        self.lastActivity = self._now()
++        self.lastMove = self._now()
++        taskMgr.doMethodLater(self.MONITOR_INTERVAL, self._monitorPlayers, self.uniqueName('monitorPlayers'))
++        taskMgr.doMethodLater(DefendGlobals.TICK, self._tickTask, self.uniqueName('defendTick'))
++        taskMgr.doMethodLater(self.MOVE_INTERVAL, self._moveTask, self.uniqueName('defendMove'))
++        self.notify.info('Cannon defense instance %d is ready (%d cannons)' % (self.doId, len(self.cannons)))
++        for callback in self.pendingTeleportCallbacks:
++            callback()
++
++        self.pendingTeleportCallbacks = []
++        return Task.done
++
++    def _getIsland(self):
++        islandDoId = self.air.uidMgr.getDoId(DefendGlobals.ISLAND_UID)
++        if islandDoId:
++            return self.air.doId2do.get(islandDoId)
++
++        return None
++
++    def _createCannons(self, island):
++        """The four cannons on the cliff. They go in the island's always-seen zone, as the Black Pearl forts do: a
++        pirate inside an instance is not put in the island's grid cells, so a cannon in a cell is never seen."""
++        from pirates.battle.DistributedFortCannonAI import DistributedFortCannonAI
++
++        for index, (uid, x, y, z) in enumerate(DefendGlobals.CANNONS):
++            cannon = DistributedFortCannonAI(self.air)
++            cannon.setUniqueId(uid)
++            cannon.setIslandId(island.doId)
++            cannon.setFortId(0)
++            cannon.setCannonIndex(index)
++            island.generateChildWithRequired(cannon, PiratesGlobals.IslandShipDeployerZone)
++            cannon.setPos(island, x, y, z)
++            cannon.setHpr(*DefendGlobals.CANNON_HPR)
++            self.air.uidMgr.addUid(uid, cannon.doId)
++            self.cannons.append(cannon)
++
++    def delete(self):
++        for name in ('setupInstance', 'monitorPlayers', 'defendTick', 'defendMove'):
++            taskMgr.remove(self.uniqueName(name))
++
++        self.pendingTeleportCallbacks = []
++        for record in self.raiders:
++            self._deleteShip(record['ship'])
++
++        self.raiders = []
++        for cannon in self.cannons:
++            try:
++                self.air.uidMgr.removeUid(cannon.getUniqueId())
++                cannon.requestDelete()
++            except Exception as e:
++                self.notify.warning('Could not delete cannon: %r' % (e,))
++
++        self.cannons = []
++        DistributedTreasureMapInstanceAI.delete(self)
++
++    def getSpawnPt(self, area, index=None):
++        """Where a pirate lands: just behind the cannons"""
++        if area == DefendGlobals.ISLAND_UID:
++            return DefendGlobals.SPAWN_PT
++
++        return DistributedTreasureMapInstanceAI.getSpawnPt(self, area, index)
++
++    # ------------------------------------------------------------------ who is in
++
++    def _isInside(self, avatar):
++        """True when the avatar is somewhere under this instance (its island, its areas, its ocean)"""
++        parentId = getattr(avatar, 'parentId', None)
++        for _ in range(10):
++            if not parentId:
++                return False
++
++            if parentId == self.doId:
++                return True
++
++            parent = self.air.doId2do.get(parentId)
++            parentId = getattr(parent, 'parentId', None)
++
++        return False
++
++    def _insidePirates(self):
++        from pirates.pirate.DistributedPlayerPirateAI import DistributedPlayerPirateAI
++        return [obj for obj in list(self.air.doId2do.values())
++                if isinstance(obj, DistributedPlayerPirateAI) and self._isInside(obj)]
++
++    def hasPlayersInside(self):
++        """True when a pirate is inside; also drops the participants who left, logged out or never arrived"""
++        inside = len(self._insidePirates()) > 0
++        self.insideCount = 1 if inside else 0
++        if inside:
++            self.lastActivity = self._now()
++        elif self._now() - self.lastActivity > self.MONITOR_INTERVAL * 2:
++            for avatarId in list(self.participants):
++                self.removeParticipant(avatarId)
++
++        return inside
++
++    def isJoinable(self):
++        """A fight still going takes more pirates; a finished one does not"""
++        if self.tornDown or self.phase not in (DefendGlobals.PHASE_LOBBY, DefendGlobals.PHASE_WAVE,
++                                               DefendGlobals.PHASE_BREAK):
++            return False
++
++        return self.hasPlayersInside() or self._now() - self.lastActivity < self.EMPTY_GRACE_TIME
++
++    def addParticipant(self, avatarId):
++        DistributedTreasureMapInstanceAI.addParticipant(self, avatarId)
++        self.lastActivity = self._now()
++
++    def _monitorPlayers(self, task):
++        if self.tornDown:
++            return Task.done
++
++        if not self.hasPlayersInside():
++            over = self.phase in (DefendGlobals.PHASE_WON, DefendGlobals.PHASE_LOST)
++            if over or self._now() - self.lastActivity > self.EMPTY_GRACE_TIME:
++                self.notify.info('Cannon defense %d (phase %d) is empty, tearing it down' % (self.doId, self.phase))
++                self.teardown()
++                return Task.done
++
++        return Task.again
++
++    def teardown(self):
++        """Delete this instance and everything under it and free its world uids so the next entrance builds a fresh
++        one; callers tear down only an instance nobody is inside."""
++        if self.tornDown:
++            return
++
++        from pirates.instance.DistributedInstanceBaseAI import DistributedInstanceBaseAI
++        self.tornDown = True
++        self.notify.info('Tearing down cannon defense instance %d' % self.doId)
++        for name in ('monitorPlayers', 'defendTick', 'defendMove'):
++            taskMgr.remove(self.uniqueName(name))
++
++        # everything under the instance, found before the delete empties the tables
++        found = set([self.doId])
++        objects = list(self.air.doId2do.values())
++        grew = True
++        while grew:
++            grew = False
++            for obj in objects:
++                if obj.doId not in found and getattr(obj, 'parentId', None) in found:
++                    found.add(obj.doId)
++                    grew = True
++
++        # its world uids stay taken until freed: the next start would be handed this instance's old objects
++        uidMgr = self.air.uidMgr
++        for uid, doId in list(uidMgr.uid2doId.items()):
++            if doId in found:
++                taskMgr.remove('uidCallback-' + uid)
++                uidMgr.removeUid(uid)
++
++        for uid, obj in list(uidMgr.uid2obj.items()):
++            if getattr(obj, 'doId', None) in found:
++                uidMgr.removeUidObj(uid)
++
++        # the world creator and the ship manager follow the newest world: point them back at the main world
++        mainWorld = None
++        for obj in objects:
++            if isinstance(obj, DistributedInstanceBaseAI) and obj.doId not in found \
++                    and obj.getType() == PiratesGlobals.INSTANCE_MAIN:
++                mainWorld = obj
++                break
++
++        if mainWorld is not None:
++            if self.air.worldCreator.world is self:
++                self.air.worldCreator.world = mainWorld
++
++            if self.air.shipManager.world is self:
++                self.air.shipManager.world = mainWorld
++
++        self.requestDelete()
++
++    # ------------------------------------------------------------------ what the clients are told
++
++    def getDefendState(self):
++        """[phase, wave, secondsLeft, shipsLeft, shipsSunk, goldLeft], the setDefendState field"""
++        seconds = 0
++        if self.phaseEnds is not None:
++            seconds = int(max(0, math.ceil(self.phaseEnds - self._now())))
++
++        return [self.phase, min(255, self.wave), min(65535, seconds), min(65535, self.shipsLeft()),
++                min(65535, self.shipsSunk), max(0, self.goldLeft)]
++
++    def shipsLeft(self):
++        """Raiders still to set sail, plus the raiders on their way to the gold"""
++        return len(self.queue) + len([r for r in self.raiders if r['state'] == 'sailing' and not r['stole']
++                                      and not r['retreat']])
++
++    def d_setDefendState(self):
++        state = self.getDefendState()
++        if state != self.lastSent:
++            self.lastSent = state
++            self.sendUpdate('setDefendState', state)
++
++    def d_setDefendResult(self, won, shipsSunk, goldKept, goldReward):
++        self.sendUpdate('setDefendResult', [1 if won else 0, min(65535, shipsSunk), max(0, goldKept), goldReward])
++
++    # ------------------------------------------------------------------ the clock
++
++    def _tickTask(self, task):
++        if self.tornDown:
++            return Task.done
++
++        self.step(self._now())
++        return Task.again
++
++    def _moveTask(self, task):
++        if self.tornDown:
++            return Task.done
++
++        now = self._now()
++        dt = now - self.lastMove if self.lastMove is not None else self.MOVE_INTERVAL
++        self.lastMove = now
++        self.moveRaiders(min(dt, 1.0))
++        return Task.again
++
++    def step(self, now):
++        """One second of the fight: the phase clock, the spawns, the sinks, the end"""
++        if self.tornDown:
++            return
++
++        phase = self.phase
++        if phase == DefendGlobals.PHASE_LOBBY:
++            # the clock starts when the first pirate is inside, and no raider sails before then
++            if self.phaseEnds is None:
++                if len(self._insidePirates()) > 0:
++                    self.phaseEnds = now + DefendGlobals.LOBBY_SECONDS
++                    self.lastActivity = now
++            elif now >= self.phaseEnds:
++                self._startWave(now)
++        elif phase == DefendGlobals.PHASE_WAVE:
++            self._stepWave(now)
++        elif phase == DefendGlobals.PHASE_BREAK:
++            if now >= self.phaseEnds:
++                self.wave += 1
++                self._startWave(now)
++        else:
++            self._stepResult(now)
++
++        self.d_setDefendState()
++
++    def _startWave(self, now):
++        self.phase = DefendGlobals.PHASE_WAVE
++        self.queue = DefendGlobals.waveShipKinds(self.wave)
++        self.nextSpawn = now
++        self.phaseEnds = now + DefendGlobals.WAVE_MAX_SECONDS
++        self.notify.info('Cannon defense %d: wave %d, %d raiders' % (self.doId, self.wave + 1, len(self.queue)))
++
++    def _stepWave(self, now):
++        if self.queue and now >= self.nextSpawn:
++            self._spawnRaider(self.queue.pop(0))
++            self.nextSpawn = now + DefendGlobals.SPAWN_GAP
++
++        if now >= self.phaseEnds:
++            # a wave that drags on is over: the raiders left sail away without grabbing more, and the ones that
++            # have not set sail stay home
++            self.queue = []
++            for record in self.raiders:
++                record['retreat'] = True
++
++        self._countSunk()
++        if self.goldLeft <= 0:
++            self._finish(False, now)
++            return
++
++        if not self.queue and self.shipsLeft() == 0:
++            if self.wave + 1 >= len(DefendGlobals.WAVES):
++                self._finish(True, now)
++            else:
++                self.phase = DefendGlobals.PHASE_BREAK
++                self.phaseEnds = now + DefendGlobals.BREAK_SECONDS
++
++    def _finish(self, won, now):
++        self.won = won
++        self.phase = DefendGlobals.PHASE_WON if won else DefendGlobals.PHASE_LOST
++        self.phaseEnds = now + DefendGlobals.RESULT_SECONDS
++        self.queue = []
++        for record in list(self.raiders):
++            if record['state'] == 'sailing':
++                self._removeRaider(record)
++
++        self._countSunk()
++        self.reward = DefendGlobals.rewardFor(self.sunkKinds, self.goldLeft, won)
++        self.notify.info('Cannon defense %d is over: %s, %d ships sunk, %d gold left, reward %d' % (
++            self.doId, 'won' if won else 'lost', self.shipsSunk, self.goldLeft, self.reward))
++        self._payEveryone()
++        self.d_setDefendResult(won, self.shipsSunk, self.goldLeft, self.reward)
++
++    def _stepResult(self, now):
++        if now >= self.phaseEnds:
++            for avatar in self._insidePirates():
++                self.removeParticipant(avatar.doId)
++                self._sendAvatarToMainWorld(avatar)
++
++            # nothing left to wait for: the monitor tears the empty instance down
++            self.phaseEnds = now + DefendGlobals.RESULT_SECONDS
++
++    def _payEveryone(self):
++        """The reward goes once to each pirate who is inside when it ends"""
++        for avatar in self._insidePirates():
++            if avatar.doId in self.paid:
++                continue
++
++            self.paid.add(avatar.doId)
++            if self.reward <= 0:
++                continue
++
++            inventory = self.air.inventoryManager.getInventory(avatar.doId)
++            if not inventory:
++                self.notify.warning('No inventory for avatar %d, no reward' % avatar.doId)
++                continue
++
++            inventory.setGoldInPocket(inventory.getGoldInPocket() + self.reward)
++
++    # ------------------------------------------------------------------ the raiders
++
++    def _spawnRaider(self, kind):
++        from pirates.ship.NPCShipAI import NPCShipAI
++
++        spec = DefendGlobals.RAIDERS[kind]
++        hullConfig = ShipGlobals.getHullConfig(spec['shipClass'])
++        if hullConfig is None or not self.oceanGrid:
++            self.notify.warning('No hull config or no ocean for raider %s: skipped' % kind)
++            return None
++
++        road = self.roadCounter % len(DefendGlobals.ROADS)
++        self.roadCounter += 1
++        legs = [DefendGlobals.islandToOcean(x, y) for x, y in DefendGlobals.ROADS[road]]
++        x, y = legs[0]
++        h = self._headingTo(x, y, legs[1][0], legs[1][1])
++
++        ship = NPCShipAI(self.air)
++        # Family fix 0202: this ocean uses main-world numbers, so the starter-waters rule would freeze the ships
++        ship._starterExempt = True
++        # the sinking is paid by this fight, not by the stock sink payout
++        ship._sinkRewarded = True
++        ship.setBaseTeam(ShipGlobals.NAVY_TEAM)
++        ship.setLevel(10)
++        ship.setShipClass(spec['shipClass'])
++        ship.setName(spec['name'])
++        ship.setNPCship(1)
++        ship.setIsBoardable(0)
++        ship.setMaxHp(spec['hp'])
++        ship.setHp(spec['hp'])
++        ship.setMaxSp(hullConfig.get('setMaxSp', [2500])[0])
++        ship.setSp(hullConfig.get('setSp', [2500])[0])
++        ship.setHullCondition(1 << 7)
++
++        zoneId = self.oceanGrid.getZoneFromXYZ((x, y, 0))
++        self.oceanGrid.generateChildWithRequired(ship, zoneId)
++        ship.setPos(self.oceanGrid, x, y, 0)
++        ship.setHpr(h, 0, 0)
++        self.oceanGrid.addObjectToOceanGrid(ship)
++        ship.sendCurrentPosition()
++        # the raiders are moved by this class along the island's roads
++        ship.b_setGameState('ScriptedMovement', 0)
++
++        record = dict(ship=ship, kind=kind, x=x, y=y, h=h, legs=legs, leg=1, road=road, speed=spec['speed'],
++                      mine=DefendGlobals.MINE_INDEX[road], state='sailing', stole=False, stolen=0, retreat=False,
++                      counted=False)
++        self.raiders.append(record)
++        self.notify.info('Cannon defense %d: a %s sets sail on road %d (ship %d)' % (
++            self.doId, kind, road, ship.doId))
++        return record
++
++    @staticmethod
++    def _headingTo(x, y, tx, ty):
++        """Panda heading of a ship at (x, y) sailing to (tx, ty): 0 is +y, turning left (counter-clockwise) adds"""
++        return math.degrees(math.atan2(-(tx - x), ty - y))
++
++    def moveRaiders(self, dt):
++        """Move every raider `dt` seconds along its road, turn it and send its position"""
++        for record in list(self.raiders):
++            if record['state'] != 'sailing':
++                continue
++
++            ship = record['ship']
++            if self._isGone(ship) or self._isSunk(ship):
++                continue
++
++            legs = record['legs']
++            remaining = record['speed'] * dt
++            while remaining > 0 and record['leg'] < len(legs):
++                tx, ty = legs[record['leg']]
++                dx = tx - record['x']
++                dy = ty - record['y']
++                dist = math.hypot(dx, dy)
++                if dist <= remaining:
++                    record['x'] = tx
++                    record['y'] = ty
++                    remaining -= dist
++                    if record['leg'] == record['mine']:
++                        self._steal(record)
++
++                    record['leg'] += 1
++                else:
++                    record['x'] += dx / dist * remaining
++                    record['y'] += dy / dist * remaining
++                    remaining = 0
++
++            if record['leg'] >= len(legs):
++                # the end of the road: it has sailed away
++                self._removeRaider(record)
++                continue
++
++            tx, ty = legs[record['leg']]
++            want = self._headingTo(record['x'], record['y'], tx, ty)
++            turn = ((want - record['h'] + 180.0) % 360.0) - 180.0
++            limit = self.TURN_RATE * dt
++            record['h'] += max(-limit, min(limit, turn))
++            self._placeRaider(record)
++
++    def _placeRaider(self, record):
++        ship = record['ship']
++        try:
++            ship.setPos(self.oceanGrid, record['x'], record['y'], 0)
++            ship.setH(record['h'])
++            zoneId = self.oceanGrid.getZoneFromXYZ((record['x'], record['y'], 0))
++            if zoneId != ship.zoneId and self.oceanGrid.isValidZone(zoneId):
++                self.oceanGrid.handleAvatarZoneChange(ship)
++
++            ship.sendCurrentPosition()
++        except Exception as e:
++            self.notify.warning('Could not place raider %s: %r' % (record['kind'], e))
++
++    def _steal(self, record):
++        """A raider at the gold pile grabs some, once"""
++        if record['stole'] or record['retreat'] or self.phase != DefendGlobals.PHASE_WAVE:
++            return
++
++        record['stole'] = True
++        spec = DefendGlobals.RAIDERS[record['kind']]
++        amount = min(self.goldLeft, spec['steal'])
++        record['stolen'] = amount
++        self.goldLeft -= amount
++        self.notify.info('Cannon defense %d: a %s grabs %d gold, %d left' % (
++            self.doId, record['kind'], amount, self.goldLeft))
++
++    def _isGone(self, ship):
++        try:
++            return ship is None or ship.isDeleted() or ship.air is None
++        except Exception:
++            return True
++
++    def _isSunk(self, ship):
++        """True when the ship has been sunk by the cannons (it deletes itself some seconds later)"""
++        try:
++            hp = ship.getHp()
++            if isinstance(hp, (list, tuple)):
++                hp = hp[0]
++
++            if hp <= 0:
++                return True
++
++            state = getattr(ship, 'gameState', None)
++            if isinstance(state, (list, tuple)):
++                state = state[0]
++
++            return state in ('Sinking', 'Sunk')
++        except Exception:
++            return True
++
++    def _countSunk(self):
++        """Count each raider the cannons sank, once; a raider that has sailed away or been deleted is not one"""
++        for record in self.raiders:
++            if record['counted'] or record['state'] != 'sailing':
++                continue
++
++            ship = record['ship']
++            if self._isSunk(ship) and not (record['leg'] >= len(record['legs'])):
++                record['counted'] = True
++                record['state'] = 'sunk'
++                self.shipsSunk += 1
++                self.sunkKinds.append(record['kind'])
++                self.notify.info('Cannon defense %d: a %s is sunk (%d so far)' % (
++                    self.doId, record['kind'], self.shipsSunk))
++
++    def _removeRaider(self, record):
++        """A raider that sailed away, or the fight ended: it goes"""
++        if record['state'] != 'sailing':
++            return
++
++        record['state'] = 'gone'
++        self._deleteShip(record['ship'])
++
++    def _deleteShip(self, ship):
++        try:
++            if not self._isGone(ship):
++                ship.requestDelete()
++        except Exception as e:
++            self.notify.warning('Could not delete raider: %r' % (e,))
++
++    # ------------------------------------------------------------------ what the clients ask
++
++    def requestLeave(self):
++        """A pirate leaves for Port Royal (the end panel's button)"""
++        avatarId = self.air.getAvatarIdFromSender()
++        if not avatarId:
++            return
++
++        self.removeParticipant(avatarId)
++        avatar = self.air.doId2do.get(avatarId)
++        if avatar:
++            self._sendAvatarToMainWorld(avatar)
+diff --git a/pirates/world/GameAreaBuilderAI.py b/pirates/world/GameAreaBuilderAI.py
+index 097642d..7e0b894 100644
+--- a/pirates/world/GameAreaBuilderAI.py
++++ b/pirates/world/GameAreaBuilderAI.py
+@@ -12,6 +12,7 @@ from pirates.treasuremap.DistributedSurfaceTreasureAI import DistributedSurfaceT
+ from pirates.minigame.DistributedFishingSpotAI import DistributedFishingSpotAI
+ from pirates.minigame.DistributedRepairBenchAI import DistributedRepairBenchAI
+ from pirates.minigame.DistributedPotionCraftingTableAI import DistributedPotionCraftingTableAI
++from pirates.minigame.DistributedDefendEntranceAI import DistributedDefendEntranceAI
+ from pirates.holiday.DistributedHolidayBonfireAI import DistributedHolidayBonfireAI
+ from pirates.holiday.DistributedHolidayPigAI import DistributedHolidayPigAI
+ 
+@@ -32,6 +33,7 @@ class GameAreaBuilderAI(ClientAreaBuilderAI):
+         self.wantFishing = config.GetBool('want-fishing', True)
+         self.wantRepairBenches = config.GetBool('want-repair-game', True)
+         self.wantPotionGame = config.GetBool('want-potion-game', True)
++        self.wantCannonDefense = config.GetBool('want-cannon-defense', True)
+ 
+     def createObject(self, objType, objectData, parent, parentUid, objKey, dynamic, parentIsObj=False, fileName=None, actualParentObj=None):
+         newObj = None
+@@ -61,6 +63,8 @@ class GameAreaBuilderAI(ClientAreaBuilderAI):
+             newObj = self.createRepairBench(parent, parentUid, objKey, objectData)
+         elif objType == 'PotionTable' and self.wantPotionGame:
+             newObj = self.createPotionTable(parent, parentUid, objKey, objectData)
++        elif objType == 'DefendEntrance' and self.wantCannonDefense:
++            newObj = self.createDefendEntrance(parent, parentUid, objKey, objectData)
+ 
+         return newObj
+ 
+@@ -476,6 +480,19 @@ class GameAreaBuilderAI(ClientAreaBuilderAI):
+         self.addObject(table)
+         return table
+ 
++    def createDefendEntrance(self, parent, parentUid, objKey, objectData):
++        entrance = DistributedDefendEntranceAI(self.air)
++        entrance.setUniqueId(objKey)
++        entrance.setPos(objectData.get('GridPos', objectData.get('Pos', (0, 0, 0))))
++        entrance.setHpr(objectData.get('GridHpr', objectData.get('Hpr', (0, 0, 0))))
++        entrance.setScale(objectData.get('Scale', (1, 1, 1)))
++
++        zoneId = self.parent.getZoneFromXYZ(entrance.getPos())
++        parent.generateChildWithRequired(entrance, zoneId)
++        self.parentObjectToCell(entrance, zoneId)
++        self.addObject(entrance)
++        return entrance
++
+     def createHolidayProp(self, parent, parentUid, objKey, objectData):
+         propCls = None
+         subType = objectData.get('SubType', 'Unknown')
+diff --git a/pirates/world/WorldCreatorAI.py b/pirates/world/WorldCreatorAI.py
+index 4f4de57..6d0fe2e 100644
+--- a/pirates/world/WorldCreatorAI.py
++++ b/pirates/world/WorldCreatorAI.py
+@@ -15,6 +15,7 @@ from pirates.instance.DistributedInstanceWorldAI import DistributedInstanceWorld
+ from pirates.tutorial import TutorialGlobals
+ from pirates.tutorial.DistributedPiratesTutorialWorldAI import DistributedPiratesTutorialWorldAI
+ from pirates.treasuremap.TreasureMapBlackPearlAI import TreasureMapBlackPearlAI
++from pirates.minigame.DistributedDefendWorldAI import DistributedDefendWorldAI
+ 
+ 
+ class LinkManager(object):
+@@ -419,6 +420,8 @@ class WorldCreatorAI(WorldCreatorBase, DirectObject):
+             self.world = DistributedPiratesTutorialWorldAI(self.air)
+         elif worldFileName == 'BlackpearlWorld':
+             self.world = TreasureMapBlackPearlAI(self.air)
++        elif worldFileName == 'PortRoyalCannonWorld':
++            self.world = DistributedDefendWorldAI(self.air)
+         elif worldFileName == WorldGlobals.PiratesWorldSceneFileBase:
+             self.world = DistributedMainWorldAI(self.air)
+         elif 'Parlor' in worldFileName:
+-- 
+2.53.0
+

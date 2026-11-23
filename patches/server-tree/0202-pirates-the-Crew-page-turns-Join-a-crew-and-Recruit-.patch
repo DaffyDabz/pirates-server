@@ -1,0 +1,39 @@
+From 299d6aa4b84374430f3cd6a5f1d2ff8d375b6588 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 01:28:02 -0800
+Subject: [PATCH 202/371] pirates: the Crew page turns Join a crew and Recruit
+ crewmates off at the right times (0281, patch 20)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/piratesgui/CrewPage.py | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/piratesgui/CrewPage.py b/pirates/piratesgui/CrewPage.py
+index b8f73ac..349ea51 100644
+--- a/pirates/piratesgui/CrewPage.py
++++ b/pirates/piratesgui/CrewPage.py
+@@ -270,6 +270,11 @@ class CrewPage(SocialPage.SocialPage):
+         changed = 0
+         avId = member.avatarId
+         if avId == localAvatar.doId:
++            # patch 0281: he has a crew now, so he is not looking for one any more (the server took
++            # him off the lookout list too). Without this "Join a crew" stayed on after he left the
++            # crew, and his next press of it only switched it off
++            self.joinACrewStatus = 0
++            self.joinACrewStatusPVP = 0
+             self.enableCrewIcon()
+             for id in self.crew:
+                 localAvatar.guiMgr.radarGui.refreshRadarObject(id)
+@@ -343,7 +348,7 @@ class CrewPage(SocialPage.SocialPage):
+                 self.addCrewLookout['state'] = DGG.DISABLED
+                 self.blinkSearchDot(self.recruitCrewmatesIcon, 0)
+                 self.recruitCrewmatesIcon.setColor(1, 0, 0, 0.6)
+-                self.recruitCrewMatesStatus == 0
++                self.recruitCrewMatesStatus = 0   # patch 0281: was '==', so "Recruit crewmates" stayed on after the crew emptied
+         
+         if self.addAvatarToList:
+             if self.crew:
+-- 
+2.53.0
+

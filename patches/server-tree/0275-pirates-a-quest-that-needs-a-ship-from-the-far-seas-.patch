@@ -1,0 +1,101 @@
+From 6c967ad750d2253080f1913096c67d2f37b43783 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 10:46:54 -0800
+Subject: [PATCH 275/371] pirates: a quest that needs a ship from the far seas
+ says so in its text (0356, patch 25)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/piratesbase/PLocalizerEnglish.py |  2 ++
+ pirates/quest/Quest.py                   |  2 ++
+ pirates/quest/QuestDNA.py                |  3 ++
+ pirates/quest/QuestTaskDNA.py            | 36 ++++++++++++++++++++++++
+ 4 files changed, 43 insertions(+)
+
+diff --git a/pirates/piratesbase/PLocalizerEnglish.py b/pirates/piratesbase/PLocalizerEnglish.py
+index 05095aa..95d7f90 100644
+--- a/pirates/piratesbase/PLocalizerEnglish.py
++++ b/pirates/piratesbase/PLocalizerEnglish.py
+@@ -2183,6 +2183,8 @@ QuestStatusTaskSingle = '%(task)s. %(prog)s'
+ QuestStatusTaskMulti = '\n- %(task)s %(prog)s'
+ QuestTaskProgress = '(%(prog)s/%(goal)s)'
+ QuestProgressComplete = '(COMPLETE)'
++# family server (patch 0356): under a ship step no starter-waters ship counts for
++QuestFarSeaHint = '\nThese ships sail far out to sea.\nSail past Cuba or Cutthroat Isle to find them!'
+ QuestTitleNew = 'NEW!'
+ QuestTitleComplete = 'COMPLETE!'
+ DefeatProgress = '%d/%d %s Defeated'
+diff --git a/pirates/quest/Quest.py b/pirates/quest/Quest.py
+index d6f07cc..fe929f5 100644
+--- a/pirates/quest/Quest.py
++++ b/pirates/quest/Quest.py
+@@ -316,6 +316,8 @@ class Quest(POD):
+             str = PLocalizer.QuestStrMultiTask % {
+                 'heading': headingStr,
+                 'tasks': tasksStr}
++        # family server (patch 0356): where to sail for ships the starter waters never have
++        str += QuestTaskDNA.farSeaHintText(taskDNAs, taskStates)
+         return str
+ 
+     def __repr__(self):
+diff --git a/pirates/quest/QuestDNA.py b/pirates/quest/QuestDNA.py
+index 9046fdd..a3b29cc 100644
+--- a/pirates/quest/QuestDNA.py
++++ b/pirates/quest/QuestDNA.py
+@@ -174,6 +174,9 @@ class QuestDNA(ParamObj):
+             str = PLocalizer.QuestStrMultiTask % {
+                 'heading': headingStr,
+                 'tasks': tasksStr}
++        # family server (patch 0356): where to sail for ships the starter waters never have
++        from pirates.quest import QuestTaskDNA
++        str += QuestTaskDNA.farSeaHintText(taskDNAs, taskStates)
+         return str
+ 
+     def getSCSummaryText(self, taskNum):
+diff --git a/pirates/quest/QuestTaskDNA.py b/pirates/quest/QuestTaskDNA.py
+index f8a1b50..72861d8 100644
+--- a/pirates/quest/QuestTaskDNA.py
++++ b/pirates/quest/QuestTaskDNA.py
+@@ -2866,3 +2866,39 @@ DBId2Class = {
+     24: DefeatGroupTaskDNA}
+ Class2DBId = invertDict(DBId2Class)
+ RecoverItemClasses = (RecoverAvatarItemTaskDNA, RecoverTreasureItemTaskDNA, RecoverShipItemTaskDNA, RecoverContainerItemTaskDNA, RecoverAvatarGroupItemTaskDNA)
++
++
++def needsFarSeaHint(taskDNA, taskState=None):
++    """
++    Family server (patch 0356): True for a ship step (sink, loot or capture)
++    that no ship in the starter waters can count for, so the quest text
++    tells a kid to sail far out. Only the Navy Ferret (level 2) sails within
++    9,000 ft of Port Royal and Tortuga or on the course between them
++    (pirates/ship/StarterWaters.py, npcship-starter-level-max 5; every other
++    enemy class is level 6 or more), so these are the handleShipDefeat
++    checks, made on a Navy Ferret. 190 of the 233 ship steps need it.
++    """
++    if not isinstance(taskDNA, (DefeatShipTaskDNA, RecoverShipItemTaskDNA, CaptureShipNPCTaskDNA)):
++        return False
++    if taskState is not None and taskState.isComplete():
++        return False
++    faction, hull = taskDNA.faction, taskDNA.hull
++    if isinstance(taskDNA, RandomizedDefeatShipTaskDNA) and taskState is not None:
++        faction, hull = taskState.faction, taskState.hull
++    if faction is not None and not AvatarTypes.Navy.isA(faction):
++        return True
++    if hull is not None:
++        shipClassList = getShipList(hull)
++        if shipClassList and ShipGlobals.NAVY_FERRET not in shipClassList:
++            return True
++    if taskDNA.level > ShipGlobals.getShipLevel(ShipGlobals.NAVY_FERRET):
++        return True
++    return bool(taskDNA.isFlagship)
++
++
++def farSeaHintText(taskDNAs, taskStates):
++    """Patch 0356: the far-sea hint to add under a quest's text, or ''."""
++    for i, taskDNA in enumerate(taskDNAs):
++        if needsFarSeaHint(taskDNA, taskStates[i] if i < len(taskStates) else None):
++            return PLocalizer.QuestFarSeaHint
++    return ''
+-- 
+2.53.0
+

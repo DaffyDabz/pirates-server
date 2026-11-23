@@ -1,0 +1,64 @@
+From cb34d6ad6b7d0dc90da9bf7764cc6baabdde29d5 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 00:25:12 -0800
+Subject: [PATCH 196/371] pirates: a ship sunk in a Sea Battle keeps its hold
+ and comes back repaired (0253)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShipAI.py | 22 ++++++++++++++++++++--
+ 1 file changed, 20 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index 4317fd7..58113e3 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -873,10 +873,15 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         # above its max hp; int, since a hull hit sends a float to an int16 field
+         self.hp = int(max(min(hp, self.maxHp), 0))
+         DidChange = oldHp != self.hp
+-        if self.hp == 0 and DidChange and self.cargo and not self.npcShip:
++        # a Sea Battle ship keeps its hold: nothing is lost in the battle
++        if self.hp == 0 and DidChange and self.cargo and not self.npcShip and not self.getSiegeTeam():
+             self.b_setCargo([])  # the plunder in the hold goes down with the ship
+ 
+         if self.hp == 0 and DidChange:
++            seaBattle = getattr(self.air, 'seaBattleMgr', None)
++            if seaBattle is not None and self.getSiegeTeam():
++                seaBattle.shipSunk(self)
++
+             self.b_setGameState('Sinking', 0)
+ 
+     def d_setHp(self, hp):
+@@ -1185,7 +1190,15 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         # in; Port Royal if he has none), the way dropAnchor lands a docking crew
+         world = self.getParentObj()
+         world = world.getParentObj() if world is not None else None
+-        for uid in (avatar.getReturnLocation(), LocationIds.PORT_ROYAL_ISLAND):
++        landings = [avatar.getReturnLocation(), LocationIds.PORT_ROYAL_ISLAND]
++        # a Sea Battle pirate lands at his team's dock, to sail again
++        seaBattle = getattr(self.air, 'seaBattleMgr', None)
++        if seaBattle is not None:
++            hqUid = seaBattle.getHqUid(seaBattle.teamOf(avatar) or self.getSiegeTeam())
++            if hqUid:
++                landings.insert(0, hqUid)
++
++        for uid in landings:
+             island = self.air.uidMgr.justGetMeMeObject(uid) if uid else None
+             if isinstance(island, DistributedIslandAI) and island.getParentObj() is world:
+                 self.d_sendCrewToIsland(avatar.doId, island.doId, world.getSpawnPt(uid))
+@@ -1215,6 +1228,11 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         self._leaveOceanGrid()
+         self.b_setLocation(self.parentId, 0)
+         self.notify.warning('sunk ship %s: put away sunk, a shipwright can repair it' % self.doId)
++        # a Sea Battle ship comes back repaired, free
++        seaBattle = getattr(self.air, 'seaBattleMgr', None)
++        if seaBattle is not None and seaBattle.shipPutAway(self):
++            return
++
+         # an owner who cannot pay the shipwright gets it mended now, so the dinghy can launch it again
+         self.mendFreeIfOwnerCannotPay('sank')
+ 
+-- 
+2.53.0
+

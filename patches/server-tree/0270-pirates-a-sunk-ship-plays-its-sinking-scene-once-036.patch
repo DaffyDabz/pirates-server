@@ -1,0 +1,31 @@
+From 018bfd4682a1b7ebaea7dadbd9fb86059c4b461e Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 10:46:54 -0800
+Subject: [PATCH 270/371] pirates: a sunk ship plays its sinking scene once
+ (0362)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShipAI.py | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index a028588..4c39608 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -1142,6 +1142,12 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         self.sendUpdate('setGameState', [stateName, avId, timeStamp])
+ 
+     def b_setGameState(self, stateName, avId, timeStamp=0):
++        # one Sinking per sinking: a broadside or deck cannon that empties the hull calls setHp (which already
++        # starts the sinking) and then asks for Sinking again, and a late shot does the same. Each repeat made the
++        # client end the sinking scene on a black screen and play it again, and restarted the crew-ashore timer.
++        if stateName == 'Sinking' and self.gameState and self.gameState[0] in ('Sinking', 'Sunk'):
++            return
++
+         if not timeStamp:
+             timeStamp = globalClockDelta.getRealNetworkTime(bits=16)
+ 
+-- 
+2.53.0
+

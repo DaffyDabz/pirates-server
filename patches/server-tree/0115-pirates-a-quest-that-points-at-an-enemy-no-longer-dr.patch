@@ -1,0 +1,29 @@
+From 8a289e313482812bc802ff87689e1b1e8f5fbbad Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 18:39:13 -0800
+Subject: [PATCH 115/371] pirates: a quest that points at an enemy no longer
+ drops the pirate from the game, as server-tree patch 0129 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 3cfcbe9..39e12e8 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -978,7 +978,9 @@ class QuestManagerAI(DirectObject):
+         if isinstance(goalObject, DistributedNPCTownfolkAI):
+             stepType = QuestStep.STNPC
+         elif isinstance(goalObject, DistributedBattleAvatarAI):
+-            stepType = QuestStep.STNPCEnemy
++            # QuestStep has no enemy type (STNPCEnemy raised and the server dropped the pirate the moment a
++            # "defeat any Navy guard" beam pointed at a live enemy); the NPC beam follows any avatar
++            stepType = QuestStep.STNPC
+         elif isinstance(goalObject, DistributedGAInteriorAI):
+             stepType = QuestStep.STInteriorDoor
+         elif isinstance(goalObject, DistributedBuildingDoorAI):
+-- 
+2.53.0
+

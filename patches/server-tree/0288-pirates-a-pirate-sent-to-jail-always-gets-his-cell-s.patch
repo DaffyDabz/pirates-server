@@ -1,0 +1,100 @@
+From 2035ff18005971b38dba258c191e4d0e08c4b88e Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 15:59:07 -0800
+Subject: [PATCH 288/371] pirates: a pirate sent to jail always gets his cell,
+ so his loading screen comes down (0372)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/PlayerPirateGameFSMAI.py | 54 ++++++++++++++++++++++++-
+ 1 file changed, 53 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/pirate/PlayerPirateGameFSMAI.py b/pirates/pirate/PlayerPirateGameFSMAI.py
+index 703428b..41ec560 100644
+--- a/pirates/pirate/PlayerPirateGameFSMAI.py
++++ b/pirates/pirate/PlayerPirateGameFSMAI.py
+@@ -53,6 +53,7 @@ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+                     self.avatar.b_setHp(1)
+                     jailWorld.d_sendLocalAvatarToJail(self.avatar.doId, parentObj.doId,
+                         parentObj.parentId, parentObj.zoneId)
++                    self._watchJail(parentObj)
+                     return
+ 
+             self.notify.debug('Cannot teleport avatar %d to jail, '
+@@ -107,6 +108,7 @@ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+ 
+         parentWorld.d_sendLocalAvatarToJail(self.avatar.doId, interior.doId,
+             interior.parentId, interior.zoneId)
++        self._watchJail(interior)
+ 
+     def _getFreeCellDoor(self, interior):
+         # family server (11-19, 0347): a cell no other pirate is in. The door was picked at random, so two kids
+@@ -171,7 +173,7 @@ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+ 
+     def enterThrownInJail(self):
+         if not self.avatar.testTeleportFlag(PiratesGlobals.TFInJail):
+-            self.notify.debug('Cannot finish teleporting avatar %d to jail, '
++            self.notify.warning('Cannot finish teleporting avatar %d to jail, '
+                 'avatar was never teleporting to jail!' % self.avatar.doId)
+ 
+             return
+@@ -204,6 +206,56 @@ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+         # trip aborted ("does not exist locally, aborting teleport")
+         parentWorld.d_setSpawnInfo(self.avatar.doId, x, y, z, h, 0, [parentObj.doId,
+             parentObj.zoneId, parentObj.parentId])
++        self._jailSpawnSent = True
+ 
+     def exitThrownInJail(self):
+         pass
++
++    # family server (11-19, 0372): his game shows the jail loading screen until the jail's world sends him his
++    # cell's spawn point, which only ThrownInJail above did. Player2 was knocked out at Beckett's Quarry at 15:23,
++    # his game reached the jail and asked for ThrownInJail, and no spawn point came: he sat on 'Loading: Jail'
++    # for 13 minutes until he closed the game. The AI logged nothing, so which early return it was is not known.
++    # Now each way out above is logged, and 15 and 40 seconds after he is sent to a jail, a pirate still in his
++    # cell who never got his spawn point is sent it from the jail's own world. His game drops him in the cell
++    # and he stands up; a game that already has it ignores a second one.
++    JAIL_WATCH_DELAYS = (15.0, 25.0)
++
++    def _jailWatchName(self):
++        return 'family-jail-watch-%d' % self.avatar.doId
++
++    def _watchJail(self, interior):
++        self._jailSpawnSent = False
++        taskMgr.remove(self._jailWatchName())
++        taskMgr.doMethodLater(self.JAIL_WATCH_DELAYS[0], self._checkJailSpawn, self._jailWatchName(),
++            extraArgs=[interior.doId, 0])
++
++    def _checkJailSpawn(self, jailId, tries):
++        av = self.avatar
++        if self.air.doId2do.get(av.doId) is not av or getattr(self, '_jailSpawnSent', True):
++            return
++        if av.getJailCellIndex() >= 100:
++            return
++
++        jail = self.air.doId2do.get(jailId)
++        jailWorld = jail.getParentObj() if jail is not None else None
++        if jailWorld is None or not hasattr(jailWorld, 'getSpawnPt'):
++            self.notify.warning('jail watch: jail %s of %d is gone' % (jailId, av.doId))
++            return
++
++        parentObj = av.getParentObj()
++        state = self.getCurrentOrNextState()
++        self.notify.warning('jail watch: %d never got his cell spawn point (state %s, in %s, jail %d): sending it' % (
++            av.doId, state, getattr(parentObj, 'doId', None), jailId))
++        (x, y, z, h) = jailWorld.getSpawnPt(jail.getUniqueId(), av.getJailCellIndex())
++        jailWorld.d_setSpawnInfo(av.doId, x, y, z, h, 0, [jail.doId, jail.zoneId, jail.parentId])
++        if parentObj is jail and state == 'ThrownInJail':
++            self._jailSpawnSent = True
++            return
++
++        if tries + 1 < len(self.JAIL_WATCH_DELAYS):
++            taskMgr.doMethodLater(self.JAIL_WATCH_DELAYS[tries + 1], self._checkJailSpawn, self._jailWatchName(),
++                extraArgs=[jailId, tries + 1])
++
++    def destroy(self):
++        taskMgr.remove(self._jailWatchName())
++        BattleAvatarGameFSMAI.destroy(self)
+-- 
+2.53.0
+

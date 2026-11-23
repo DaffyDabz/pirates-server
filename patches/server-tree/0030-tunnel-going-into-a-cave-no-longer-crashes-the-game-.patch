@@ -1,0 +1,44 @@
+From 7338724abfb5dfc688f2130997c2f44057a79e4d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 19:54:09 -0800
+Subject: [PATCH 030/371] tunnel: going into a cave no longer crashes the game
+ (an island leaving the ocean put the pirate on a far island's off-map cell)
+
+Going through the tunnel into Barbossa's cave, Devil's Anvil leaves the ocean grid. With no ship, the ocean grid
+puts the pirate on the first island it still knows, which can be miles away, and that island's grid gives a
+negative zone. The stock grid skips that zone, but the family code asked for the cells around it and the
+negative zone numbers crashed the game. Off-map zones are now skipped there too.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/distributed/PiratesClientRepository.py | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/distributed/PiratesClientRepository.py b/pirates/distributed/PiratesClientRepository.py
+index fa24288..72ec617 100644
+--- a/pirates/distributed/PiratesClientRepository.py
++++ b/pirates/distributed/PiratesClientRepository.py
+@@ -109,7 +109,10 @@ class PiratesClientRepository(OTPClientRepository):
+         grid.handleAvatarZoneChange(av, zoneId)
+         # Disney's grid also opened interest on the concentric cells around the avatar; the stock
+         # Panda3D grid only watches the avatar's own cell, so players a cell apart never see each other.
+-        if av.isLocal() and hasattr(grid, 'getConcentricZones'):
++        # A zone off the grid's map is skipped, as handleAvatarZoneChange above skips it: going through the
++        # tunnel into Barbossa's cave, Devil's Anvil leaves the ocean and the ocean grid puts the pirate on the
++        # first island it still knows, miles away, and asking for cells around that negative zone crashed the game.
++        if av.isLocal() and hasattr(grid, 'getConcentricZones') and grid.isValidZone(zoneId):
+             zones = set([zoneId])
+             for radius in (1, 2, 3):
+                 zones.update(grid.getConcentricZones(zoneId, radius))
+@@ -127,7 +130,7 @@ class PiratesClientRepository(OTPClientRepository):
+         # cell edge it left the client's sight and was deleted under the pirate at the wheel. A grid's own
+         # one-cell visibility interest always gets the cells around it.
+         grid = self.doId2do.get(parentId)
+-        if not isinstance(zoneIdList, int) or not hasattr(grid, 'getConcentricZones'):
++        if not isinstance(zoneIdList, int) or not hasattr(grid, 'getConcentricZones') or not grid.isValidZone(zoneIdList):
+             return zoneIdList
+         zones = set([zoneIdList])
+         for radius in (1, 2, 3):
+-- 
+2.53.0
+

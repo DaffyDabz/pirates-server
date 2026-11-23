@@ -1,0 +1,136 @@
+From bcf743b8c182517c6b59e16d6d3f06b48aca5aab Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:47:19 -0800
+Subject: [PATCH 218/371] pirates: sinking the other team's ships and winning a
+ Sea Battle earns infamy, which only goes up (0294)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pvp/SeaBattleManagerAI.py | 69 +++++++++++++++++++++++++++++++
+ 1 file changed, 69 insertions(+)
+
+diff --git a/pirates/pvp/SeaBattleManagerAI.py b/pirates/pvp/SeaBattleManagerAI.py
+index b3e4051..92f71fa 100644
+--- a/pirates/pvp/SeaBattleManagerAI.py
++++ b/pirates/pvp/SeaBattleManagerAI.py
+@@ -21,6 +21,8 @@ from direct.task import Task
+ 
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.quest import QuestEvent
++from pirates.ship import ShipGlobals
++from pirates.uberdog.UberDogGlobals import InventoryType
+ 
+ FRENCH = 1
+ SPANISH = 2
+@@ -41,6 +43,19 @@ STREAK_ANNOUNCE = 3      # 0293: a ship's run of sinks is told to everyone from
+ BOUNTY_PER_SINK = 25     # 0293: each sink raises the ship's bounty (setSiegeBounty; the icon needs want-bountyicons)
+ MAX_BOUNTY = 65535       # setSiegeBounty is a uint16
+ 
++# 0294: sea infamy, PVPGlobals.RenownWorthValues (the AI does not import PVPGlobals: it reads the client's base)
++INFAMY_WORTH = {
++    ShipGlobals.INTERCEPTORL1: 2, ShipGlobals.INTERCEPTORL2: 4, ShipGlobals.INTERCEPTORL3: 6,
++    ShipGlobals.MERCHANTL1: 4, ShipGlobals.MERCHANTL2: 7, ShipGlobals.MERCHANTL3: 10,
++    ShipGlobals.WARSHIPL1: 5, ShipGlobals.WARSHIPL2: 8, ShipGlobals.WARSHIPL3: 10}
++
++
++def shipInfamyWorth(shipClass):
++    # PVPGlobals.getShipInfamyWorth
++    if not shipClass:
++        return 0
++    return INFAMY_WORTH.get(shipClass, 1)
++
+ 
+ def otherTeam(team):
+     return SPANISH if team == FRENCH else FRENCH
+@@ -76,6 +91,9 @@ class SeaBattleManagerAI:
+         self.recentHits = {}        # 0293: target shipId -> {attacker shipId: when it last hurt it}
+         self.scoreLimit = max(1, config.GetInt('sea-battle-score-limit', 5))
+         self.awayGrace = max(0.0, config.GetFloat('sea-battle-away-grace', 60.0))
++        # 0294: the winners' infamy when a battle ends, and the other side's "well fought" share
++        self.winInfamy = max(0, config.GetInt('sea-battle-win-infamy', 20))
++        self.playInfamy = max(0, config.GetInt('sea-battle-play-infamy', 10))
+         self.blockOtherShipHits = config.GetBool('sea-battle-only-ship-pvp', True)
+         # family server (11-19, 0291): a team with this many ships at sea is full (the original game's
+         # max-ships-per-privateer-team); with a balance margin, a team that many ships ahead is full too (0 = off)
+@@ -376,6 +394,7 @@ class SeaBattleManagerAI:
+         myShipName = myShip.getName() if myShipId is not None else attacker.getName()
+         # 0293: a teammate's ship that hurt it lately gets an assist; the sunk ship's streak and bounty end, and the
+         # sinker's grow
++        targetBounty = self.bounties.get(targetShip.doId, 0)
+         assistShip = self.findAssist(targetShip.doId, myShipId, team)
+         self.score(team, myShipName, theirs, targetShip.getName(),
+             assistName=assistShip.getName() if assistShip is not None else None)
+@@ -383,6 +402,16 @@ class SeaBattleManagerAI:
+         if myShipId is not None:
+             self.addStreak(myShip, team)
+ 
++        # 0294: sea infamy for the sink (the sunk ship's worth, plus a fifth of its bounty) to the shooter and his
++        # crewmates aboard, and half to the pirates of the ship that helped
++        worth = shipInfamyWorth(getattr(targetShip, 'shipClass', 0)) + targetBounty // 5
++        for pirate in credited:
++            self.giveInfamy(pirate, worth, targetShip.doId)
++        if assistShip is not None:
++            for pirate in self._piratesAboard(assistShip):
++                if pirate not in credited and self.teamOf(pirate) == team:
++                    self.giveInfamy(pirate, max(1, worth // 2), targetShip.doId)
++
+     def score(self, team, shipName, sunkTeam, sunkShipName, assistName=None):
+         self.scores[team] = self.scores.get(team, 0) + 1
+         self.notify.info('%s sank %s: French %d, Spanish %d' % (shipName, sunkShipName, self.scores[FRENCH], self.scores[SPANISH]))
+@@ -399,6 +428,7 @@ class SeaBattleManagerAI:
+             self.tellAll('The %s win the Sea Battle, %d to %d! A new battle starts now.' % (
+                 TEAM_NAMES[team], self.scores[team], self.scores[otherTeam(team)]))
+             self.air.writeServerEvent('sea-battle-won', team=team, french=self.scores[FRENCH], spanish=self.scores[SPANISH])
++            self.rewardBattle(team)
+             self.scores = {FRENCH: 0, SPANISH: 0}
+ 
+     def tellAll(self, text):
+@@ -460,6 +490,45 @@ class SeaBattleManagerAI:
+         except Exception as e:
+             self.notify.warning('bounty for ship %s failed: %s' % (getattr(ship, 'doId', 0), e))
+ 
++    # ---- sea infamy (0294): only ever given, never taken
++    def giveInfamy(self, avatar, amount, targetId=0):
++        amount = int(amount)
++        inventory = avatar.getInventory() if hasattr(avatar, 'getInventory') else None
++        if amount <= 0 or inventory is None:
++            return 0
++
++        given = 0
++        try:
++            for stackType in (InventoryType.PVPTotalInfamySea, InventoryType.PVPCurrentInfamy):
++                have = inventory.getStackQuantity(stackType)
++                limit = inventory.getStackLimit(stackType)
++                new = have + amount
++                if limit > 0:
++                    new = min(new, limit)
++                if new > have:
++                    inventory.b_setStackQuantity(stackType, new)
++                    given = max(given, new - have)
++        except Exception as e:
++            self.notify.warning('infamy for %s failed: %s' % (avatar.doId, e))
++            return given
++
++        if given:
++            # the client's "+N" over the sunk ship and its rank-up message
++            avatar.sendUpdateToAvatarId(avatar.doId, 'sendRenownMessage', [targetId, 0, min(given, 65535)])
++            self.air.writeServerEvent('sea-battle-infamy', avatarId=avatar.doId, amount=given)
++        return given
++
++    def rewardBattle(self, winner):
++        for avId, avTeam in list(self.members.items()):
++            avatar = self.air.doId2do.get(avId)
++            if avatar is None:
++                continue
++            if avTeam == winner:
++                if self.giveInfamy(avatar, self.winInfamy):
++                    avatar.d_setSystemMessage(0, 'Victory! You earned %d infamy.' % self.winInfamy)
++            elif self.giveInfamy(avatar, self.playInfamy):
++                avatar.d_setSystemMessage(0, 'Well fought! You earned %d infamy for sailing in the battle.' % self.playInfamy)
++
+     # ---- sinking
+     def shipSunk(self, ship):
+         """A Sea Battle ship's hull reached 0 (DistributedShipAI.setHp)."""
+-- 
+2.53.0
+

@@ -1,0 +1,156 @@
+From 4193b1864553e733723fc431a57017ffeeda0fc0 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:12:28 -0800
+Subject: [PATCH 101/371] pirates: a teleport the server turns down no longer
+ locks the pirate out of every later teleport, as server-tree patch 0115 (1
+ client file)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedTeleportMgr.py   | 13 +++++++
+ pirates/instance/DistributedTeleportMgrAI.py | 36 +++++++++++++++++---
+ 2 files changed, 45 insertions(+), 4 deletions(-)
+
+diff --git a/pirates/instance/DistributedTeleportMgr.py b/pirates/instance/DistributedTeleportMgr.py
+index 91b75c2..87a8437 100755
+--- a/pirates/instance/DistributedTeleportMgr.py
++++ b/pirates/instance/DistributedTeleportMgr.py
+@@ -377,6 +377,19 @@ class DistributedTeleportMgr(DistributedObject.DistributedObject):
+ 
+     @report(types=['deltaStamp', 'args'], dConfigParam=['want-teleport-report'])
+     def handleAvatarTeleportResponse(self, avId, available, shardId, instanceDoId, areaDoId):
++        if not avId and available != PiratesGlobals.TAAvailable:
++            # family server (11-17): the server would not start a teleport that was not to a friend (no such place,
++            # no spawn point, he is there already, Kingshead locked). It sent no answer, so the teleport lock stayed
++            # set until relog. -1 = there already and -2 = already told why: no message for those
++            self.friendTeleportId = 0
++            if self.amInTeleport():
++                self.clearAmInTeleport()
++
++            if available not in (-1, -2):
++                localAvatar.guiMgr.createWarning(PLocalizer.TeleportGenericFailMessage, duration=10)
++
++            return
++
+         if avId and avId == self.friendTeleportId and available != PiratesGlobals.TAAvailable and self.amInTeleport():
+             # family server (11-16): the server refused a teleport to a friend (TeleportMgrAI.teleportToFriend).
+             # Say why and let go of the teleport lock, which stayed set until relog
+diff --git a/pirates/instance/DistributedTeleportMgrAI.py b/pirates/instance/DistributedTeleportMgrAI.py
+index 0f42e21..6967a5e 100644
+--- a/pirates/instance/DistributedTeleportMgrAI.py
++++ b/pirates/instance/DistributedTeleportMgrAI.py
+@@ -51,6 +51,8 @@ class TeleportFSM(TeleportOperationFSM):
+             self.notify.warning('Failed to generate the teleport zone for avatar %d, '
+                 'while trying to teleport!' % self.avatar.doId)
+ 
++            # family server (11-17): tell his client, or it stays locked in its teleport until he logs in again
++            self.air.teleportMgr.d_teleportDenied(self.avatar)
+             self.cleanup()
+             return
+ 
+@@ -69,6 +71,8 @@ class TeleportFSM(TeleportOperationFSM):
+             self.notify.warning('Failed to generate the teleport handler for avatar %d, '
+                 'while trying to teleport!' % self.avatar.doId)
+ 
++            # family server (11-17): tell his client (see above)
++            self.air.teleportMgr.d_teleportDenied(self.avatar)
+             self.cleanup()
+             return
+ 
+@@ -153,11 +157,16 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+         return None
+ 
+     def d_initiateTeleport(self, avatar, instanceType=None, instanceName=None, locationUid=None, spawnPt=None):
+-        if avatar.doId in self.avatar2fsm:
+-            self.notify.warning('Cannot initiate teleport for avatar %d, '
+-                'already teleporting!' % avatar.doId)
++        # family server (11-17): his client only asks while it is not teleporting, so a teleport still open here is
++        # one the client gave up on (it failed on its side and went back to the main world). That request was turned
++        # away with no answer, so his client stayed locked in its teleport until he logged in again. Close the old
++        # one and take the new request
++        oldFsm = self.avatar2fsm.get(avatar.doId)
++        if oldFsm:
++            self.notify.warning('Avatar %d asks to teleport while an old teleport is still open, closing the old '
++                'one' % avatar.doId)
+ 
+-            return
++            oldFsm.cleanup()
+ 
+         returnLocation = avatar.getReturnLocation()
+         currentIsland = avatar.getCurrentIsland()
+@@ -185,6 +194,8 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+             self.notify.warning('Cannot initiate teleport for %d, '
+                 'already there, locationUid=%s!' % (avatar.doId, locationUid))
+ 
++            # family server (11-17): -1 = he is there already; his client lets go of its teleport lock, no message
++            self.d_teleportDenied(avatar, -1)
+             return
+ 
+         if not instanceType and not instanceName:
+@@ -206,6 +217,7 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+                 tutorialState = avatar.getTutorial()
+                 if tutorialState >= PiratesGlobals.TUT_MET_JOLLY_ROGER:
+                     self.notify.warning('Avatar %d has tutorial state %d, skipping tutorial creation' % (avatar.doId, tutorialState))
++                    self.d_teleportDenied(avatar, -1)
+                     return
+ 
+                 if avatar.doId not in self.air.tutorialManager.avatar2fsm:
+@@ -220,6 +232,7 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+             self.notify.warning('Cannot initiate teleport for unknown world: '
+                 'instanceType=%r instanceName=%r' % (instanceType, instanceName))
+ 
++            self.d_teleportDenied(avatar)
+             return
+ 
+         gameArea = world.builder.getObject(uniqueId=locationUid)
+@@ -238,6 +251,7 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+                 self.notify.warning('Cannot initiate teleport for unknown '
+                     'gameArea: locationUid=%r' % locationUid)
+ 
++                self.d_teleportDenied(avatar)
+                 return
+ 
+             # Locate the first explorable island in the requested world
+@@ -251,11 +265,14 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+                 self.notify.warning('Cannot initiate teleport for unknown '
+                     'gameArea: locationUid=%r' % locationUid)
+ 
++                self.d_teleportDenied(avatar)
+                 return
+ 
+         # check for paid status when trying to teleport to kingshead
+         if gameArea.getUniqueId() == LocationIds.KINGSHEAD_ISLAND and not avatar.isPaid():
+             gameArea.d_deniedEntryToIsland(avatar.doId)
++            # family server (11-17): -2 = already told him why (the Kingshead message); his client lets go of its lock
++            self.d_teleportDenied(avatar, -2)
+             return
+ 
+         if not spawnPt:
+@@ -270,6 +287,7 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+             self.notify.warning('Cannot initiate teleport for avatar %d, no available spawn points '
+                 'for gameArea, locationUid=%r!' % (avatar.doId, locationUid))
+ 
++            self.d_teleportDenied(avatar)
+             return
+ 
+         self.avatar2fsm[avatar.doId] = TeleportFSM(self.air, avatar, world, gameArea, spawnPt)
+@@ -358,6 +376,16 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+             area.getUniqueId(), spawnPt))
+         self.d_initiateTeleport(avatar, world.getType(), world.getFileName(), area.getUniqueId(), spawnPt)
+ 
++    def d_teleportDenied(self, avatar, code=None):
++        # family server (11-17): the answer for a teleport the AI will not start (not to a friend, so the friend id is
++        # 0). Before this, every such refusal just returned and the client's teleport lock (amInTeleport) stayed set
++        # until relog, blocking every later teleport. -1 = he is there already, -2 = he was told why, anything else =
++        # "a problem with going to your destination". The client clears its lock on all of them
++        if code is None:
++            code = PiratesGlobals.encodeTeleportFlag(PiratesGlobals.TFUnavailable)
++
++        self.d_teleportRefused(avatar, 0, code)
++
+     def d_teleportRefused(self, avatar, friendDoId, code):
+         avatar.sendUpdateToAvatarId(avatar.doId, 'teleportResponse', [friendDoId, code, 0, 0, 0])
+ 
+-- 
+2.53.0
+

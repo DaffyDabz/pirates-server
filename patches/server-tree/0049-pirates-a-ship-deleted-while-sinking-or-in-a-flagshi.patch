@@ -1,0 +1,44 @@
+From b574ed925b92687a79ecef83131d3c270b5d586e Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 22:52:26 -0800
+Subject: [PATCH 049/371] pirates: a ship deleted while sinking (or in a
+ flagship timeout state) no longer leaves its delayed task to crash the
+ district when it fires, as server-tree patch 0050
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/GameFSMShipAI.py | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index b1f56df..ac7bac3 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -243,6 +243,14 @@ class GameFSMShipAI(FSM.FSM):
+     def cleanup(self):
+         """Clean up all tasks and state."""
+         self._stopAllTasks()
++        # The delayed state tasks (sinking, flagship timeouts) are only removed when their state is exited, and a ship
++        # deleted while in the state (the Black Pearl instance torn down after the Goliath sank) never exits it: the
++        # task then fired on a ship that was gone and crashed the district (2026-11-16)
++        for name in ('_sinkingTask', '_crippledTimeoutTask', '_defeatSinkTask', '_parleySinkTask'):
++            task = getattr(self, name, None)
++            if task is not None:
++                taskMgr.remove(task)
++                setattr(self, name, None)
+         self.targetShip = None
+         self.targetDoId = 0
+         self.threatList.clear()
+@@ -2760,6 +2768,9 @@ class GameFSMShipAI(FSM.FSM):
+             # only once nobody stands on it. (Asking the teleport manager instead never
+             # worked: it looks for the world above the pirate's parent, which is the
+             # ship, finds none and gives up; 2026-11-16.)
++            if self.ship is None:
++                return Task.done
++
+             aboard = self.ship.getPiratesAboard()
+             if not aboard:
+                 self.ship.requestDelete()
+-- 
+2.53.0
+

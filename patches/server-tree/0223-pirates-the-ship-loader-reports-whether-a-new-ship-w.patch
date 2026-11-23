@@ -1,0 +1,56 @@
+From 8509b38a690d4b67e5ed567015edef08f1446800 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:47:20 -0800
+Subject: [PATCH 223/371] pirates: the ship loader reports whether a new ship
+ was made (0262)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/DistributedShipLoaderAI.py | 16 +++++++++++++---
+ 1 file changed, 13 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/uberdog/DistributedShipLoaderAI.py b/pirates/uberdog/DistributedShipLoaderAI.py
+index 311f725..7b99c4b 100644
+--- a/pirates/uberdog/DistributedShipLoaderAI.py
++++ b/pirates/uberdog/DistributedShipLoaderAI.py
+@@ -135,16 +135,26 @@ class DistributedShipLoaderAI(DistributedObjectGlobalAI):
+             self.notify.warning('Failed to run ship loader fsm, '
+                 'an FSM: %s is already running for avatar %d!' % (fsm.__class__.__name__, avatar.doId))
+ 
+-            return
++            return False
+ 
+         callback = kwargs.pop('callback', None)
+ 
+         self.avatar2fsm[avatar.doId] = fsmtype(self.air, avatar, callback)
+         self.avatar2fsm[avatar.doId].request('Start', *args, **kwargs)
++        return True
+ 
+-    def createShip(self, avatar, shipClass, shipName=''):
++    def createShip(self, avatar, shipClass, shipName='', doneCallback=None):
++        # patch 0262: returns False when the loader is busy for this pirate (nothing was started), True when the
++        # create was started. doneCallback(shipId) is called once the create ends, with 0 when it failed; it
++        # can be called before this returns (a bad class or a pirate with no inventory fails at once).
+ 
+         def _shipCreatedCallback(shipId):
++            if doneCallback is not None:
++                try:
++                    doneCallback(shipId)
++                except Exception:
++                    self.notify.warning('ship create callback for avatar %d failed' % avatar.doId)
++
+             if not shipId:
+                 return
+ 
+@@ -153,7 +163,7 @@ class DistributedShipLoaderAI(DistributedObjectGlobalAI):
+             # a new ship object, the Uberdog will activate the avatar's ships object on login...
+             self.sendActivateShip(avatar.doId, shipId)
+ 
+-        self.runShipLoaderFSM(CreateShipFSM, avatar, shipClass, shipName, callback=_shipCreatedCallback)
++        return self.runShipLoaderFSM(CreateShipFSM, avatar, shipClass, shipName, callback=_shipCreatedCallback)
+ 
+     def sendCreateShip(self, avatarId, shipClass, shipName=''):
+         # the name rides along only when there is one, so an UberDOG that has
+-- 
+2.53.0
+

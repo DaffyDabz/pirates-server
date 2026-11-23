@@ -1,0 +1,41 @@
+From a4a329f5ad61d1ee30a48e21e92aaaa7a85d6cb8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 02:06:49 -0800
+Subject: [PATCH 139/371] pirates: with the tutorial switched on, a pirate that
+ already stood on a main island never goes into the opening (kids made with
+ skip-tutorial keep their game)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/distributed/PiratesClientRepository.py | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/distributed/PiratesClientRepository.py b/pirates/distributed/PiratesClientRepository.py
+index d49ed18..d675732 100644
+--- a/pirates/distributed/PiratesClientRepository.py
++++ b/pirates/distributed/PiratesClientRepository.py
+@@ -434,6 +434,9 @@ class PiratesClientRepository(OTPClientRepository):
+         localAvatar.announceGenerate()
+         localAvatar.postGenerateMessage()
+         locUID = localAvatar.getReturnLocation()
++        # family server (0153): a return location means this pirate already stood on a main island (a kid's pirate made
++        # with skip-tutorial, whose tutorial flag stays 0), so it never goes into the opening below
++        self._playedMainWorld = bool(locUID)
+         if locUID:
+             self.loadingScreen.showTarget(locUID)
+             self.loadingScreen.showHint(locUID)
+@@ -487,7 +490,10 @@ class PiratesClientRepository(OTPClientRepository):
+                 messenger.send('magicWord', ['~deployShip', base.localAvatar.getDoId(), base.localAvatar.zoneId])
+ 
+             self.accept(PiratesGlobals.ShipHotkey, deployShip)
+-        if localAvatar.style.getTutorial() < PiratesGlobals.TUT_MET_JOLLY_ROGER and self.skipTutorial == 0:
++        if self.tutorial and getattr(self, '_playedMainWorld', False):
++            self.notify.info('pirate %d already played in the main world: no opening' % localAvatar.doId)
++            self.tutorial = 0
++        if localAvatar.style.getTutorial() < PiratesGlobals.TUT_MET_JOLLY_ROGER and self.skipTutorial == 0 and not getattr(self, '_playedMainWorld', False):
+             localAvatar.teleportToType = PiratesGlobals.INSTANCE_TUTORIAL
+             localAvatar.teleportToName = WorldGlobals.PiratesTutorialSceneFileBase
+             self.sendMsgToTravelAgent('requestInitLocUD', ['unused', 0])
+-- 
+2.53.0
+

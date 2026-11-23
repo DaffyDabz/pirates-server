@@ -1,0 +1,26 @@
+From 5fefd2ba8d39809a5b571ae264cbdade8a0575dc Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:27:12 -0800
+Subject: [PATCH 176/371] pirates: poker check keeps the bet (0218)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/DistributedPokerTableAI.py | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/pirates/minigame/DistributedPokerTableAI.py b/pirates/minigame/DistributedPokerTableAI.py
+index fe53b1b..7af6ece 100644
+--- a/pirates/minigame/DistributedPokerTableAI.py
++++ b/pirates/minigame/DistributedPokerTableAI.py
+@@ -533,7 +533,7 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+                         self._bettingOrder.append(s)
+ 
+         elif actionCode == PlayingCardGlobals.Check:
+-            self._playerActions[seatIndex] = [PlayingCardGlobals.Check, 0]
++            self._playerActions[seatIndex] = [PlayingCardGlobals.Check, prev]
+ 
+         self._broadcastPlayerActions()
+         self._broadcastTableState(self._round)
+-- 
+2.53.0
+

@@ -1,0 +1,134 @@
+From 226163c4cfa9c5564b800e1192178ecb8cf6f697 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 20:44:07 -0800
+Subject: [PATCH 329/371] pirates: the shipwright's Upgrade does something for
+ every ship again, and Sell and Repair work after a sail (boats-0001, client
+ only)
+
+The host: the ship Upgrade button does nothing. A ship a pirate sailed and walked off is 'PutAway' until the next login
+(DistributedShipAI._playerDeparted), but the shipwright's ship picker (ShipFrameShopping.enableStatsOV) and its sell /
+trade-up / overhaul checks (DistributedShopKeeper) only took 'Off', so after any sail the ship's button stayed grey and
+the press did nothing. The server (_upgradeShip) already takes 'Off', 'PutAway' and 'Sunk'.
+
+- ShipFrameShopping.SHIP_PUT_AWAY_STATES = ('Off', 'PutAway', 'Sunk'), used by the picker and the three
+  DistributedShopKeeper checks.
+- The menu's Upgrade is lit for any pirate with a ship (DistributedNPCTownfolk.computeOptions), and the picker's
+  Upgrade is always pressable: confirmUpgradeShip asks Yes/No or says why not (put the ship away first, already the
+  biggest, Sailing level, gold).
+
+Client only: no server file changes, no restart; shipped as client patch 37. Test: test_upgrade_button.py live FAIL
+7/16, patched PASS 16/16.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/economy/DistributedShopKeeper.py |  8 +++++---
+ pirates/npc/DistributedNPCTownfolk.py    |  6 +++---
+ pirates/piratesgui/ShipFrameShopping.py  | 14 +++++++++-----
+ 3 files changed, 17 insertions(+), 11 deletions(-)
+
+diff --git a/pirates/economy/DistributedShopKeeper.py b/pirates/economy/DistributedShopKeeper.py
+index 30fbcf2..72a0067 100644
+--- a/pirates/economy/DistributedShopKeeper.py
++++ b/pirates/economy/DistributedShopKeeper.py
+@@ -16,6 +16,8 @@ from pirates.piratesbase import PLocalizer
+ from pirates.piratesgui import PDialog
+ from pirates.pirate import AvatarTypes
+ from pirates.piratesgui.ShipShoppingPanel import ShipShoppingPanel
++# patch 0412: sell, trade up and overhaul take a ship put away after a sail, as the server does
++from pirates.piratesgui.ShipFrameShopping import SHIP_PUT_AWAY_STATES
+ from pirates.economy.EconomyGlobals import *
+ from pirates.economy import EconomyGlobals
+ from pirates.ship.ShipGlobals import *
+@@ -464,7 +466,7 @@ class DistributedShopKeeper:
+         if not shipOV:
+             return
+         
+-        if shipOV.state != 'Off':
++        if shipOV.state not in SHIP_PUT_AWAY_STATES:
+             base.localAvatar.guiMgr.createWarning(PLocalizer.ShipNotInBottleWarning, PiratesGuiGlobals.TextFG6)
+             return
+         
+@@ -546,7 +548,7 @@ class DistributedShopKeeper:
+         if not shipOV:
+             return
+ 
+-        if shipOV.state != 'Off':
++        if shipOV.state not in SHIP_PUT_AWAY_STATES:
+             base.localAvatar.guiMgr.createWarning(PLocalizer.ShipNotInBottleWarning, PiratesGuiGlobals.TextFG6)
+             return
+ 
+@@ -602,7 +604,7 @@ class DistributedShopKeeper:
+         if not shipOV:
+             return
+         
+-        if shipOV.state != 'Off':
++        if shipOV.state not in SHIP_PUT_AWAY_STATES:
+             base.localAvatar.guiMgr.createWarning(PLocalizer.ShipNotInBottleWarning, PiratesGuiGlobals.TextFG6)
+             return
+         
+diff --git a/pirates/npc/DistributedNPCTownfolk.py b/pirates/npc/DistributedNPCTownfolk.py
+index a39eac2..06b317f 100644
+--- a/pirates/npc/DistributedNPCTownfolk.py
++++ b/pirates/npc/DistributedNPCTownfolk.py
+@@ -495,15 +495,15 @@ class DistributedNPCTownfolk(DistributedBattleNPC.DistributedBattleNPC, Distribu
+                 shipButtonState = InteractGlobals.DISABLED
+             if len(inv.getShipDoIdList()) <= 0:
+                 sellShipButtonState = InteractGlobals.DISABLED
++            else:
++                # patch 0412: Upgrade is lit for any pirate with a ship; the ship picker says why one cannot trade up
++                upgradeButtonState = InteractGlobals.NORMAL
+             for shipId in inv.getShipDoIdList():
+                 sailButtonState = InteractGlobals.NORMAL
+                 ship = base.cr.getOwnerView(shipId)
+                 if ship:
+                     if ship.Hp < ship.maxHp:
+                         repairButtonState = InteractGlobals.NORMAL
+-                    # patch 0264: Upgrade is lit when a ship can be traded up
+-                    if EconomyGlobals.getShipUpgrade(ship.shipClass):
+-                        upgradeButtonState = InteractGlobals.NORMAL
+ 
+             if inv.getTreasureMapsList():
+                 if sailButtonState == InteractGlobals.NORMAL:
+diff --git a/pirates/piratesgui/ShipFrameShopping.py b/pirates/piratesgui/ShipFrameShopping.py
+index 3a7b1a8..ef2c859 100644
+--- a/pirates/piratesgui/ShipFrameShopping.py
++++ b/pirates/piratesgui/ShipFrameShopping.py
+@@ -6,6 +6,11 @@ from pirates.piratesgui import PiratesGuiGlobals
+ from pirates.piratesgui.ShipFrameSelect import ShipFrameSelect
+ from pirates.piratesgui.ShipSnapshot import ShipSnapshot
+ 
++# patch 0412: a ship is put away in its bottle in any of these states. A ship a pirate sailed and walked off is
++# 'PutAway' for the rest of the session (DistributedShipAI._playerDeparted), and the shipwright's server side takes
++# all three, but the shipwright's buttons only took 'Off', so they stayed grey until the next login.
++SHIP_PUT_AWAY_STATES = ('Off', 'PutAway', 'Sunk')
++
+ class ShipFrameShopping(ShipFrameSelect):
+     
+     def __init__(self, parent, **kw):
+@@ -17,7 +22,7 @@ class ShipFrameShopping(ShipFrameSelect):
+     def enableStatsOV(self, shipOV):
+         self.snapShot = ShipSnapshot(self, shipOV, pos = self['snapShotPos'])
+         typeStr = PLocalizer.YourShip
+-        if shipOV.state not in 'Off':
++        if shipOV.state not in SHIP_PUT_AWAY_STATES:
+             self.button['state'] = DGG.DISABLED
+         else:
+             self.button['state'] = DGG.NORMAL
+@@ -34,11 +39,10 @@ class ShipFrameShopping(ShipFrameSelect):
+         elif self['mode'] == 'overhaul':
+             self.button['text'] = PLocalizer.InteractOverhaul
+         elif self['mode'] == 'upgrade':
+-            # patch 0264: a ship with no bigger one after it cannot be traded up
+-            from pirates.economy import EconomyGlobals
++            # patch 0412: Upgrade is always pressable; the press says why a ship cannot trade up (out at sea,
++            # already the biggest, Sailing level, gold) instead of a grey button that does nothing
+             self.button['text'] = PLocalizer.InteractUpgrade
+-            if not EconomyGlobals.getShipUpgrade(shipOV.shipClass):
+-                self.button['state'] = DGG.DISABLED
++            self.button['state'] = DGG.NORMAL
+         
+ 
+ 
+-- 
+2.53.0
+

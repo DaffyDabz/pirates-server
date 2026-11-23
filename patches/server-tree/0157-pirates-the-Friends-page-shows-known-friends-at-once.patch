@@ -1,0 +1,31 @@
+From 8dfc25fc37b4fef7630adf47b13fdc8653f09a58 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:18:52 -0800
+Subject: [PATCH 157/371] pirates: the Friends page shows known friends at
+ once, server-tree patch 0186
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/piratesgui/FriendsPage.py | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/pirates/piratesgui/FriendsPage.py b/pirates/piratesgui/FriendsPage.py
+index 7b417b6..0c3b80c 100644
+--- a/pirates/piratesgui/FriendsPage.py
++++ b/pirates/piratesgui/FriendsPage.py
+@@ -31,6 +31,12 @@ class FriendsPage(SocialPage.SocialPage):
+         self.accept(OTPGlobals.PlayerFriendRemoveEvent, self.removePlayerFriend)
+         charGui.removeNode()
+         self.headingLabel = DirectLabel(parent = self, relief = None, state = DGG.NORMAL, text = PLocalizer.FriendsListLabel, text_align = TextNode.ACenter, text_scale = PiratesGuiGlobals.TextScaleLarge, text_pos = (0.0, 0.0), text_fg = PiratesGuiGlobals.TextFG1, pos = (0.24, 0, 0.694))
++        # family server (2026-11-18): the friends list reaches the client as
++        # soon as the pirate enters the game, before this page is built, so
++        # show the friends the manager already knows
++        afm = getattr(base.cr, 'avatarFriendsManager', None)
++        if afm is not None:
++            self.addAvatarFriends(list(afm.avatarId2Info.items()))
+         self.maintainNormalButtonState()
+     
+     def destroy(self):
+-- 
+2.53.0
+

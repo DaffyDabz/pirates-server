@@ -1,0 +1,58 @@
+From cb45473a6a84ea4be4fed6d07e91bdaf3d8d644f Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:57:30 -0800
+Subject: [PATCH 191/371] pirates: crewmates can be challenged and the PvP
+ words read right (0249, patch 18)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/PirateAvatarPanel.py      |  3 ++-
+ pirates/piratesbase/PLocalizerEnglish.py | 11 +++++++++--
+ 2 files changed, 11 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/pirate/PirateAvatarPanel.py b/pirates/pirate/PirateAvatarPanel.py
+index 5d2cf98..bcdf750 100644
+--- a/pirates/pirate/PirateAvatarPanel.py
++++ b/pirates/pirate/PirateAvatarPanel.py
+@@ -210,7 +210,8 @@ class PirateAvatarPanel(IdentityPanel.IdentityPanel):
+                     self.whisperButton['state'] = DGG.DISABLED
+                     self.goToButton['state'] = DGG.DISABLED
+                     self.challengeButton['state'] = DGG.DISABLED
+-                elif inPVP or inSameCrew:
++                elif inPVP:
++                    # family server (11-18): crewmates may challenge each other to a Skirmish
+                     self.challengeButton['state'] = DGG.DISABLED
+                 if not getattr(base.cr, 'pvpManager', None):
+                     self.challengeButton['state'] = DGG.DISABLED
+diff --git a/pirates/piratesbase/PLocalizerEnglish.py b/pirates/piratesbase/PLocalizerEnglish.py
+index 986b258..3e4f1e8 100644
+--- a/pirates/piratesbase/PLocalizerEnglish.py
++++ b/pirates/piratesbase/PLocalizerEnglish.py
+@@ -4529,7 +4529,7 @@ TradeInviterTradeSaidNoNewTrades = '%s is not interested in trades right now.'
+ TradeInviterMaybe = '%s was unable to answer.'
+ TradeInviterDown = 'Cannot trade now.'
+ PVPInviterBusy = '%s is busy'
+-PVPInviterNotYet = 'Would you like to issue a Challenge to %s and crew? Your crew members will also be invited.'
++PVPInviterNotYet = 'Would you like to challenge %s to a friendly Skirmish? Nobody loses gold or loot.'
+ PVPInviterCheckAvailability = 'Checking if %s is available for the Challenge...'
+ PVPInviterEndChallenge = 'Cancel challenge with %s?'
+ PVPInviterNoMore = 'Removing Challenge with %s.'
+@@ -4540,7 +4540,14 @@ PVPInviterSaidNo = '%s declined your Challenge!'
+ PVPInviterMaybe = "%s didn't bother to answer."
+ PVPInviterDown = 'Cannot Challenge right now.'
+ PVPInviterSelf = 'You cannot Challenge yourself to a fight.'
+-PVPInviteeInvitation = '%s is issuing you a Challenge!'
++# family server (11-18): land Skirmish
++PVPInviterEndSkirmish = 'You are in a Skirmish. Stop it now?'
++PVPInviterChallengeNoMore = 'Stopping the Skirmish.'
++PVPInviterNotFriends = 'You can only challenge your friends and crewmates.'
++PVPInviterNotHere = '%s is too far away. Meet up first, then challenge again.'
++PVPInviterYouBusy = 'You are already in a Skirmish. Finish it first.'
++PVPInviterAlreadyInvited = '%s already has a challenge to answer. Try again soon.'
++PVPInviteeInvitation = '%s challenges you to a friendly Skirmish! Nobody loses gold or loot.'
+ PVPRulesPanelPlay = 'PLAY'
+ PVPDefaultTitle = 'Skirmish'
+ PVPDefaultInstructions = 'Find treasure chests and bring them back to your fort. First crew to amass 200 gold wins.'
+-- 
+2.53.0
+

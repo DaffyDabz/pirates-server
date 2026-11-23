@@ -1,0 +1,34 @@
+From c2a399a55faa781c1275635a759611a244e35d1c Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:55:57 -0800
+Subject: [PATCH 228/371] pirates: after an admin's ~skipQuest the quest page
+ shows the quest as done (0287)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 75877f7..1cc8e7a 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -1111,8 +1111,15 @@ def skipQuest(questId=''):
+         return 'You did not provide a valid questId!'
+ 
+     quest = base.air.questMgr.getQuest(invoker, questId=questId)
++    if not quest:
++        return 'Could not find active quest: %s!' % questId
++
+     for taskState in quest.getTaskStates():
+         taskState.forceComplete()
+ 
++    # family server (patch 0287, found by pir-bot): forceComplete only changes the AI's copy. Send the task states as
++    # the normal path does (DistributedQuestAI.handleEvent), or a quest held in a choice (Bonita's claw, rod and
++    # blood) still shows 0 of N on the client.
++    quest.sendTaskStates(quest.getTaskStates())
+     base.air.questMgr.completeQuest(invoker, quest)
+     return 'Forced quest: %s completion status.' % questId
+-- 
+2.53.0
+

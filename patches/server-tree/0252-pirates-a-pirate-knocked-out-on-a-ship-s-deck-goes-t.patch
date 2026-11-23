@@ -1,0 +1,70 @@
+From aa20de0ef0ea52d563c9eec7187614d4c6b6cc4b Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 07:08:52 -0800
+Subject: [PATCH 252/371] pirates: a pirate knocked out on a ship's deck goes
+ to jail instead of lying there for good (0322)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/PlayerPirateGameFSMAI.py | 35 +++++++++++++++++++++++--
+ 1 file changed, 33 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/pirate/PlayerPirateGameFSMAI.py b/pirates/pirate/PlayerPirateGameFSMAI.py
+index 5620faa..484b2ba 100644
+--- a/pirates/pirate/PlayerPirateGameFSMAI.py
++++ b/pirates/pirate/PlayerPirateGameFSMAI.py
+@@ -46,7 +46,14 @@ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+ 
+             return
+ 
+-        if not isinstance(parentObj, DistributedGameAreaAI):
++        # family server (0322): knocked out on a ship's deck (a flagship's deck crew, a boarding fight), his parent is
++        # the ship, not a game area. This returned here, so he lay at 0 hp behind the jail loading screen for good.
++        # He is sent from the world above the ship (ship -> ocean grid -> world) to the jail findJailInterior picks
++        # (his return port, then Port Royal). A Sea Battle pirate gets up on his deck by himself (the client's
++        # LocalPirateGameFSM.enterDeath), as before.
++        parentWorld = self.findParentWorld(parentObj)
++        onLand = isinstance(parentObj, DistributedGameAreaAI)
++        if not onLand and (parentWorld is None or self._getSeaBattleTeam()):
+             self.notify.warning('Cannot teleport avatar %d to jail, '
+                 'parent object has invalid type: %r!' % (self.avatar.doId, parentObj))
+ 
+@@ -80,10 +87,34 @@ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+ 
+         # tell the instance to send the avatar to the jail, and set it's interest
+         # properly before we update their game state...
+-        parentWorld = parentObj.getParentObj()
++        if not onLand:
++            self.notify.warning('knocked out on ship %s: sending %d to the jail %d' % (
++                getattr(parentObj, 'doId', None), self.avatar.doId, interior.doId))
++
+         parentWorld.d_sendLocalAvatarToJail(self.avatar.doId, interior.doId,
+             interior.parentId, interior.zoneId)
+ 
++    def findParentWorld(self, parentObj):
++        # family server (0322): the instance that sends him to the jail. A game area's parent is its world, as
++        # before; on a ship's deck it is the world above the ship's ocean grid.
++        if isinstance(parentObj, DistributedGameAreaAI):
++            return parentObj.getParentObj()
++
++        obj = parentObj
++        for _ in range(4):
++            obj = obj.getParentObj() if obj is not None else None
++            if isinstance(obj, DistributedInstanceBaseAI):
++                return obj
++
++        return None
++
++    def _getSeaBattleTeam(self):
++        getTeam = getattr(self.avatar, 'getSiegeTeam', None)
++        try:
++            return getTeam() if getTeam else 0
++        except Exception:
++            return 0
++
+     def findJailInterior(self, parentObj):
+         # family server: the jail he wakes up in. This asked the parent first (AttributeError when he died on
+         # anything that is not a game area), then only his return location, which stays '' until he has sailed
+-- 
+2.53.0
+

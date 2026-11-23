@@ -1,0 +1,241 @@
+From 907bf3af0af1ca8e1040828ef9aa968556f70fa2 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 00:25:13 -0800
+Subject: [PATCH 197/371] pirates: the Sea Serpent loads, fights and dies on
+ the client without errors (0222, patch 19)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/creature/DistributedSeaSerpent.py | 147 +++++++++++++++++++++-
+ pirates/creature/SeaMonster.py            |  22 +++-
+ pirates/creature/SeaSerpent.py            |   4 +
+ 3 files changed, 169 insertions(+), 4 deletions(-)
+
+diff --git a/pirates/creature/DistributedSeaSerpent.py b/pirates/creature/DistributedSeaSerpent.py
+index 9dc26c2..09d1664 100644
+--- a/pirates/creature/DistributedSeaSerpent.py
++++ b/pirates/creature/DistributedSeaSerpent.py
+@@ -1,9 +1,152 @@
++from direct.directnotify import DirectNotifyGlobal
++from direct.interval.IntervalGlobal import *
++from panda3d.core import Point3
+ from pirates.creature.DistributedCreature import DistributedCreature
+ from pirates.creature.SeaSerpent import SeaSerpent
+ 
++
+ class DistributedSeaSerpent(DistributedCreature):
+-    
++    # The server parks this beside a ship's hull (in the ship's own space) and drives it with game states:
++    # Off (hidden under water), Emerge, Idle, Attack, Submerge, Death. The serpent model is 450 feet long, so
++    # it is shown at three quarters size and its hit tubes cover only the head and neck that rise out of the sea.
++    # (patch 0222; the 2008 class passed a model into DistributedCreature, which takes none, and could not load)
++    notify = DirectNotifyGlobal.directNotify.newCategory('DistributedSeaSerpent')
++    Scale = 0.75
++    TubeBottom = -8.0
++    TubeTop = 68.0
++    TubeRadius = 30.0
++    NametagZ = 72.0
++    HiddenStates = ('Off', 'Submerge')
++
+     def __init__(self, cr):
+-        DistributedCreature.__init__(self, cr, SeaSerpent())
++        DistributedCreature.__init__(self, cr)
++        self.creature = SeaSerpent()
++        self.serpentSetUp = False
++        self.serpentState = 'Off'
++        self.serpentIval = None
++
++    def setupCreature(self, avatarType = None):
++        if self.serpentSetUp:
++            return
++        self.serpentSetUp = True
++        self.creature.reparentTo(self.getGeomNode())
++        try:
++            self.motionFSM.setAnimInfo(self.getAnimInfo('LandRoam'))
++        except Exception:
++            pass
++        try:
++            self.nametag3d.setName('empty_use_self_dot_creature_dot_nametag3d_instead')
++            self.creature.nametag3d.reparentTo(self.nametag3d)
++        except Exception:
++            pass
++
++    def getEnemyScale(self):
++        return self.Scale
++
++    def wantsSmoothing(self):
++        return 0
++
++    def freezeShadow(self, *args, **kw):
++        try:
++            self.creature.shadowPlacer.off()
++        except Exception:
++            pass
++        self.freezeTask = None
++
++    def initializeBattleCollisions(self):
++        DistributedCreature.initializeBattleCollisions(self)
++        self.fitBattleTubes()
++        if self.serpentState in self.HiddenStates:
++            self.stashBattleCollisions()
++
++    def fitBattleTubes(self):
++        # the stock tube is 280 feet wide (the old stats row); fit it to the head and neck instead
++        for np in list(self.battleTubeNodePaths) + list(self.aimTubeNodePaths):
++            if np.isEmpty():
++                continue
++            solid = np.node().modifySolid(0)
++            solid.setPointA(Point3(0, 0, self.TubeBottom))
++            solid.setPointB(Point3(0, 0, self.TubeTop))
++            if np in self.aimTubeNodePaths:
++                solid.setRadius(self.TubeRadius * 1.5)
++            else:
++                solid.setRadius(self.TubeRadius)
++
++    def setHeight(self, height):
++        DistributedCreature.setHeight(self, height)
++        self.fitBattleTubes()
++        try:
++            self.nametag3d.setZ(0)
++            self.creature.nametag3d.setZ(self.NametagZ)
++        except Exception:
++            pass
++
++    def announceGenerate(self):
++        DistributedCreature.announceGenerate(self)
++        state, self.serpentState = self.serpentState, None
++        self.showSerpentState(state, instant = True)
++
++    def setGameState(self, gameState, timestamp = None, localArgs = []):
++        if gameState == 'Death':
++            self.finishSerpentIval()
++            self.creature.show()
++            self.serpentState = 'Death'
++            DistributedCreature.setGameState(self, gameState, timestamp, localArgs)
++            return
++        if not self.serpentSetUp or self.creature is None:
++            # not generated yet: announceGenerate applies the last state
++            self.serpentState = gameState
++            return
++        self.showSerpentState(gameState)
++
++    def showSerpentState(self, state, instant = False):
++        if state == self.serpentState or self.creature is None:
++            return
++        self.serpentState = state
++        self.finishSerpentIval()
++        c = self.creature
++        if state in self.HiddenStates:
++            if instant or state == 'Off' or c.isHidden():
++                c.hide()
++                self.stashBattleCollisions()
++                return
++            self.stashBattleCollisions()
++            self.playSerpentIval(Sequence(Func(c.play, 'submerge'), Wait(self.animLength('submerge')), Func(c.hide)))
++        elif state == 'Emerge':
++            c.show()
++            self.unstashBattleCollisions()
++            if instant:
++                c.loop('idle')
++            else:
++                self.playSerpentIval(Sequence(Func(c.play, 'emerge'), Wait(self.animLength('emerge')), Func(c.loop, 'idle')))
++        elif state == 'Attack':
++            c.show()
++            self.unstashBattleCollisions()
++            self.playSerpentIval(Sequence(Func(c.play, 'attack'), Wait(self.animLength('attack')), Func(c.loop, 'idle')))
++        else:
++            c.show()
++            self.unstashBattleCollisions()
++            c.loop('idle')
++
++    def animLength(self, anim):
++        try:
++            return max(0.1, self.creature.getDuration(anim) or 0.1)
++        except Exception:
++            return 1.0
++
++    def playSerpentIval(self, ival):
++        self.serpentIval = ival
++        ival.start()
++
++    def finishSerpentIval(self):
++        if self.serpentIval:
++            self.serpentIval.finish()
++            self.serpentIval = None
+ 
++    def disable(self):
++        self.finishSerpentIval()
++        DistributedCreature.disable(self)
+ 
++    def delete(self):
++        self.finishSerpentIval()
++        DistributedCreature.delete(self)
+diff --git a/pirates/creature/SeaMonster.py b/pirates/creature/SeaMonster.py
+index c606d7c..f478c9f 100644
+--- a/pirates/creature/SeaMonster.py
++++ b/pirates/creature/SeaMonster.py
+@@ -41,6 +41,7 @@ class SeaMonster(UsesAnimationMixer, Avatar.Avatar, UsesEffectNode):
+         self.shadowFileName = 'models/misc/drop_shadow'
+         self.nameText = None
+         self.avatarType = None
++        self.level = None
+         if not SeaMonster.sfx:
+             for name in SeaMonster.SfxNames:
+                 SeaMonster.sfx[name] = loader.loadSfx('audio/' + SeaMonster.SfxNames[name])
+@@ -124,7 +125,7 @@ class SeaMonster(UsesAnimationMixer, Avatar.Avatar, UsesEffectNode):
+         return 0
+ 
+     def getRadius(self):
+-        return self.battleTubeRadius
++        return getattr(self, 'battleTubeRadius', 2.0)
+ 
+     def play(self, *args, **kwArgs):
+         UsesAnimationMixer.play(self, *args, **kwArgs)
+@@ -188,11 +189,28 @@ class SeaMonster(UsesAnimationMixer, Avatar.Avatar, UsesEffectNode):
+                     spiritEffect.setZ(self.getZ(render) + 6.0)
+                     Sequence(Wait(0.25), Func(spiritEffect.play)).start()
+ 
+-        return Sequence(Wait(0.5), Parallel(Func(playSfx), Sequence(self.actorInterval(animName, blendOutT = 0.0), Func(self.disableMixing), Func(self.pose, animName, frames - 1, blendT = 0.0)), Sequence(Wait(duration / 3.0), Func(self.setTransparency, 1), LerpColorScaleInterval(self, duration / 4.0, Vec4(0.55, 0.7, 0.2, 1.0), startColorScale = Vec4(1)), Wait(duration / 3.0), Func(startVFX), LerpColorScaleInterval(self, 0.5, Vec4(0.0, 0.0, 0.0, 0.0), startColorScale = Vec4(0.55, 0.7, 0.2, 1.0)), Func(self.hide), Func(self.clearTransparency), Func(self.clearColorScale)), Func(self.setAllowInteract, False)))
++        return Sequence(Wait(0.5), Parallel(Func(playSfx), Sequence(self.actorInterval(animName, blendOutT = 0.0), Func(self.disableMixing), Func(self.pose, animName, frames - 1, blendT = 0.0)), Sequence(Wait(duration / 3.0), Func(self.setTransparency, 1), LerpColorScaleInterval(self, duration / 4.0, Vec4(0.55, 0.7, 0.2, 1.0), startColorScale = Vec4(1)), Wait(duration / 3.0), Func(startVFX), LerpColorScaleInterval(self, 0.5, Vec4(0.0, 0.0, 0.0, 0.0), startColorScale = Vec4(0.55, 0.7, 0.2, 1.0)), Func(self.hide), Func(self.clearTransparency), Func(self.clearColorScale)), Func(self._noInteract)))
+ 
+     def getExitDeathTrack(self):
+         return Sequence(Func(self.show))
+ 
++    # DistributedCreature calls these on its creature; the 2008 sea monsters never had them (patch 0222)
++    def _noInteract(self):
++        if hasattr(self, 'setAllowInteract'):
++            self.setAllowInteract(False)
++
++    def setLevel(self, level):
++        self.level = level
++
++    def getLevel(self):
++        return self.level
++
++    def getSfx(self, name):
++        return self.sfx.get(name)
++
++    def getNameText(self):
++        return self.nameText
++
+     def getAnimInfo(self, state):
+         return self.animInfo.get(state, self.FailsafeAnims)
+ 
+diff --git a/pirates/creature/SeaSerpent.py b/pirates/creature/SeaSerpent.py
+index 577c752..113f36a 100644
+--- a/pirates/creature/SeaSerpent.py
++++ b/pirates/creature/SeaSerpent.py
+@@ -25,6 +25,10 @@ class SeaSerpent(SeaMonster):
+     
+     def __init__(self):
+         SeaMonster.__init__(self)
++        # nothing ever loaded the serpent model, so load it the first time a serpent is made (patch 0222)
++        if SeaSerpent.actor is None:
++            SeaSerpent.setupAssets()
++        self.generateSeaMonster()
+         self.setAvatarType(AvatarTypes.SeaSerpent)
+         if not SeaSerpent.sfx:
+             for name in SeaSerpent.SfxNames:
+-- 
+2.53.0
+

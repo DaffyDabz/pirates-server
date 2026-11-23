@@ -1,0 +1,42 @@
+From f2f45c5b447f17e5048a92b742b805fe1362eb04 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 22:42:50 -0800
+Subject: [PATCH 048/371] tutorial: a brand-new pirate is no longer kicked out
+ on login
+
+The July overhaul removed PiratesTutorialManagerAI._requestTutorial but kept
+both callers (requestTutorial and the teleport manager's tutorial login), so a
+new pirate's first teleport raised AttributeError on the AI and astron ejected
+the client with 153 about 5 s after the pirate was made. Restore the method.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/tutorial/PiratesTutorialManagerAI.py | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/pirates/tutorial/PiratesTutorialManagerAI.py b/pirates/tutorial/PiratesTutorialManagerAI.py
+index a7cb0ac..69c2a85 100644
+--- a/pirates/tutorial/PiratesTutorialManagerAI.py
++++ b/pirates/tutorial/PiratesTutorialManagerAI.py
+@@ -161,6 +161,18 @@ class PiratesTutorialManagerAI(DistributedObjectAI):
+ 
+         self._requestTutorial(avatar)
+ 
++    # family server (11-16): the 2026-07 overhaul dropped this method but kept both callers (requestTutorial
++    # above and the teleport manager's tutorial login), so a brand-new pirate was kicked out (153) on login
++    def _requestTutorial(self, avatar):
++        if avatar.doId in self.avatar2fsm:
++            self.notify.warning('Cannot handle tutorial request for avatar %d, '
++                'tutorial already in progress!' % avatar.doId)
++
++            return
++
++        self.avatar2fsm[avatar.doId] = TutorialFSM(self.air, avatar)
++        self.avatar2fsm[avatar.doId].request('Start')
++
+     def d_enterTutorial(self, avatarId, tutorialZone):
+         self.sendUpdateToAvatarId(avatarId, 'enterTutorial', [tutorialZone])
+ 
+-- 
+2.53.0
+

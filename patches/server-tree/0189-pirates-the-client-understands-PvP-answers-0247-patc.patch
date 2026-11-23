@@ -1,0 +1,74 @@
+From f71c1597aff249d4a2541747f35c95bb6b77968f Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 23:57:30 -0800
+Subject: [PATCH 189/371] pirates: the client understands PvP answers (0247,
+ patch 18)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pvp/PVPManager.py | 32 ++++++++++++++++++++++++--------
+ 1 file changed, 24 insertions(+), 8 deletions(-)
+
+diff --git a/pirates/pvp/PVPManager.py b/pirates/pvp/PVPManager.py
+index 343e23d..b4be839 100644
+--- a/pirates/pvp/PVPManager.py
++++ b/pirates/pvp/PVPManager.py
+@@ -6,7 +6,7 @@ from pirates.piratesbase import PiratesGlobals
+ 
+ class PVPManager(DistributedObject):
+     notify = DirectNotifyGlobal.directNotify.newCategory('PVPManager')
+-    
++
+     def __init__(self, cr):
+         DistributedObject.__init__(self, cr)
+         self.cr.pvpManager = self
+@@ -15,23 +15,39 @@ class PVPManager(DistributedObject):
+         self.ignoreAll()
+         if self.cr.pvpManager == self:
+             self.cr.pvpManager = None
+-        
++
+         DistributedObject.delete(self)
+ 
+     def sendRequestChallenge(self, challengeeId):
++        # family server (11-18): 0 takes back my challenge, or stops my skirmish
+         self.sendUpdate('requestChallenge', [
+             challengeeId])
+ 
+     def sendAcceptChallenge(self, challengerId):
++        # family server (11-18): 0 says no to the challenge
+         self.sendUpdate('acceptChallenge', [
+             challengerId])
+-    
++
+     def challengeFrom(self, avId):
++        # family server (11-18): pass the challenger's name, so the panel does not say "Unknown"
++        avName = 'A pirate'
++        avatar = self.cr.doId2do.get(avId)
++        if avatar and hasattr(avatar, 'getName'):
++            avName = avatar.getName()
++
+         messenger.send(PiratesGlobals.PVPChallengedEvent, [
+-            avId])
+-    
+-    def challengeAccepted(self, avId):
+-        messenger.send(PiratesGlobals.PVPAcceptedEvent, [
+-            avId])
++            avId, avName])
+ 
++    def challengeAccepted(self, value):
++        # family server (11-18): the AI sends one number here (see PVPManagerAI):
++        #   0 = the challenge to me was taken back, a pirate's id = he said yes, anything else = why it was refused
++        if not value:
++            messenger.send('cancelChallengeInvitation')
++        elif value >= self.FIRST_AVATAR_ID:
++            messenger.send(PiratesGlobals.PVPAcceptEvent, [
++                [value]])
++        else:
++            messenger.send(PiratesGlobals.PVPRejectEvent, [
++                0, value])
+ 
++    FIRST_AVATAR_ID = 100000
+-- 
+2.53.0
+

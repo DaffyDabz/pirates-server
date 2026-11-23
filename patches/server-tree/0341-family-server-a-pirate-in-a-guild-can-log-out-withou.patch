@@ -1,0 +1,41 @@
+From 28705eef10a2854b898ae5ca240a47dac2abdcd8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 03:45:05 -0800
+Subject: [PATCH 341/371] family server: a pirate in a guild can log out
+ without being dropped (109, "lost connection")
+
+GuildManager.handleLogout ran cr.removeAIInterest(AIInterestHandles.PIRATES_GUILD) for every pirate in a guild
+when the client sent StopVisibilityEvent at logout. Panda's DoInterestManager._sendRemoveAIInterest writes the old
+OTP CLIENT_REMOVE_INTEREST (uint16 (1<<15)+handle, no context; it has no Astron branch, unlike _sendRemoveInterest).
+Astron reads uint32 context + uint16 interest id, so the 4-byte message is a truncated datagram and it ejects the
+client with 109 "Datagram unexpectedly ended". games' LIVE-relog caught the bytes (payload 0380) on claude2 after it
+joined a guild; on land and on a ship alike.
+
+Nothing on this server opens AI interest PIRATES_GUILD, so handleLogout now sends nothing; the accept stays. Client
+file (the AI loads it through PCGuildManager but handleLogout only runs on the client): client patch 43, no restart.
+test_guild_logout.py (real GuildManager on Panda's real DoInterestManager, every sent message checked against
+Astron's minimum length): client tree FAIL (type 203, 2 bytes after the type), fixed file PASS (0 sent).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ otp/friends/GuildManager.py | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/otp/friends/GuildManager.py b/otp/friends/GuildManager.py
+index fd7c0b9..9577982 100644
+--- a/otp/friends/GuildManager.py
++++ b/otp/friends/GuildManager.py
+@@ -400,5 +400,9 @@ class GuildManager(DistributedObjectGlobal):
+ 
+     @report(types=['args'], dConfigParam='want-guildmgr-report')
+     def handleLogout(self, *args, **kw):
+-        self.cr.removeAIInterest(AIInterestHandles.PIRATES_GUILD)
++        # family server (2026-11-21): send nothing. removeAIInterest builds the old OTP CLIENT_REMOVE_INTEREST (the
++        # handle alone, no context); Astron reads it as a truncated datagram and drops the client (109, 'lost
++        # connection') every time a guild member logs out. Nothing on this server opens AI interest PIRATES_GUILD,
++        # so there is nothing to close.
++        pass
+ 
+-- 
+2.53.0
+

@@ -1,0 +1,71 @@
+From 7006e1264d0c298cf7e12342896556675a51a347 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 01:51:36 -0800
+Subject: [PATCH 366/371] pirates: each cannon defense cannon is told its AI
+ channel outright after its generate (a pirate's request to man a cannon whose
+ object has no AI channel is dropped by the State Server without a word), and
+ the AI writes a log line for every request to man or leave an island cannon
+ (who asked, accepted or denied, the cannon's user), so the next cannon pass
+ shows where manning stops; as server-tree patch 0450 (AI code only, no client
+ patch, no DC change, AI restart)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedIslandCannonAI.py  | 14 ++++++++++++++
+ pirates/minigame/DistributedDefendWorldAI.py |  6 ++++++
+ 2 files changed, 20 insertions(+)
+
+diff --git a/pirates/battle/DistributedIslandCannonAI.py b/pirates/battle/DistributedIslandCannonAI.py
+index de4b306..2445fc3 100644
+--- a/pirates/battle/DistributedIslandCannonAI.py
++++ b/pirates/battle/DistributedIslandCannonAI.py
+@@ -6,13 +6,27 @@ class DistributedIslandCannonAI(DistributedPCCannonAI):
+ 
+     # family server: island/fort cannons had no interaction handlers, so the default
+     # DENY rejected every player who tried to man one (ship cannons do this already).
++    # cannon defense run 4 (11-22 00:33): a pirate beside a cannon could not man it and the AI log held no trace of the request;
++    # these lines show whether the request arrives, who sent it, and what the AI answered
++    def requestInteraction(self, doId, interactType, instant):
++        avId = self.air.getAvatarIdFromSender()
++        self.notify.info('cannon %d: requestInteraction from avatar %d (known to the AI: %s, userId %d, destructState %s)'
++                         % (self.doId, avId, avId in self.air.doId2do, self.userId, getattr(self, 'destructState', 0)))
++        DistributedPCCannonAI.requestInteraction(self, doId, interactType, instant)
++
+     def handleRequestInteraction(self, avatar, interactType, instant):
+         if getattr(self, "destructState", 0):
++            self.notify.info('cannon %d: denied avatar %d (destroyed)' % (self.doId, avatar.doId))
+             return self.DENY  # a destroyed cannon cannot be used
+ 
+         self.startWeapon(avatar.doId)
++        self.notify.info('cannon %d: accepted avatar %d' % (self.doId, avatar.doId))
+         return self.ACCEPT
+ 
++    def requestExit(self):
++        self.notify.info('cannon %d: requestExit from avatar %d' % (self.doId, self.air.getAvatarIdFromSender()))
++        DistributedPCCannonAI.requestExit(self)
++
+     def handleRequestExit(self, avatar):
+         self.stopWeapon(avatar.doId)
+         return self.ACCEPT
+diff --git a/pirates/minigame/DistributedDefendWorldAI.py b/pirates/minigame/DistributedDefendWorldAI.py
+index a567af3..f9483c2 100644
+--- a/pirates/minigame/DistributedDefendWorldAI.py
++++ b/pirates/minigame/DistributedDefendWorldAI.py
+@@ -115,8 +115,14 @@ class DistributedDefendWorldAI(DistributedTreasureMapInstanceAI):
+             cannon.setPos(x, y, z)
+             cannon.setHpr(*DefendGlobals.CANNON_HPR)
+             island.generateChildWithRequired(cannon, PiratesGlobals.IslandShipDeployerZone)
++            # a pirate's requestInteraction is a clsend airecv field: the State Server forwards it to the object's AI channel
++            # and drops it silently when that is 0. A cannon gets its AI channel by asking its parent (the island, which asks
++            # the instance, which asks the district); say it outright so a slow or empty answer can never lose the request
++            self.air.setAI(cannon.doId, self.air.ourChannel)
+             self.air.uidMgr.addUid(uid, cannon.doId)
+             self.cannons.append(cannon)
++            self.notify.info('Cannon defense %d: cannon %d (index %d) is in island %d zone %d at %s'
++                             % (self.doId, cannon.doId, index, island.doId, PiratesGlobals.IslandShipDeployerZone, (x, y, z)))
+ 
+     def delete(self):
+         for name in ('setupInstance', 'monitorPlayers', 'defendTick', 'defendMove'):
+-- 
+2.53.0
+

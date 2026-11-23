@@ -1,0 +1,29 @@
+From 692c28569c0278bf05af431950af9149d81c9e86 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 08:51:16 -0800
+Subject: [PATCH 267/371] pirates: a magic word with a wrong argument says what
+ is wrong (0355)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ otp/ai/MagicWordGlobal.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/otp/ai/MagicWordGlobal.py b/otp/ai/MagicWordGlobal.py
+index d3d1b78..ee6db19 100644
+--- a/otp/ai/MagicWordGlobal.py
++++ b/otp/ai/MagicWordGlobal.py
+@@ -41,7 +41,9 @@ class Spellbook:
+         try:
+             return self.doWord(word, args)
+         except MagicError as e:
+-            return e.message
++            # family server (patch 0355): Python 3 exceptions have no .message (AttributeError out of the
++            # magic word handler); str(e) is the same text.
++            return str(e)
+         except Exception:
+             return describeException(backTrace=1)
+         finally:
+-- 
+2.53.0
+

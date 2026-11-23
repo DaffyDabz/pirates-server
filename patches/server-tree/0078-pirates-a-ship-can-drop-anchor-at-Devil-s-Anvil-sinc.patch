@@ -1,0 +1,76 @@
+From 794b3d07712276b7c5cda90ed72b7f0270998932 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 15:28:51 -0800
+Subject: [PATCH 078/371] pirates: a ship can drop anchor at Devil's Anvil,
+ since its port range now reaches past the shore, as server-tree patch 0092
+ (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedIslandAI.py | 46 ++++++++++++++++++++++++++++
+ 1 file changed, 46 insertions(+)
+
+diff --git a/pirates/world/DistributedIslandAI.py b/pirates/world/DistributedIslandAI.py
+index aec7b64..d4944d4 100644
+--- a/pirates/world/DistributedIslandAI.py
++++ b/pirates/world/DistributedIslandAI.py
+@@ -1,3 +1,5 @@
++import math
++
+ from direct.distributed.DistributedCartesianGridAI import DistributedCartesianGridAI
+ from direct.directnotify import DirectNotifyGlobal
+ 
+@@ -129,6 +131,50 @@ class DistributedIslandAI(DistributedCartesianGridAI, DistributedGameAreaAI, Tea
+ 
+     def setShipDeployRadii(self, minRadius, maxRadius, spacing):
+         self.shipDeployRadii = (minRadius, maxRadius, spacing)
++        self.fitPortRangeToShore()
++
++    def fitPortRangeToShore(self):
++        """
++        The client opens the island's ship deployer (the shore barrier) and
++        sets the pirate's port, which is what offers the anchor button, only
++        inside the LOD level-1 sphere (DistributedIsland.loadZoneLevel(1)),
++        and clears both again on leaving it. That sphere is the authored
++        'Radi'[1], a visibility range; the barrier is measured off the
++        shoreline (ClientAreaBuilderAI.measureShipDeployRadii). Where the
++        barrier lies outside level 1 (Devil's Anvil: barrier 1981, level 1
++        only 1300) the barrier is not there until the ship is already inside
++        it, it shoves the ship out past level 1, the port is cleared, and the
++        anchor button never shows. Grow level 1 to take in the whole dock
++        area. Called before the island generates, so the client is sent the
++        new size in setZoneSphereSize (a required field).
++        """
++
++        if not self.shipDeployRadii:
++            return
++
++        minRadius, maxRadius, spacing = self.shipDeployRadii
++        rad0, rad1, rad2 = self.sphereRadii
++        outer = maxRadius if maxRadius is not None else minRadius
++        need = int(math.ceil(outer + spacing / 2.0))
++        if rad1 >= need:
++            return
++
++        # level 2 (the island terrain) stays where it was authored, so the
++        # island grid keeps its size; level 1 must stay inside it
++        newRad1 = min(need, rad2 - 1)
++        if newRad1 <= rad1:
++            return
++
++        if newRad1 < outer:
++            self.notify.warning('island %s: dock area %d reaches past its LOD '
++                'level 2 (%d); the anchor is offered only inside %d' % (
++                self.getUniqueId(), outer, rad2, newRad1))
++
++        self.notify.info('island %s: port range %d -> %d to cover the shore '
++            'barrier %d..%d' % (self.getUniqueId(), rad1, newRad1, minRadius, outer))
++        # not setZoneSphereSize: that recomputes gridSize without the sphere
++        # center, undoing setZoneSphereCenter's grid size
++        self.sphereRadii = [rad0, newRad1, rad2]
+ 
+     def getShipDeployRadii(self):
+         return self.shipDeployRadii
+-- 
+2.53.0
+

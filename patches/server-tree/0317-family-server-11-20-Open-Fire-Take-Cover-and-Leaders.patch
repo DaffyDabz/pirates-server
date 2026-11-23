@@ -1,0 +1,214 @@
+From 819e3ea658b573c64d102e2d19c8ac78ae651b20 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 18:25:14 -0800
+Subject: [PATCH 317/371] family server (11-20): Open Fire!, Take Cover! and
+ Leadership do what their text says (0401)
+
+Server: the three captain's shouts now reach the crew as buffs. Open Fire! = 1.5x cannon damage, Take Cover! = a
+quarter of the ship damage taken and the crew shielded, Leadership = faster recharge. Lane: sea (sea-0002).
+Test: test_ship_skills.py (5/11 -> 11/11).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/BattleManagerBase.py | 27 ++++++------
+ pirates/battle/WeaponBaseAI.py      |  4 +-
+ pirates/ship/DistributedShipAI.py   | 64 +++++++++++++++++++++++++++--
+ 3 files changed, 77 insertions(+), 18 deletions(-)
+
+diff --git a/pirates/battle/BattleManagerBase.py b/pirates/battle/BattleManagerBase.py
+index 3380ad0..b5a4091 100644
+--- a/pirates/battle/BattleManagerBase.py
++++ b/pirates/battle/BattleManagerBase.py
+@@ -7,6 +7,15 @@ from pirates.battle.EnemySkills import EnemySkills
+ from pirates.reputation import ReputationGlobals
+ from pirates.piratesbase import PiratesGlobals
+ 
++
++def _buffIds(obj):
++    # family server: the AI's pirates list their buffs as [effectId, duration, timestamp, attackerId],
++    # the ships and the client as plain ids, so Open Fire and Take Cover were never seen on the AI
++    if not hasattr(obj, 'getSkillEffects'):
++        return []
++
++    return [effect[0] if isinstance(effect, (list, tuple)) else effect for effect in obj.getSkillEffects()]
++
+ class BattleManagerBase:
+     notify = DirectNotifyGlobal.directNotify.newCategory('BattleManager')
+     PirateCodeWeapons = (InventoryType.PistolWeaponL1, InventoryType.PistolWeaponL2, InventoryType.PistolWeaponL3, InventoryType.PistolWeaponL4, InventoryType.PistolWeaponL5, InventoryType.PistolWeaponL6, InventoryType.MusketWeaponL1, InventoryType.MusketWeaponL2, InventoryType.MusketWeaponL3)
+@@ -246,7 +255,7 @@ class BattleManagerBase:
+ 
+         if hasattr(attacker, 'getSkillEffects') and skillId != InventoryType.UseItem:
+             skillEffects = attacker.getSkillEffects()
+-            if WeaponGlobals.C_OPENFIRE in skillEffects:
++            if WeaponGlobals.C_OPENFIRE in _buffIds(attacker):
+                 if WeaponGlobals.getAttackClass(skillId) == WeaponGlobals.AC_CANNON:
+                     tHealth *= WeaponGlobals.OPEN_FIRE_BONUS
+                     aHealth *= WeaponGlobals.OPEN_FIRE_BONUS
+@@ -264,7 +273,7 @@ class BattleManagerBase:
+                         tHealth += int(tHealth * WeaponGlobals.CURSED_DAM_AMP)
+                         aHealth += int(aHealth * WeaponGlobals.CURSED_DAM_AMP)
+ 
+-                if WeaponGlobals.C_TAKECOVER in skillEffects:
++                if WeaponGlobals.C_TAKECOVER in _buffIds(target):
+                     tHealth = 0
+                     aHealth = 0
+ 
+@@ -524,17 +533,11 @@ class BattleManagerBase:
+                     amt += 1.0
+                     damage *= amt
+ 
+-        if hasattr(attacker, 'getSkillEffects'):
+-            skillEffects = attacker.getSkillEffects()
+-            for buff in skillEffects:
+-                if buff == WeaponGlobals.C_OPENFIRE:
+-                    damage = damage * WeaponGlobals.OPEN_FIRE_BONUS
++        if WeaponGlobals.C_OPENFIRE in _buffIds(attacker):
++            damage = damage * WeaponGlobals.OPEN_FIRE_BONUS
+ 
+-        if hasattr(target, 'getSkillEffects'):
+-            skillEffects = target.getSkillEffects()
+-            for buff in skillEffects:
+-                if buff == WeaponGlobals.C_TAKECOVER:
+-                    damage = damage * WeaponGlobals.TAKE_COVER_BONUS
++        if WeaponGlobals.C_TAKECOVER in _buffIds(target):
++            damage = damage * WeaponGlobals.TAKE_COVER_BONUS
+ 
+         if hasattr(attacker, 'isNpc') and attacker.isNpc and ammoSkillId:
+             scale = WeaponGlobals.getAmmoNPCDamageScale(ammoSkillId)
+diff --git a/pirates/battle/WeaponBaseAI.py b/pirates/battle/WeaponBaseAI.py
+index 29cfef1..408af5f 100644
+--- a/pirates/battle/WeaponBaseAI.py
++++ b/pirates/battle/WeaponBaseAI.py
+@@ -189,8 +189,8 @@ class WeaponBaseAI(WeaponBaseBase):
+         self.air.targetMgr.removeProjectile(avatar.doId, skillId, ammoSkillId)
+ 
+     def requestShipSkill(self, skillId, ammoSkillId, clientResult, targetId, timestamp):
+-        # Ship skills (Full Sail, Come About, Ramming Speed) are cast by the
+-        # captain on the ship, and the client sends the ship's doId as the target.
++        # Ship skills (Full Sail, Come About, Ramming Speed, Leadership, and the shouts
++        # Open Fire and Take Cover) are cast by a crewman on the ship, and the client sends the ship's doId as the target.
+         # The ship decides whether the skill is allowed and applies the buff, which
+         # reaches every client through the ship's setSkillEffects.
+         avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index d31fd62..4d50e1e 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -32,11 +32,20 @@ from pirates.uberdog.UberDogGlobals import InventoryCategory, InventoryType
+ 
+ # Ship skills the captain casts on the ship (the client sends requestShipSkill with the
+ # ship as target): skill -> the buff the ship gets. Duration and recharge come from the
+-# skill table in WeaponGlobals. OpenFire, TakeCover and PowerRecharge are not granted yet.
++# skill table in WeaponGlobals. Leadership (PowerRecharge) speeds up the ship's other skills and
++# cannons, which the client reads from the ship; Take Cover cuts the damage the ship takes.
+ SHIP_SKILL_BUFFS = {
+     InventoryType.SailFullSail: WeaponGlobals.C_FULLSAIL,
+     InventoryType.SailComeAbout: WeaponGlobals.C_COMEABOUT,
+     InventoryType.SailRammingSpeed: WeaponGlobals.C_RAM,
++    InventoryType.SailPowerRecharge: WeaponGlobals.C_RECHARGE,
++    InventoryType.SailTakeCover: WeaponGlobals.C_TAKECOVER,
++}
++# The two shouts also go on everyone aboard: Open Fire makes their cannonballs hit harder
++# (BattleManagerBase.getModifiedShipDamage), Take Cover shields them from hits.
++CREW_SKILL_BUFFS = {
++    InventoryType.SailOpenFire: WeaponGlobals.C_OPENFIRE,
++    InventoryType.SailTakeCover: WeaponGlobals.C_TAKECOVER,
+ }
+ DEFAULT_SHIP_SKILL_SECONDS = 10.0
+ 
+@@ -103,6 +112,7 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         self.deployState = 0
+         self.skillEffects = []
+         self._skillEffectTasks = {}
++        self._crewSkillEffectTasks = {}
+ 
+         self.cabin = None
+         self.bowSprit = None
+@@ -682,6 +692,7 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+             taskMgr.remove(taskName)
+ 
+         self._skillEffectTasks = {}
++        self._clearCrewSkillEffects()
+         taskMgr.remove(self.uniqueName('ship-repair-tick'))
+         for spot in self.repairSpots:
+             spot.requestDelete()
+@@ -1474,7 +1485,7 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         return self.gameState[0] not in ('Sinking', 'Sunk', 'Off', 'PutAway')
+ 
+     # ------------------------------------------------------------------
+-    # Ship skills: Full Sail, Come About and Ramming Speed
++    # Ship skills: Full Sail, Come About, Ramming Speed, Leadership, Open Fire, Take Cover
+     # ------------------------------------------------------------------
+ 
+     def grantShipSkill(self, avatar, skillId):
+@@ -1482,7 +1493,8 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         # ship skill before, so no ship ever got the Ramming Speed buff the client
+         # needs before it sends requestShipRam.
+         effectId = SHIP_SKILL_BUFFS.get(skillId)
+-        if effectId is None:
++        crewEffectId = CREW_SKILL_BUFFS.get(skillId)
++        if effectId is None and crewEffectId is None:
+             return False
+ 
+         if avatar.doId not in self.crew or not self._isAfloat():
+@@ -1502,12 +1514,56 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         except KeyError:
+             recharge = 0.0
+ 
++        # Leadership shortens the other skills' recharge on the client, so wait the same here
++        if skillId != InventoryType.SailPowerRecharge and WeaponGlobals.C_RECHARGE in self.getSkillEffects():
++            recharge *= WeaponGlobals.POWER_RECHARGE_RATE_REDUCTION
++
+         duration = int(max(1, round(duration or DEFAULT_SHIP_SKILL_SECONDS)))
+         # the client times its own recharge, so leave it a second of slack
+         self._shipSkillReadyAt[skillId] = now + max(0.0, recharge - 1.0)
+-        self.addSkillEffect(effectId, duration, avatar.doId)
++        if effectId is not None:
++            self.addSkillEffect(effectId, duration, avatar.doId)
++
++        if crewEffectId is not None:
++            self._buffCrew(crewEffectId, duration, avatar.doId)
++
+         return True
+ 
++    def _buffCrew(self, effectId, duration, shouterId):
++        # a pirate's buff has no timer of its own, so the ship takes it off again
++        for avId in list(self.crew):
++            av = self.air.doId2do.get(avId)
++            if av is None or not hasattr(av, 'expireSkillEffect'):
++                continue
++
++            taskName = self.uniqueName('crew-skill-effect-%s-%s-%s' % (effectId, avId, shouterId))
++            if taskName in self._crewSkillEffectTasks:
++                taskMgr.remove(taskName)
++                av.expireSkillEffect(effectId, shouterId)
++
++            av.addSkillEffect(effectId, duration, shouterId)
++            self._crewSkillEffectTasks[taskName] = (effectId, avId, shouterId)
++            taskMgr.doMethodLater(duration, self._expireCrewSkillEffectTask, taskName,
++                extraArgs=[effectId, avId, shouterId, taskName])
++
++    def _expireCrewSkillEffect(self, effectId, avId, shouterId):
++        av = self.air.doId2do.get(avId)
++        if av is not None and hasattr(av, 'expireSkillEffect'):
++            av.expireSkillEffect(effectId, shouterId)
++
++    def _expireCrewSkillEffectTask(self, effectId, avId, shouterId, taskName):
++        self._crewSkillEffectTasks.pop(taskName, None)
++        self._expireCrewSkillEffect(effectId, avId, shouterId)
++
++    def _clearCrewSkillEffects(self):
++        # a ship put away or sunk mid-shout must not leave Take Cover on a pirate for good
++        tasks = getattr(self, '_crewSkillEffectTasks', {})
++        for taskName, (effectId, avId, shouterId) in list(tasks.items()):
++            taskMgr.remove(taskName)
++            self._expireCrewSkillEffect(effectId, avId, shouterId)
++
++        self._crewSkillEffectTasks = {}
++
+     def _consumeSkillEffect(self, effectId):
+         # remove one buff right away, and the timer that would have removed it later
+         for skillEffect in list(self.skillEffects):
+-- 
+2.53.0
+

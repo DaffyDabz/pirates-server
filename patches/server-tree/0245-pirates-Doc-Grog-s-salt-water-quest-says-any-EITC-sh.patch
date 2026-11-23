@@ -1,0 +1,41 @@
+From 2c8fac439674ff1ab883ecceed5a4eea93929e1a Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:58:05 -0800
+Subject: [PATCH 245/371] pirates: Doc Grog's salt water quest says any EITC
+ ship, not only Corvettes (0306, patch 22)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/piratesbase/PQuestStringsEnglish.py | 2 +-
+ pirates/quest/QuestDB.py                    | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/piratesbase/PQuestStringsEnglish.py b/pirates/piratesbase/PQuestStringsEnglish.py
+index 6e11a78..c821905 100644
+--- a/pirates/piratesbase/PQuestStringsEnglish.py
++++ b/pirates/piratesbase/PQuestStringsEnglish.py
+@@ -4702,7 +4702,7 @@ QuestStrings = {
+   },
+   'c3r2r5r2.9recoverWater': {
+     'title': 'Salt Water Touched By Battle',
+-    'description': 'Recover salt water from a place of battle - sink EITC Corvette ships to create places of battle.',
++    'description': 'Recover salt water from a place of battle - sink EITC ships to create places of battle.',  # family server (patch 0306): any EITC ship counts (it always did; hull 108 is no ShipIds list); the text said Corvette, a rare flagship here
+     'dialogBefore': 'Get salt water from where a EITC ship is sent to Davy Jones. The departed spirits is what does it...',
+     'dialogAfter': "Aye, that's the proper kind of salt water."
+   },
+diff --git a/pirates/quest/QuestDB.py b/pirates/quest/QuestDB.py
+index 2278915..5821f60 100644
+--- a/pirates/quest/QuestDB.py
++++ b/pirates/quest/QuestDB.py
+@@ -340,7 +340,7 @@ QuestDict = {
+     'c3r2r5r2.6recoverDust': QuestDNA(tasks = RecoverAvatarItemTaskDNA(item = QuestItems.Dust, num = 10, maxAttempts = Attempts.FREQUENT, probability = Probability.INFREQUENT, level = 7, enemyType = AvatarTypes.Undead), questInt = 3310, rewards = (ReputationReward(ExpRewards.SMALL),)),
+     'c3r2r5r2.7recoverEarth': QuestDNA(tasks = RecoverAvatarItemTaskDNA(item = QuestItems.Earth, num = 2, maxAttempts = Attempts.VERY_FREQUENT, probability = Probability.VERY_FREQUENT, enemyType = AvatarTypes.FlyTrap), questInt = 3312, rewards = (ReputationReward(ExpRewards.SMALL),)),
+     'c3r2r5r2.8recoverLichens': QuestDNA(tasks = RecoverAvatarItemTaskDNA(item = QuestItems.Earth, maxAttempts = Attempts.VERY_FREQUENT, probability = Probability.VERY_FREQUENT, enemyType = AvatarTypes.HugeGator), questInt = 3313, rewards = (ReputationReward(ExpRewards.SMALL),)),
+-    'c3r2r5r2.9recoverWater': QuestDNA(tasks = RecoverShipItemTaskDNA(item = QuestItems.BattleSaltWater, num = 4, maxAttempts = Attempts.VERY_FREQUENT, probability = Probability.VERY_FREQUENT, hull = ShipGlobals.EITC_CORVETTE, faction = AvatarTypes.TradingCo), questInt = 3314, requiresVoyage = True, rewards = (ReputationReward(ExpRewards.SMALL),)),
++    'c3r2r5r2.9recoverWater': QuestDNA(tasks = RecoverShipItemTaskDNA(item = QuestItems.BattleSaltWater, num = 4, maxAttempts = Attempts.VERY_FREQUENT, probability = Probability.VERY_FREQUENT, faction = AvatarTypes.TradingCo), questInt = 3314, requiresVoyage = True, rewards = (ReputationReward(ExpRewards.SMALL),)),  # family server (patch 0306): any EITC ship counts (it always did; hull 108 is no ShipIds list); the text said Corvette, a rare flagship here
+     'c3r2r5r2.10recoverEggs': QuestDNA(tasks = RecoverAvatarItemTaskDNA(item = QuestItems.ScorpionEgg, num = 20, maxAttempts = Attempts.FREQUENT, probability = Probability.FREQUENT, enemyType = AvatarTypes.Scorpion), questInt = 3316, rewards = (ReputationReward(ExpRewards.SMALL),)),
+     'c3r2r5r2.11recoverMoney': QuestDNA(tasks = RecoverShipItemTaskDNA(item = QuestItems.BloodyTreasure, maxAttempts = Attempts.VERY_FREQUENT, probability = Probability.VERY_FREQUENT, hull = ShipIds.ANY_LARGE_SHIP, faction = AvatarTypes.TradingCo), questInt = 3317, requiresVoyage = True, rewards = (ReputationReward(ExpRewards.SMALL),)),
+     'c3r2r5r2.12recoverNightshade': QuestDNA(tasks = RecoverAvatarItemTaskDNA(item = QuestItems.Nightshade, num = 4, maxAttempts = Attempts.FREQUENT, probability = Probability.FREQUENT, enemyType = AvatarTypes.Corpse), questInt = 3318, rewards = (ReputationReward(ExpRewards.SMALL),)),
+-- 
+2.53.0
+

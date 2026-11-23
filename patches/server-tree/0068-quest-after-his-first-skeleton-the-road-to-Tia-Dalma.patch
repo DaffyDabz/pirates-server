@@ -1,0 +1,33 @@
+From 1b585c5166e74b697062031368359cbae100d567 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 14:14:45 -0800
+Subject: [PATCH 068/371] quest: after his first skeleton, the road to Tia
+ Dalma opens: the server moves the story checkpoint when a quest without a
+ finale scene completes
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestManagerAI.py | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index fa96d9e..03e36b7 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -526,6 +526,13 @@ class QuestManagerAI(DirectObject):
+ 
+             return
+ 
++        # the story checkpoint (style.tutorial) used to move only when the client got amFinalized, which is
++        # sent only for quests with finalize scenes. 'Defeat a skeleton' has none, so a new pirate stayed at
++        # TUT_GOT_CUTLASS and the Port Royal blocker kept saying 'defeat a skeleton' on the way to Tia Dalma.
++        checkPoint = questDNA.getCheckPoint()
++        if checkPoint != -1 and avatar.getTutorial() < checkPoint:
++            avatar.b_setTutorial(checkPoint)
++
+         questStub.handleQuestComplete(quest, questHistory)
+         self._giveRewards(avatar, quest.getRewards())
+ 
+-- 
+2.53.0
+

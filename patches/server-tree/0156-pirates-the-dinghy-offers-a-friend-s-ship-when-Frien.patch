@@ -1,0 +1,113 @@
+From 1e56442cbdae5f734a5ca009725b81eca846f6a9 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:18:52 -0800
+Subject: [PATCH 156/371] pirates: the dinghy offers a friend's ship when
+ Friends is ticked, server-tree patch 0185
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/DistributedDinghyAI.py | 87 +++++++++++++++++++++++++++-
+ 1 file changed, 85 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/world/DistributedDinghyAI.py b/pirates/world/DistributedDinghyAI.py
+index 077fd0a..73a3b71 100644
+--- a/pirates/world/DistributedDinghyAI.py
++++ b/pirates/world/DistributedDinghyAI.py
+@@ -85,9 +85,92 @@ class DistributedDinghyAI(DistributedInteractiveAI):
+     def d_offerBandOptions(self, avatarId, bandOptions):
+         self.sendUpdateToAvatarId(avatarId, 'offerBandOptions', [bandOptions])
+ 
++    # family server (2026-11-18): friends' ships. The dinghy never offered
++    # them and had no selectFriendShip, so the ship's "Friends" boarding tick
++    # did nothing. A friend's ship is one whose captain is on this pirate's
++    # friends list (or the other way round) with "Friends" ticked.
++    def areFriends(self, avatar, otherId):
++        def friendIds(av):
++            ids = set()
++            for entry in (av.getFriendsList() if av and hasattr(av, 'getFriendsList') else None) or []:
++                if isinstance(entry, (list, tuple)):
++                    entry = entry[0] if entry else 0
++                ids.add(entry)
++            return ids
++
++        if otherId in friendIds(avatar):
++            return True
++
++        return avatar.doId in friendIds(self.air.doId2do.get(otherId))
++
++    def allowsFriends(self, ship):
++        getAllowFriendState = getattr(ship, 'getAllowFriendState', None)
++        return getAllowFriendState is not None and bool(getAllowFriendState())
++
++    def getOfferFriendOptions(self, avatar, skipShipIds=()):
++        friendOptions = []
++        for ship in self.air.shipManager.getPlayerShips():
++            # a ship already offered in another list would get a second frame
++            if ship.doId in skipShipIds:
++                continue
++
++            captainId = ship.getCaptainId()
++            if not captainId or captainId == avatar.doId:
++                continue
++
++            if not self.areFriends(avatar, captainId):
++                continue
++
++            if not self.allowsFriends(ship) or not self.canSelectShip(ship):
++                continue
++
++            captain = self.air.doId2do.get(captainId)
++            friendOptions.append([
++                captainId,
++                ship.doId,
++                ship.getHp(),
++                ship.getSp(),
++                len(ship.getCargo()),
++                len(ship.getCrew()),
++                1,
++                ship.getShipClass(),
++                ship.getName(),
++                ship.getSiegeTeam(),
++                captain and captain.getName() or ''
++            ])
++
++        return friendOptions
++
++    def d_offerFriendOptions(self, avatarId, friendOptions):
++        self.sendUpdateToAvatarId(avatarId, 'offerFriendOptions', [friendOptions])
++
++    def selectFriendShip(self, shipDoId):
++        avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
++        if not avatar:
++            return
++
++        ship = self.air.doId2do.get(shipDoId)
++        if not ship or not self.canSelectShip(ship):
++            self.d_sendAvatarToShip(avatar.doId, 0)
++            return
++
++        captainId = ship.getCaptainId()
++        if not captainId or not self.areFriends(avatar, captainId) or not self.allowsFriends(ship):
++            self.d_sendAvatarToShip(avatar.doId, 0)
++            return
++
++        self.sendAvatarToShip(avatar, ship)
++
+     def handlePostRequestInteraction(self, avatar):
+-        self.d_offerPublicOptions(avatar.doId, self.getOfferPublicOptions())
+-        self.d_offerBandOptions(avatar.doId, self.getOfferBandOptions(avatar))
++        publicOptions = self.getOfferPublicOptions()
++        bandOptions = self.getOfferBandOptions(avatar)
++        self.d_offerPublicOptions(avatar.doId, publicOptions)
++        self.d_offerBandOptions(avatar.doId, bandOptions)
++        try:
++            offered = set(info[1] for info in publicOptions + bandOptions)
++            self.d_offerFriendOptions(avatar.doId, self.getOfferFriendOptions(avatar, offered))
++        except Exception as e:
++            self.notify.warning('friend ship offer for %s failed: %r' % (avatar.doId, e))
+ 
+     def handleRequestExit(self, avatar):
+         return self.ACCEPT
+-- 
+2.53.0
+

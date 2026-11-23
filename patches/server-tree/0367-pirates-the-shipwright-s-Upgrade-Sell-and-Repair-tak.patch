@@ -1,0 +1,35 @@
+From 161443d274d64dcf2fb318f23fca32820e5c9dae Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sun, 22 Nov 2026 01:56:27 -0800
+Subject: [PATCH 367/371] pirates: the shipwright's Upgrade, Sell and Repair
+ take a ship that has not sailed since the server restarted, or was just
+ bought (its owner view has no game state, '', because setGameState is not a
+ db field; the shipwright said "Ship must be put away in bottle first!"), as
+ server-tree patch 0451 (client code only, 1 file, no DC change, no restart)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/piratesgui/ShipFrameShopping.py | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/piratesgui/ShipFrameShopping.py b/pirates/piratesgui/ShipFrameShopping.py
+index ef2c859..04f0506 100644
+--- a/pirates/piratesgui/ShipFrameShopping.py
++++ b/pirates/piratesgui/ShipFrameShopping.py
+@@ -9,7 +9,12 @@ from pirates.piratesgui.ShipSnapshot import ShipSnapshot
+ # patch 0412: a ship is put away in its bottle in any of these states. A ship a pirate sailed and walked off is
+ # 'PutAway' for the rest of the session (DistributedShipAI._playerDeparted), and the shipwright's server side takes
+ # all three, but the shipwright's buttons only took 'Off', so they stayed grey until the next login.
+-SHIP_PUT_AWAY_STATES = ('Off', 'PutAway', 'Sunk')
++# patch 0451: a ship the owner view built from the database has no game state yet: setGameState is not a db field,
++# so it is '' (or None before its first field). That is every ship not sailed since the last server restart and every
++# ship just bought, and each one is in its bottle. Without these the shipwright said "Ship must be put away in bottle
++# first!" to Upgrade, Sell and Overhaul for them. (ShipFrameSelect / ShipFrameDeploy test `state in 'Off'`, a
++# substring test that '' passes, which is why such a ship could always be launched.)
++SHIP_PUT_AWAY_STATES = ('Off', 'PutAway', 'Sunk', '', None)
+ 
+ class ShipFrameShopping(ShipFrameSelect):
+     
+-- 
+2.53.0
+

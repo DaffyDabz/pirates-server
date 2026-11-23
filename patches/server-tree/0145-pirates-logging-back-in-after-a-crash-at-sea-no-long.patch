@@ -1,0 +1,94 @@
+From 4c1720844bf2cd88c55f48a12c8c3b0d0116048f Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 04:10:39 -0800
+Subject: [PATCH 145/371] pirates: logging back in after a crash at sea no
+ longer hangs on the loading screen
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../instance/DistributedTeleportHandler.py    | 26 +++++++++++++++++++
+ pirates/pirate/LocalPirate.py                 | 14 ++++++++++
+ 2 files changed, 40 insertions(+)
+
+diff --git a/pirates/instance/DistributedTeleportHandler.py b/pirates/instance/DistributedTeleportHandler.py
+index 56e2306..1cd4797 100755
+--- a/pirates/instance/DistributedTeleportHandler.py
++++ b/pirates/instance/DistributedTeleportHandler.py
+@@ -35,6 +35,7 @@ class DistributedTeleportHandler(DistributedObject):
+             self.cr.relatedObjectMgr.abortRequest(self.pendingWorld)
+             self.pendingWorld = None
+         
++        taskMgr.remove(self.uniqueName('tzShardWait'))
+         self.ignoreAll()
+         DistributedObject.disable(self)
+     
+@@ -58,6 +59,31 @@ class DistributedTeleportHandler(DistributedObject):
+     @report(types=['deltaStamp'], prefix='------', dConfigParam='want-teleport-report')
+     def waitInTZ(self, objIds, destParentId):
+         s = MiniLogSentry(self.miniLog, 'waitInTZ', objIds, destParentId)
++        # Family fix 0161: at login the server's teleport can get here before
++        # this client has finished joining the district (its shard
++        # 'instanceInterest' is still being added, or PlayGame has not even
++        # started).  Clearing interests now throws that add away, PlayGame
++        # never reaches Play and the pirate sits on the loading screen for
++        # good.  Wait for the join to finish first (30 s cap, then go on).
++        if not getattr(self, '_tzShardWaitDone', False) and hasattr(localAvatar, 'isJoiningShard') and localAvatar.isJoiningShard():
++            self._tzShardWaitDone = True
++            arrivedEvent = localAvatar.getShardArrivedEvent()
++            self.notify.warning('waitInTZ: pirate %s is still joining the district, waiting for it before the teleport' % localAvatar.doId)
++
++            def resume(*args):
++                taskMgr.remove(self.uniqueName('tzShardWait'))
++                self.ignore(arrivedEvent)
++                if not self.isDisabled():
++                    self.waitInTZ(objIds, destParentId)
++                return Task.done
++
++            def giveUp(task):
++                self.notify.warning('waitInTZ: district join still not done after 30 s, teleporting anyway')
++                return resume()
++
++            self.acceptOnce(arrivedEvent, resume)
++            taskMgr.doMethodLater(30, giveUp, self.uniqueName('tzShardWait'))
++            return
+         self.otherTeleportingObjIds = objIds
+         parent = localAvatar.getParentObj()
+         if parent:
+diff --git a/pirates/pirate/LocalPirate.py b/pirates/pirate/LocalPirate.py
+index 8a9b645..04d266d 100644
+--- a/pirates/pirate/LocalPirate.py
++++ b/pirates/pirate/LocalPirate.py
+@@ -971,9 +971,21 @@ class LocalPirate(DistributedPlayerPirate, LocalAvatar):
+         if self.isGenerated():
+             self.cnode.setCurrL(zoneId)
+ 
++    def isJoiningShard(self):
++        # Family fix 0161: True from login until this client has joined the
++        # district (see DistributedTeleportHandler.waitInTZ).
++        if getattr(self, '_joiningShard', False):
++            return True
++        state = self.cr.gameFSM.getCurrentState()
++        return state is not None and state.getName() in ('waitOnEnterResponses', 'tutorialQuestion')
++
++    def getShardArrivedEvent(self):
++        return self.uniqueName('shardArrived')
++
+     @report(types=['deltaStamp', 'module', 'args'], prefix='------', dConfigParam='want-teleport-report')
+     def teleportToShard(self, shardId, zoneId, callbackEvent):
+         self.notify.debug('teleportToShard %s,%s' % (shardId, zoneId))
++        self._joiningShard = True
+         self.cr.loadingScreen.show()
+         if 1:
+             addEvent = self.getAddInterestEventName()
+@@ -988,6 +1000,8 @@ class LocalPirate(DistributedPlayerPirate, LocalAvatar):
+         self.notify.debug('handleTeleportToShardDone %s, %s' % (shardId, zoneId))
+         self.b_setLocation(shardId, zoneId, teleport=1)
+         messenger.send(callbackEvent)
++        self._joiningShard = False
++        messenger.send(self.getShardArrivedEvent())
+ 
+     def setLootCarried(self, amt, maxCarry):
+         DistributedPlayerPirate.setLootCarried(self, amt, maxCarry)
+-- 
+2.53.0
+

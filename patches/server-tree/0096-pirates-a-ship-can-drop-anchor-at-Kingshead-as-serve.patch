@@ -1,0 +1,70 @@
+From 8b4b6f850b75f1c788be75c45e7cb3cc514acf60 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:54:30 -0800
+Subject: [PATCH 096/371] pirates: a ship can drop anchor at Kingshead, as
+ server-tree patch 0110 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/world/ClientAreaBuilderAI.py | 38 ++++++++++++++++++++++++++++
+ 1 file changed, 38 insertions(+)
+
+diff --git a/pirates/world/ClientAreaBuilderAI.py b/pirates/world/ClientAreaBuilderAI.py
+index 1f565a7..89ca42b 100644
+--- a/pirates/world/ClientAreaBuilderAI.py
++++ b/pirates/world/ClientAreaBuilderAI.py
+@@ -168,6 +168,25 @@ class ClientAreaBuilderAI(DirectObject):
+ 
+         return out
+ 
++    def findLodRadii(self, objects):
++        """
++        The island's LOD Sphere 'Radi' (level 0, 1, 2 ranges), or None
++        """
++        for obj in list(objects.values()):
++            if not isinstance(obj, dict):
++                continue
++
++            if obj.get('Type') == 'LOD Sphere' and obj.get('Radi'):
++                return list(obj['Radi'])
++
++            children = obj.get('Objects')
++            if children:
++                radii = self.findLodRadii(children)
++                if radii:
++                    return radii
++
++        return None
++
+     def measureShipDeployRadii(self, islandWorldData, objKey=None):
+         """
+         Derive (minRadius, maxRadius, spacing) for the island's ship deployer
+@@ -200,6 +219,25 @@ class ClientAreaBuilderAI(DirectObject):
+                 objects.update(fileData.get('Objects', {}))
+ 
+         distances = self.collectShoreDistances(objects)
++
++        # A port collision sphere reaching past the island's own terrain (its
++        # LOD level 2) is not a dock: Kingshead's KingsheadPortMain has scale
++        # 13094, which put its shore barrier 14531 out, ships were shoved
++        # about 14 km off the island and never offered the anchor
++        # (2026-11-17). The client does not use port spheres at all
++        # (DistributedIsland: 'if 0 and self.portCollisionSpheres'), so only
++        # the barrier depends on them. A dinghy never lies that far out.
++        lodRadii = self.findLodRadii(objects)
++        if lodRadii and len(lodRadii) > 2 and distances:
++            terrain = lodRadii[2]
++            kept = [d for d in distances if d <= terrain]
++            if len(kept) < len(distances):
++                self.notify.warning('Island %s: ignoring %d port collision '
++                    'sphere(s) reaching past its terrain (%d): %s' % (
++                    objKey, len(distances) - len(kept), terrain,
++                    [int(d) for d in distances if d > terrain]))
++            distances = kept
++
+         if not distances:
+             self.notify.warning('Island %s (file %s) has no authored '
+                 'water-level objects; falling back to its LOD min radius '
+-- 
+2.53.0
+

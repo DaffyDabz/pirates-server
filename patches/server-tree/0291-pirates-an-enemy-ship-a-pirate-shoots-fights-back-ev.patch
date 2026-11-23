@@ -1,0 +1,104 @@
+From 1364e4bba70cc77e915e655e92735bece572b70e Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 19:24:32 -0800
+Subject: [PATCH 291/371] pirates: an enemy ship a pirate shoots fights back,
+ even near Port Royal and Tortuga (0375)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/GameFSMShipAI.py          |  8 ++++++++
+ pirates/ship/NPCShipAI.py              | 17 +++++++++++++++++
+ pirates/shipparts/DistributedHullAI.py |  5 +++++
+ pirates/shipparts/DistributedSailAI.py |  5 +++++
+ 4 files changed, 35 insertions(+)
+
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index f0eec2a..8419681 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -998,6 +998,10 @@ class GameFSMShipAI(FSM.FSM):
+         """May this ship engage target where it is (StarterWaters.targetOkForShip),
+         and is there room on it (patch 0166: one enemy ship at a time on a pirate
+         in starter waters, StarterWaters.attackerOk)?"""
++        # family server (11-19, 0375): a pirate ship that shot us in the last 2 minutes is always fair game.
++        # The starter-waters rule left a big ship standing still while a boy sank it.
++        if self._shotUsRecently(target):
++            return True
+         try:
+             if not StarterWaters.targetOkForShip(self.air, self.ship, target.getX(), target.getY()):
+                 return False
+@@ -1008,6 +1012,10 @@ class GameFSMShipAI(FSM.FSM):
+         except Exception:
+             return True
+ 
++    def _shotUsRecently(self, target):
++        entry = self.threatList.get(getattr(target, 'doId', None))
++        return bool(entry) and globalClock.getFrameTime() - entry[1] <= AI_AGGRO_MEMORY_TIME
++
+     def _findNearbyAllies(self, range=None):
+         """
+         Find allied ships within range that could assist in combat.
+diff --git a/pirates/ship/NPCShipAI.py b/pirates/ship/NPCShipAI.py
+index 2d81bb2..9860929 100644
+--- a/pirates/ship/NPCShipAI.py
++++ b/pirates/ship/NPCShipAI.py
+@@ -229,6 +229,23 @@ class NPCShipAI(DistributedShipAI):
+         if crewShipId:
+             self._creditShipCrew(crewShipId)
+ 
++    def notePirateHit(self, avatar, damage):
++        # family server (11-19, 0375): a pirate's cannonball hit our hull or a sail (DistributedHullAI,
++        # DistributedSailAI). Those hits only lowered our hp: the AI was never told, so a ship that had not
++        # already picked his ship sat still while he sank it. A level 37 ship let a boy shoot it to the bottom
++        # without one shot back. Now his ship goes on our threat list and we turn and fight it, as a ram or
++        # another ship's broadside already did.
++        gameFSM = getattr(self, 'gameFSM', None)
++        crewShipId = getattr(avatar, 'getCrewShipId', lambda: 0)()
++        if gameFSM is None or not crewShipId or crewShipId == self.doId:
++            return
++        if self.air.doId2do.get(crewShipId) is None:
++            return
++        try:
++            gameFSM.onDamageReceived(crewShipId, max(0, int(damage)))
++        except Exception:
++            self.notify.warning('notePirateHit: %d hit by %s failed' % (self.doId, crewShipId))
++
+     def _creditShipCrew(self, shipDoId):
+         ship = self.air.doId2do.get(shipDoId) if shipDoId else None
+         if ship is None or ship is self or isinstance(ship, NPCShipAI):
+diff --git a/pirates/shipparts/DistributedHullAI.py b/pirates/shipparts/DistributedHullAI.py
+index 3cbbdac..a1c22a2 100644
+--- a/pirates/shipparts/DistributedHullAI.py
++++ b/pirates/shipparts/DistributedHullAI.py
+@@ -109,6 +109,11 @@ class DistributedHullAI(DistributedShippartAI, DistributedDestructibleArrayAI, D
+         if attacker and wasAfloat and creditAttacker is not None:
+             creditAttacker(attacker, skillId)
+ 
++        hpBefore = self.ship.getHp()
+         self.ship.b_setHp(self.ship.getHp() + (hullDamage - (armorAsorb * hullDamage)))
++        # family server (11-19, 0375): the enemy ship learns who shot it, so it fights back
++        notePirateHit = getattr(self.ship, 'notePirateHit', None)
++        if attacker and wasAfloat and notePirateHit is not None:
++            notePirateHit(attacker, hpBefore - self.ship.getHp())
+         if attacker and wasAfloat and self.ship.getHp() <= 0:
+             self.air.questMgr.shipDefeated(attacker, self.ship)
+diff --git a/pirates/shipparts/DistributedSailAI.py b/pirates/shipparts/DistributedSailAI.py
+index 754de6b..a375274 100644
+--- a/pirates/shipparts/DistributedSailAI.py
++++ b/pirates/shipparts/DistributedSailAI.py
+@@ -134,7 +134,12 @@ class DistributedSailAI(DistributedShippartAI, DistributedDestructibleArrayAI, D
+         self._loseShipSailPoints(oldHp - self.getHp())
+ 
+         shipDamage = sailDamage - (ShipBalance.ArmorAbsorb.getValue() * sailDamage)
++        hpBefore = self.ship.getHp()
+         self.ship.b_setHp(self.ship.getHp() + shipDamage)
++        # family server (11-19, 0375): the enemy ship learns who shot it, so it fights back
++        notePirateHit = getattr(self.ship, 'notePirateHit', None)
++        if attacker and hpBefore > 0 and notePirateHit is not None:
++            notePirateHit(attacker, hpBefore - self.ship.getHp())
+ 
+         # update the sail anim state
+         if self.hp == 0:
+-- 
+2.53.0
+

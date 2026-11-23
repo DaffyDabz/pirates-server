@@ -1,0 +1,28 @@
+From ccd489984cc94f09a246792059f07c93922c0d84 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:54:29 -0800
+Subject: [PATCH 084/371] pirates: quest notoriety raises the pirate's level,
+ as server-tree patch 0098 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/quest/QuestReward.py | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/pirates/quest/QuestReward.py b/pirates/quest/QuestReward.py
+index bc9fa59..97fc541 100644
+--- a/pirates/quest/QuestReward.py
++++ b/pirates/quest/QuestReward.py
+@@ -503,6 +503,9 @@ class ReputationReward(QuestReward):
+         if av.getTempDoubleXPReward():
+             rewardAmount = rewardAmount * 2
+         trade.giveReputation(InventoryType.GeneralRep, rewardAmount)
++        # family server: the pirate's notoriety level follows OverallRep (battle adds to it per kill); quest
++        # notoriety only went to GeneralRep, so turning in quests never raised his level or his HP/voodoo
++        trade.giveReputation(InventoryType.OverallRep, rewardAmount)
+ 
+     def getDescriptionText(self):
+         rewardAmount = self.amount * REPFACTOR_HOLIDAY
+-- 
+2.53.0
+

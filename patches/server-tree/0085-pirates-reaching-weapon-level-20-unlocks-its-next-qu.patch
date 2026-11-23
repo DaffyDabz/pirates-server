@@ -1,0 +1,30 @@
+From 1be87814ccc5a544fa0c9f957876757723d7625c Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:54:29 -0800
+Subject: [PATCH 085/371] pirates: reaching weapon level 20 unlocks its next
+ quest, as server-tree patch 0099 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/PirateInventoryAI.py | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/uberdog/PirateInventoryAI.py b/pirates/uberdog/PirateInventoryAI.py
+index 436ffab..e5370a1 100644
+--- a/pirates/uberdog/PirateInventoryAI.py
++++ b/pirates/uberdog/PirateInventoryAI.py
+@@ -57,7 +57,10 @@ class PirateInventoryAI(DistributedInventoryAI):
+ 
+                 # Give weapon level up quests...
+                 try:
+-                    weapon_quests = RepChart.getWeaponLevelUpQuest(repType, newLevel, avatar)[0]
++                    # family server: getWeaponLevelUpQuest reads baseOb.stacks (does he own the level-4 weapon) at
++                    # weapon level 20; the avatar has no .stacks, so every kill that reached level 20 raised an
++                    # AttributeError, the rep was never saved and no weapon ever passed level 19. The inventory has it.
++                    weapon_quests = RepChart.getWeaponLevelUpQuest(repType, newLevel, self)[0]
+                     if not self.air.questMgr.hasQuest(avatar, questId=weapon_quests):
+                         self.air.questMgr.createQuest(avatar, weapon_quests)
+                 except IndexError:
+-- 
+2.53.0
+

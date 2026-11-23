@@ -1,0 +1,114 @@
+From 80b1a57725b33a1ecce4567300b42b65fd3069c3 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 23:40:29 -0800
+Subject: [PATCH 133/371] pirates: a name typed in the pirate maker works and
+ is approved at once, as server-tree patch 0148 (pir-boat np-01)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../distributed/PiratesClientRepository.py    | 15 ++++++++++
+ .../tutorial/DistributedPiratesTutorial.py    |  8 ++++--
+ pirates/uberdog/ClientServicesManagerUD.py    | 28 +++++++++++--------
+ 3 files changed, 38 insertions(+), 13 deletions(-)
+
+diff --git a/pirates/distributed/PiratesClientRepository.py b/pirates/distributed/PiratesClientRepository.py
+index 72ec617..d49ed18 100644
+--- a/pirates/distributed/PiratesClientRepository.py
++++ b/pirates/distributed/PiratesClientRepository.py
+@@ -292,6 +292,21 @@ class PiratesClientRepository(OTPClientRepository):
+         self.avChoice = None
+         self.ignore(self.avChoiceDoneEvent)
+ 
++    def sendWishName(self, avId, name):
++        # Family server: Astron has no CLIENT_SET_WISHNAME message (the OTP
++        # version raised NameError), so the name goes to the CSM, which
++        # approves it at once (no moderator) and answers on the usual
++        # wish-name result event.
++        def done(respAvId, status, name=name):
++            WNR = self.WishNameResult
++            if status:
++                result = WNR.Approved
++            else:
++                result = WNR.Rejected
++            messenger.send(self.getWishNameResultMsg(), [result, respAvId, name])
++
++        self.csm.sendSetNameTyped(avId, name, done)
++
+     def enterCreateAvatar(self, avList, index, subId):
+         if self.skipTutorial:
+             self.tutorial = 0
+diff --git a/pirates/tutorial/DistributedPiratesTutorial.py b/pirates/tutorial/DistributedPiratesTutorial.py
+index 2b68594..fb0547e 100644
+--- a/pirates/tutorial/DistributedPiratesTutorial.py
++++ b/pirates/tutorial/DistributedPiratesTutorial.py
+@@ -492,8 +492,12 @@ class DistributedPiratesTutorial(DistributedObject.DistributedObject, FSM.FSM):
+             localAvatar.motionFSM.on()
+             self.acceptOnce('avatarPopulated', self.avatarPopulated)
+             if self.map.nameGui.customName:
+-                localAvatar.setWishName()
+-                base.cr.csm.sendPopulateAvatar(localAvatar.doId, localAvatar.style, 0, 0, 0, 0, 0)
++                # Typed name: save the name, and only when the CSM answers send
++                # the look (a second CSM call while one runs kills the account).
++                def nameDone(avId, status):
++                    base.cr.csm.sendPopulateAvatar(localAvatar.doId, localAvatar.style, 0, 0, 0, 0, 0)
++
++                base.cr.csm.sendSetNameTyped(localAvatar.doId, localAvatar.style.name, nameDone)
+             else:
+                 name = self.map.nameGui.getNumericName()
+                 base.cr.csm.sendPopulateAvatar(localAvatar.doId, localAvatar.style, 1, name[0], name[1], name[2], name[3])
+diff --git a/pirates/uberdog/ClientServicesManagerUD.py b/pirates/uberdog/ClientServicesManagerUD.py
+index f076400..a2f31cc 100644
+--- a/pirates/uberdog/ClientServicesManagerUD.py
++++ b/pirates/uberdog/ClientServicesManagerUD.py
+@@ -55,6 +55,16 @@ def executeHttpRequest(url, **extras):
+ #    blacklist = json.loads(blacklist)
+ 
+ 
++def sendLiveFields(air, avId, fields):
++    # Sends each field to the pirate's own channel. A pirate who is in the
++    # game gets it at once (nametag, look, the AI copy); the database
++    # state server saves the db fields whether the pirate is loaded or not.
++    # (dbInterface.updateObject only writes the database, so a loaded
++    # pirate kept the old values until the next login.)
++    dclass = air.dclassesByName['DistributedPlayerPirateUD']
++    for fieldName, args in list(fields.items()):
++        air.send(dclass.aiFormatUpdate(fieldName, avId, avId, air.ourChannel, list(args)))
++
+ def judgeName(name):
+     if not name:
+         return False
+@@ -734,7 +744,7 @@ class SetNameTypedFSM(AvatarOperationFSM):
+             self.demand('Kill', "One of the account's avatars is invalid!")
+             return
+ 
+-        if fields['WishNameState'][0] != 'OPEN':
++        if fields['WishNameState'][0] not in ('OPEN', 'REJECTED'):
+             self.demand('Kill', 'Avatar is not in a namable state!')
+             return
+ 
+@@ -745,16 +755,12 @@ class SetNameTypedFSM(AvatarOperationFSM):
+         status = judgeName(self.name)
+ 
+         if self.avId and status:
+-            resp = self.csm.accountDB.addNameRequest(self.avId, self.name)
+-            if resp != 'Success':
+-                status = False
+-            else:
+-                self.csm.air.dbInterface.updateObject(
+-                    self.csm.air.dbId,
+-                    self.avId,
+-                    self.csm.air.dclassesByName['DistributedPlayerPirateUD'],
+-                    {'WishNameState': ('PENDING',),
+-                     'WishName': (self.name,)})
++            # Family server: no name moderator, so a name that passes
++            # judgeName is the pirate's name now (it never sits in PENDING).
++            sendLiveFields(self.csm.air, self.avId,
++                           {'setName': (self.name,),
++                            'WishNameState': ('',),
++                            'WishName': ('',)})
+ 
+         if self.avId:
+             self.csm.air.writeServerEvent('avatarWishname', avId=self.avId, name=self.name)
+-- 
+2.53.0
+

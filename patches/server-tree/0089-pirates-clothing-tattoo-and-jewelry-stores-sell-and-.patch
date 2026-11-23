@@ -1,0 +1,613 @@
+From 94127efdf02d8ce56d538aa799b099fc3eec7372 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:54:30 -0800
+Subject: [PATCH 089/371] pirates: clothing, tattoo and jewelry stores sell and
+ keep what was bought, as server-tree patch 0103 (1 client file)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/economy/DistributedShopKeeper.py   |   4 +
+ pirates/economy/DistributedShopKeeperAI.py | 523 ++++++++++++++++++++-
+ 2 files changed, 504 insertions(+), 23 deletions(-)
+
+diff --git a/pirates/economy/DistributedShopKeeper.py b/pirates/economy/DistributedShopKeeper.py
+index 4627d03..d6f4538 100644
+--- a/pirates/economy/DistributedShopKeeper.py
++++ b/pirates/economy/DistributedShopKeeper.py
+@@ -301,6 +301,10 @@ class DistributedShopKeeper:
+                 avId])
+ 
+     def responseClothingList(self, avId, accessories):
++        # the dc sends a flat uint32 list: uid, colorId, startingItem, uid, colorId, startingItem, ... ([-1] = empty).
++        # AccessoriesStoreGUI wants a list of [uid, colorId, startingItem].
++        if accessories and not isinstance(accessories[0], (list, tuple)):
++            accessories = [list(accessories[i:i + 3]) for i in range(0, len(accessories) - 2, 3)]
+         if self.storeMenuGUI and accessories:
+             self.storeMenuGUI.setWardrobe(accessories)
+     
+diff --git a/pirates/economy/DistributedShopKeeperAI.py b/pirates/economy/DistributedShopKeeperAI.py
+index 322bef2..e7b49ef 100644
+--- a/pirates/economy/DistributedShopKeeperAI.py
++++ b/pirates/economy/DistributedShopKeeperAI.py
+@@ -1,10 +1,116 @@
++import io
++import json
++import math
++import os
++
+ from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from direct.directnotify import DirectNotifyGlobal
+ from otp.uberdog.RejectCode import RejectCode
+ from pirates.economy import EconomyGlobals
+ from pirates.makeapirate import BarberGlobals
++from pirates.makeapirate import ClothingGlobals, JewelryGlobals, TattooGlobals
+ from pirates.uberdog.UberDogGlobals import InventoryType, InventoryCategory
+ 
++# family server: clothing / tattoo / jewelry stores. Owned items ("wardrobes") are not in the dc, so they are kept
++# in one small json file per avatar under the AI's working directory (wardrobe/<avId>.json). What the pirate
++# wears is always counted as owned, and is added to the file the first time a store list is asked for.
++WARDROBE_DIR = 'wardrobe'
++SELL_FRACTION = 0.25
++FEMALE_UID_START = 80000
++TATTOO_FIELDS = ['Chest', 'Zone2', 'Zone3', 'Zone4', 'Zone5', 'Zone6', 'Zone7', 'Zone8']
++# jewelry type (JewelryGlobals) -> dna zone number (setJewelryZoneN), exactly as JewelryStoreGUI.closePanel maps them
++JEWELRY_ZONE = {
++    JewelryGlobals.RBROW: 4, JewelryGlobals.LBROW: 3, JewelryGlobals.LEAR: 1, JewelryGlobals.REAR: 2,
++    JewelryGlobals.NOSE: 5, JewelryGlobals.MOUTH: 6, JewelryGlobals.LHAND: 7, JewelryGlobals.RHAND: 8}
++JEWELRY_TYPE_OF_ZONE = dict((zone, jtype) for jtype, zone in JEWELRY_ZONE.items())
++
++_clothesLookup = None
++_tattooLookup = None
++_jewelryLookup = None
++
++
++def _wardrobePath(avId):
++    return os.path.join(WARDROBE_DIR, '%d.json' % int(avId))
++
++
++def _loadWardrobe(avId):
++    data = None
++    try:
++        with io.open(_wardrobePath(avId), 'r', encoding='utf-8') as f:
++            data = json.load(f)
++    except (IOError, OSError, ValueError):
++        data = None
++    if not isinstance(data, dict):
++        data = {}
++    wardrobe = {'clothes': [], 'tattoos': [], 'jewelry': []}
++    try:
++        wardrobe['clothes'] = [[int(e[0]), int(e[1]), int(e[2])] for e in data.get('clothes', [])]
++        wardrobe['tattoos'] = [int(e) for e in data.get('tattoos', [])]
++        wardrobe['jewelry'] = [int(e) for e in data.get('jewelry', [])]
++    except (TypeError, ValueError, IndexError):
++        wardrobe = {'clothes': [], 'tattoos': [], 'jewelry': []}
++    return wardrobe
++
++
++def _saveWardrobe(avId, wardrobe):
++    path = _wardrobePath(avId)
++    tmp = path + '.tmp'
++    try:
++        if not os.path.isdir(WARDROBE_DIR):
++            os.makedirs(WARDROBE_DIR)
++        with io.open(tmp, 'w', encoding='utf-8') as f:
++            f.write(json.dumps(wardrobe))
++        os.replace(tmp, path)
++        return True
++    except (IOError, OSError):
++        return False
++
++
++def _clothesUid(female, ctype, model, tex):
++    global _clothesLookup
++    if _clothesLookup is None:
++        lookup = {}
++        for uid in sorted(ClothingGlobals.UNIQUE_ID):
++            item = ClothingGlobals.UNIQUE_ID[uid]
++            lookup.setdefault((uid >= FEMALE_UID_START, item[0], item[1], item[2]), uid)
++        _clothesLookup = lookup
++    return _clothesLookup.get((female, ctype, model, tex))
++
++
++def _tattooUid(zone, tattooId):
++    global _tattooLookup
++    if _tattooLookup is None:
++        lookup = {}
++        for uid in sorted(TattooGlobals.tattoos):
++            item = TattooGlobals.tattoos[uid]
++            lookup.setdefault((item[0], item[1]), uid)
++        _tattooLookup = lookup
++    return _tattooLookup.get((zone, tattooId))
++
++
++def _jewelryUid(female, jtype, idx, primary, secondary):
++    global _jewelryLookup
++    if _jewelryLookup is None:
++        lookup = {}
++        for uid in sorted(JewelryGlobals.jewelry_id):
++            item = JewelryGlobals.jewelry_id[uid]
++            lookup.setdefault((uid >= FEMALE_UID_START, item[1], item[0], item[4], item[5]), uid)
++        _jewelryLookup = lookup
++    return _jewelryLookup.get((female, jtype, idx, primary, secondary))
++
++
++def _clothesPrice(item, color):
++    scaler = ClothingGlobals.colorCostScaler.get(color)
++    cost = item[5]
++    if scaler:
++        cost = int(cost * scaler)
++    return int(cost)
++
++
++def _clamp(value, low, high):
++    return int(max(low, min(high, value)))
++
++
+ class DistributedShopKeeperAI(DistributedObjectAI):
+     notify = DirectNotifyGlobal.directNotify.newCategory('DistributedShopKeeperAI')
+ 
+@@ -212,67 +318,438 @@ class DistributedShopKeeperAI(DistributedObjectAI):
+     def d_playMusic(self, songId):
+         self.sendUpdate('playMusic', [songId])
+ 
++    # ---- family server: clothing / tattoo / jewelry store helpers ----------------------------------------------
++
++    def _storeContext(self, what):
++        avId = self.air.getAvatarIdFromSender()
++        avatar = self.air.doId2do.get(avId)
++        inventory = self.air.inventoryManager.getInventory(avId) if avatar else None
++        if not avatar or not inventory:
++            self.notify.warning('%s from avatar %s, but the avatar or its inventory is not here!' % (what, avId))
++            if avId:
++                self.d_makeSaleResponse(avId, RejectCode.TIMEOUT)
++            return avId, None, None
++        return avId, avatar, inventory
++
++    def _isFemale(self, avatar):
++        return avatar.getGender() == 'f'
++
++    def _wornClothes(self, avatar):
++        c = avatar.clothes
++        female = self._isFemale(avatar)
++        parts = [
++            (ClothingGlobals.HAT, c.hat, c.hatTexture, c.hatColor),
++            (ClothingGlobals.SHIRT, c.shirt, c.shirtTexture, c.shirtColor),
++            (ClothingGlobals.VEST, c.vest, c.vestTexture, c.vestColor),
++            (ClothingGlobals.COAT, c.coat, c.coatTexture, c.coatColor),
++            (ClothingGlobals.PANT, c.pant, c.pantTexture, c.pantColor),
++            (ClothingGlobals.BELT, c.belt, c.beltTexture, c.sashColor),
++            (ClothingGlobals.SHOE, c.shoe, c.shoeTexture, c.shoeColor)]
++        worn = []
++        for ctype, model, tex, color in parts:
++            uid = _clothesUid(female, ctype, model, tex)
++            if uid is not None:
++                worn.append([uid, int(color)])
++        return worn
++
++    def _wornTattoos(self, avatar):
++        worn = []
++        for zone, name in enumerate(TATTOO_FIELDS):
++            tattooId = getattr(avatar, 'getTattoo' + name)()[0]
++            if tattooId:
++                uid = _tattooUid(zone, tattooId)
++                if uid is not None:
++                    worn.append(uid)
++        return worn
++
++    def _wornJewelry(self, avatar):
++        female = self._isFemale(avatar)
++        worn = []
++        for zone in range(1, 9):
++            idx, primary, secondary = getattr(avatar, 'getJewelryZone%d' % zone)()
++            if idx:
++                uid = _jewelryUid(female, JEWELRY_TYPE_OF_ZONE[zone], idx, primary, secondary)
++                if uid is not None:
++                    worn.append(uid)
++        return worn
++
++    def _wardrobeFor(self, avatar):
++        # what the pirate owns; whatever he wears now is always owned (flagged as a starting item the first time)
++        avId = avatar.doId
++        wardrobe = _loadWardrobe(avId)
++        changed = not os.path.exists(_wardrobePath(avId))
++        for uid, color in self._wornClothes(avatar):
++            if not [e for e in wardrobe['clothes'] if e[0] == uid and e[1] == color]:
++                wardrobe['clothes'].append([uid, color, 1])
++                changed = True
++        for uid in self._wornTattoos(avatar):
++            if uid not in wardrobe['tattoos']:
++                wardrobe['tattoos'].append(uid)
++                changed = True
++        for uid in self._wornJewelry(avatar):
++            if uid not in wardrobe['jewelry']:
++                wardrobe['jewelry'].append(uid)
++                changed = True
++        if changed:
++            _saveWardrobe(avId, wardrobe)
++        return wardrobe
++
++    def _settle(self, avId, inventory, net, currencyType=0):
++        # net > 0: the pirate pays; net < 0: he is paid. Returns a RejectCode, or 2 when it went through.
++        if currencyType:
++            stackType = InventoryType.PVPCurrentInfamy
++            have = inventory.getStackQuantity(stackType)
++        else:
++            stackType = InventoryType.GoldInPocket
++            have = inventory.getGoldInPocket()
++        if net > have:
++            self.air.logPotentialHacker(
++                message='Received a store purchase the avatar can not afford!',
++                currentGold=have, price=net, currencyType=currencyType)
++            return RejectCode.TIMEOUT
++        newAmount = have - net
++        limit = inventory.getStackLimit(stackType)
++        if net < 0 and limit and newAmount > limit:
++            return RejectCode.OVERFLOW
++        if net:
++            if currencyType:
++                inventory.b_setStackQuantity(stackType, newAmount)
++            else:
++                inventory.setGoldInPocket(newAmount)
++        return 2
++
++    def _reject(self, avId, what, why):
++        self.notify.warning('%s from avatar %s refused: %s' % (what, avId, why))
++        self.d_makeSaleResponse(avId, RejectCode.TIMEOUT)
++
++    def _wearClothing(self, avatar, ctype, model, tex, color):
++        avatar.setClothesByType(ClothingGlobals.CLOTHING_STRING[ctype], model, tex, color)
++
++    def _sendClothes(self, avatar):
++        c = avatar.clothes
++        u8 = lambda v: _clamp(v, 0, 255)
++        avatar.sendUpdate('setHatIdx', [u8(c.hat)])
++        avatar.sendUpdate('setHatTexture', [u8(c.hatTexture)])
++        avatar.sendUpdate('setHatColor', [u8(c.hatColor)])
++        avatar.sendUpdate('setClothesShirt', [u8(c.shirt), u8(c.shirtTexture)])
++        avatar.sendUpdate('setClothesVest', [u8(c.vest), u8(c.vestTexture)])
++        avatar.sendUpdate('setClothesCoat', [u8(c.coat), u8(c.coatTexture)])
++        avatar.sendUpdate('setClothesBelt', [u8(c.belt), u8(c.beltTexture)])
++        avatar.sendUpdate('setClothesPant', [u8(c.pant), u8(c.pantTexture)])
++        avatar.sendUpdate('setClothesShoe', [u8(c.shoe), u8(c.shoeTexture)])
++        avatar.sendUpdate('setClothesTopColor', [u8(c.shirtColor), u8(c.vestColor), u8(c.coatColor)])
++        avatar.sendUpdate('setClothesBotColor', [u8(c.pantColor), u8(c.sashColor), u8(c.shoeColor)])
++
++    def _wearTattoo(self, avatar, zone, uid):
++        # same maths as TattooStoreGUI.closePanel, so the AI's dna matches what the client drew; uid -1 clears it
++        name = TATTOO_FIELDS[zone]
++        item = TattooGlobals.tattoos.get(uid) if uid is not None and uid >= 0 else None
++        if item is None:
++            values = [0, 0.0, 0.0, 1.0, 0.0, 0]
++        else:
++            offset = item[5] if avatar.getGender() == 'm' else item[6]
++            offsetX, offsetY, scale, rotate = offset[0], offset[1], offset[2], offset[3]
++            if not scale:
++                scale = 1.0
++            sx = sy = 1.0 / float(scale)
++            vm = (math.sin(rotate * math.pi / 180.0), math.cos(rotate * math.pi / 180.0))
++            vms = (vm[0] * sx, vm[1] * sy)
++            vn = (vm[1], -vm[0])
++            vns = (vn[0] * sx, vn[1] * sy)
++            f0 = -(vns[0] * offsetX + vns[1] * offsetY) + 0.5
++            f1 = -(vms[0] * offsetX + vms[1] * offsetY) + 0.5
++            f0 = max(-327.0, min(327.0, f0))
++            f1 = max(-327.0, min(327.0, f1))
++            values = [item[1], f0, f1, max(0.0, min(655.0, sx)), float(rotate) % 360.0, 0]
++        getattr(avatar, 'setTattoo' + name)(*values)
++        avatar.sendUpdate('setTattoo' + name, values)
++
++    def _wearJewelry(self, avatar, jtype, uid):
++        zone = JEWELRY_ZONE[jtype]
++        item = JewelryGlobals.jewelry_id.get(uid) if uid is not None and uid >= 0 else None
++        if item is None:
++            values = [0, 0, 0]
++        else:
++            values = [_clamp(item[0], 0, 255), _clamp(item[4], 0, 65535), _clamp(item[5], 0, 65535)]
++        getattr(avatar, 'setJewelryZone%d' % zone)(*values)
++        avatar.sendUpdate('setJewelryZone%d' % zone, values)
++
+     def requestAccessories(self, purchases, selling):
+-        pass
++        what = 'requestAccessories'
++        avId, avatar, inventory = self._storeContext(what)
++        if avatar is None:
++            return
++
++        female = self._isFemale(avatar)
++        wardrobe = self._wardrobeFor(avatar)
++        owned = wardrobe['clothes']
++        worn = self._wornClothes(avatar)
++        buyTotal = 0
++        sellTotal = 0
++        newBuys = []
++
++        for sale in selling:
++            uid, color, ctype = sale
++            entry = [e for e in owned if e[0] == uid and e[1] == color]
++            item = ClothingGlobals.UNIQUE_ID.get(uid)
++            if not entry or item is None:
++                return self._reject(avId, what, 'selling %s/%s that is not owned' % (uid, color))
++            if [uid, color] in worn:
++                return self._reject(avId, what, 'selling %s/%s that is worn' % (uid, color))
++            sellTotal += int(_clothesPrice(item, color) * SELL_FRACTION)
++
++        for purchase in purchases:
++            uid, color, ctype = purchase
++            item = ClothingGlobals.UNIQUE_ID.get(uid)
++            if item is None or color not in ClothingGlobals.colorCostScaler:
++                return self._reject(avId, what, 'unknown clothing %s/%s' % (uid, color))
++            if (uid >= FEMALE_UID_START) != female:
++                return self._reject(avId, what, 'clothing %s is for the other gender' % uid)
++            if [e for e in owned if e[0] == uid and e[1] == color] or [uid, color] in newBuys:
++                return self._reject(avId, what, 'clothing %s/%s is already owned' % (uid, color))
++            buyTotal += _clothesPrice(item, color)
++            newBuys.append([uid, color])
++
++        result = self._settle(avId, inventory, buyTotal - sellTotal)
++        if result != 2:
++            self.d_makeSaleResponse(avId, result)
++            return
++
++        for sale in selling:
++            uid, color, ctype = sale
++            wardrobe['clothes'] = [e for e in wardrobe['clothes'] if not (e[0] == uid and e[1] == color)]
++        wearing = {}
++        for uid, color in newBuys:
++            wardrobe['clothes'].append([uid, color, 0])
++            item = ClothingGlobals.UNIQUE_ID[uid]
++            wearing[item[0]] = (item, color)
++        _saveWardrobe(avId, wardrobe)
++
++        # the client wears what it bought (it sends requestAccessoryEquip when the store closes); do it now as well
++        for ctype, (item, color) in wearing.items():
++            self._wearClothing(avatar, ctype, item[1], item[2], color)
++        if wearing:
++            self._sendClothes(avatar)
++
++        self.logShopkeepTransaction(
++            type=what, bought=str(newBuys), sold=str(len(selling)), price=buyTotal - sellTotal, purchaser=avId)
++        self.d_makeSaleResponse(avId, 2)
+ 
+     def requestAccessoriesList(self, avId):
+-        pass
++        avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
++        if not avatar:
++            self.notify.warning('Failed to requestAccessoriesList for non-existant avatar %s!' % avId)
++            return
++
++        # flat uint32 list in groups of three: uid, colorId, startingItem. The client groups them again.
++        flat = []
++        for uid, color, original in self._wardrobeFor(avatar)['clothes']:
++            flat.extend([uid, color, original])
++        self.d_responseClothingList(avatar.doId, flat if flat else [-1])
+ 
+     def d_responseClothingList(self, avatarId, accessories=[-1]):
+         self.sendUpdateToAvatarId(avatarId, 'responseClothingList', [avatarId, accessories])
+ 
+     def requestAccessoryEquip(self, accessory):
+-        pass
++        avId = self.air.getAvatarIdFromSender()
++        avatar = self.air.doId2do.get(avId)
++        if not avatar:
++            self.notify.warning('Failed to requestAccessoryEquip for non-existant avatar %s!' % avId)
++            return
++
++        owned = self._wardrobeFor(avatar)['clothes']
++        changed = False
++        for uid, color, ctype in accessory:
++            if ctype not in ClothingGlobals.CLOTHING_STRING:
++                continue
++            if not uid:
++                # nothing worn for this slot (hat/coat/vest/belt...)
++                self._wearClothing(avatar, ctype, 0, 0, -1)
++                changed = True
++                continue
++            item = ClothingGlobals.UNIQUE_ID.get(uid)
++            if item is None or item[0] != ctype or not [e for e in owned if e[0] == uid and e[1] == color]:
++                self.notify.warning('requestAccessoryEquip from %s: %s/%s is not owned, ignored' % (avId, uid, color))
++                continue
++            self._wearClothing(avatar, ctype, item[1], item[2], color)
++            changed = True
++        if changed:
++            self._sendClothes(avatar)
++            self.logShopkeepTransaction(type='requestAccessoryEquip', equips=str(accessory), purchaser=avId)
+ 
+     def requestTattoo(self, purchases, selling, currencyType=0):
+-        pass
++        what = 'requestTattoo'
++        avId, avatar, inventory = self._storeContext(what)
++        if avatar is None:
++            return
++
++        wardrobe = self._wardrobeFor(avatar)
++        owned = wardrobe['tattoos']
++        worn = self._wornTattoos(avatar)
++        buyTotal = 0
++        sellTotal = 0
++        newBuys = []
++
++        for uid in selling:
++            item = TattooGlobals.tattoos.get(uid)
++            if item is None or uid not in owned:
++                return self._reject(avId, what, 'selling tattoo %s that is not owned' % uid)
++            if uid in worn:
++                return self._reject(avId, what, 'selling tattoo %s that is worn' % uid)
++            sellTotal += int(item[4] * SELL_FRACTION)
++
++        for uid in purchases:
++            item = TattooGlobals.tattoos.get(uid)
++            if item is None:
++                return self._reject(avId, what, 'unknown tattoo %s' % uid)
++            if uid in owned or uid in newBuys:
++                return self._reject(avId, what, 'tattoo %s is already owned' % uid)
++            buyTotal += int(item[4])
++            newBuys.append(uid)
++
++        result = self._settle(avId, inventory, buyTotal - sellTotal, currencyType)
++        if result != 2:
++            self.d_makeSaleResponse(avId, result)
++            return
++
++        wardrobe['tattoos'] = [u for u in owned if u not in selling] + newBuys
++        _saveWardrobe(avId, wardrobe)
++
++        # wear the newest tattoo of each zone (the client also sends requestTattooEquip when the store closes)
++        wearing = {}
++        for uid in newBuys:
++            wearing[TattooGlobals.tattoos[uid][0]] = uid
++        for zone, uid in wearing.items():
++            self._wearTattoo(avatar, zone, uid)
++
++        self.logShopkeepTransaction(
++            type=what, bought=str(newBuys), sold=str(len(selling)), price=buyTotal - sellTotal,
++            currencyType=currencyType, purchaser=avId)
++        # makeTattooResponse is not sent: the client's makeTattooResponse calls storeMenuGUI.tattooPurchase, which
++        # TattooStoreGUI does not have. makeSaleResponse(2) is what refreshes the balance.
++        self.d_makeSaleResponse(avId, 2)
+ 
+     def requestTattooList(self, avId):
+         avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
+         if not avatar:
+-            self.notify.warning('Failed to requestTattooList for non-existant avatar %d!' %
+-                avatar.doId)
+-
++            self.notify.warning('Failed to requestTattooList for non-existant avatar %s!' % avId)
+             return
+ 
+-        ownedItems = []
+-
+-        #TODO: pull owned items
+-
++        ownedItems = list(self._wardrobeFor(avatar)['tattoos'])
+         if not len(ownedItems):
+             ownedItems = [-1]
+-        self.d_responseTattooList(avId, ownedItems)
++        self.d_responseTattooList(avatar.doId, ownedItems)
+ 
+     def d_responseTattooList(self, avatarId, tattoos=[-1]):
+         self.sendUpdateToAvatarId(avatarId, 'responseTattooList', [avatarId, tattoos])
+ 
+     def requestTattooEquip(self, tattoos):
+-        pass
++        avId = self.air.getAvatarIdFromSender()
++        avatar = self.air.doId2do.get(avId)
++        if not avatar:
++            self.notify.warning('Failed to requestTattooEquip for non-existant avatar %s!' % avId)
++            return
++
++        owned = self._wardrobeFor(avatar)['tattoos']
++        for zone, uid in tattoos:
++            if not 0 <= zone < len(TATTOO_FIELDS):
++                continue
++            if uid < 0:
++                self._wearTattoo(avatar, zone, -1)
++                continue
++            item = TattooGlobals.tattoos.get(uid)
++            if item is None or item[0] != zone or uid not in owned:
++                self.notify.warning('requestTattooEquip from %s: tattoo %s is not owned, ignored' % (avId, uid))
++                continue
++            self._wearTattoo(avatar, zone, uid)
++        self.logShopkeepTransaction(type='requestTattooEquip', equips=str(tattoos), purchaser=avId)
+ 
+     def requestJewelry(self, purchases, selling):
+-        pass
++        what = 'requestJewelry'
++        avId, avatar, inventory = self._storeContext(what)
++        if avatar is None:
++            return
++
++        female = self._isFemale(avatar)
++        wardrobe = self._wardrobeFor(avatar)
++        owned = wardrobe['jewelry']
++        worn = self._wornJewelry(avatar)
++        buyTotal = 0
++        sellTotal = 0
++        newBuys = []
++
++        # the store counts every jewelry buy and every sale as at least 1 gold
++        for uid in selling:
++            item = JewelryGlobals.jewelry_id.get(uid)
++            if item is None or uid not in owned:
++                return self._reject(avId, what, 'selling jewelry %s that is not owned' % uid)
++            if uid in worn:
++                return self._reject(avId, what, 'selling jewelry %s that is worn' % uid)
++            sellTotal += max(int(item[3] * SELL_FRACTION), 1)
++
++        for uid in purchases:
++            item = JewelryGlobals.jewelry_id.get(uid)
++            if item is None:
++                return self._reject(avId, what, 'unknown jewelry %s' % uid)
++            if (uid >= FEMALE_UID_START) != female:
++                return self._reject(avId, what, 'jewelry %s is for the other gender' % uid)
++            if uid in owned or uid in newBuys:
++                return self._reject(avId, what, 'jewelry %s is already owned' % uid)
++            buyTotal += max(int(item[3]), 1)
++            newBuys.append(uid)
++
++        result = self._settle(avId, inventory, buyTotal - sellTotal)
++        if result != 2:
++            self.d_makeSaleResponse(avId, result)
++            return
++
++        wardrobe['jewelry'] = [u for u in owned if u not in selling] + newBuys
++        _saveWardrobe(avId, wardrobe)
++
++        wearing = {}
++        for uid in newBuys:
++            wearing[JewelryGlobals.jewelry_id[uid][1]] = uid
++        for jtype, uid in wearing.items():
++            self._wearJewelry(avatar, jtype, uid)
++
++        self.logShopkeepTransaction(
++            type=what, bought=str(newBuys), sold=str(len(selling)), price=buyTotal - sellTotal, purchaser=avId)
++        self.d_makeSaleResponse(avId, 2)
+ 
+     def requestJewelryList(self, avId):
+         avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
+         if not avatar:
+-            self.notify.warning('Failed to requestJewelryList for non-existant avatar %d!' %
+-                avatar.doId)
+-
++            self.notify.warning('Failed to requestJewelryList for non-existant avatar %s!' % avId)
+             return
+ 
+-        ownedItems = []
+-
+-        #TODO: pull owned items
+-
++        ownedItems = list(self._wardrobeFor(avatar)['jewelry'])
+         if not len(ownedItems):
+             ownedItems = [-1]
+-        self.d_responseJewelryList(avId, ownedItems)
++        self.d_responseJewelryList(avatar.doId, ownedItems)
+ 
+     def d_responseJewelryList(self, avatarId, items=[-1]):
+         self.sendUpdateToAvatarId(avatarId, 'responseJewelryList', [avatarId, items])
+ 
+     def requestJewelryEquip(self, jewelry):
+-        pass
++        avId = self.air.getAvatarIdFromSender()
++        avatar = self.air.doId2do.get(avId)
++        if not avatar:
++            self.notify.warning('Failed to requestJewelryEquip for non-existant avatar %s!' % avId)
++            return
++
++        owned = self._wardrobeFor(avatar)['jewelry']
++        for jtype, uid in jewelry:
++            if jtype not in JEWELRY_ZONE:
++                continue
++            if uid < 0:
++                self._wearJewelry(avatar, jtype, -1)
++                continue
++            item = JewelryGlobals.jewelry_id.get(uid)
++            if item is None or item[1] != jtype or uid not in owned:
++                self.notify.warning('requestJewelryEquip from %s: jewelry %s is not owned, ignored' % (avId, uid))
++                continue
++            self._wearJewelry(avatar, jtype, uid)
++        self.logShopkeepTransaction(type='requestJewelryEquip', equips=str(jewelry), purchaser=avId)
+ 
+     def requestBarber(self, idx, color):
+         avId = self.air.getAvatarIdFromSender()
+-- 
+2.53.0
+

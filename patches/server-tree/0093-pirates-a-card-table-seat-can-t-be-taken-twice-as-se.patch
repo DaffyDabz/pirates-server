@@ -1,0 +1,39 @@
+From fcd5be50bafd6e50ca344116a9e62b9e4efa6710 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 16:54:30 -0800
+Subject: [PATCH 093/371] pirates: a card table seat can't be taken twice, as
+ server-tree patch 0107 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/DistributedGameTableAI.py | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/pirates/minigame/DistributedGameTableAI.py b/pirates/minigame/DistributedGameTableAI.py
+index 2593814..97746d4 100644
+--- a/pirates/minigame/DistributedGameTableAI.py
++++ b/pirates/minigame/DistributedGameTableAI.py
+@@ -34,6 +34,10 @@ class DistributedGameTableAI(DistributedInteractiveAI):
+         DistributedInteractiveAI.delete(self)
+ 
+     def handleRequestInteraction(self, avatar, interactType, instant):
++        if self.getAvatarSeatIndex(avatar) is not None:
++            # Already seated here: a second seat would leave a ghost player
++            return self.DENY
++
+         if self.getOpenSeatCount() == 0:
+             self.sendUpdateToAvatarId(avatar.doId, 'requestSeatResponse', [3, 0])
+             return self.DENY
+@@ -61,6 +65,9 @@ class DistributedGameTableAI(DistributedInteractiveAI):
+         if not avatar:
+             return
+ 
++        if self.getAvatarSeatIndex(avatar) is not None:
++            return  # already seated at this table
++
+         if seatIndex >= self._availableSeats or self.seats[seatIndex] is not None:
+             # Requested seat unavailable; try any open seat
+             seatIndex = self.getRandomOpenSeat()
+-- 
+2.53.0
+

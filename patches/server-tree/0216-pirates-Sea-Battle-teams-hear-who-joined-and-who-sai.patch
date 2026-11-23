@@ -1,0 +1,63 @@
+From 1fb3e93fe47487c0c608bac709881b2ef3c013f8 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:47:19 -0800
+Subject: [PATCH 216/371] pirates: Sea Battle teams hear who joined and who
+ sailed home, and see how many ships each side has (0292)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pvp/SeaBattleManagerAI.py | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/pirates/pvp/SeaBattleManagerAI.py b/pirates/pvp/SeaBattleManagerAI.py
+index 27448bc..e80fb5d 100644
+--- a/pirates/pvp/SeaBattleManagerAI.py
++++ b/pirates/pvp/SeaBattleManagerAI.py
+@@ -178,6 +178,7 @@ class SeaBattleManagerAI:
+         return 0
+ 
+     def joinShip(self, avatar, ship, team):
++        rejoin = self.ships.get(ship.doId) == team  # 0292: the same ship launched again while it sails for the team
+         self.ships[ship.doId] = team
+         if ship.getSiegeTeam() != team:
+             ship.b_setSiegeTeam(team)
+@@ -190,6 +191,12 @@ class SeaBattleManagerAI:
+         self._sendQuestEvent(avatar, QuestEvent.ShipPVPSpawn())
+         avatar.d_setSystemMessage(0, 'You sail for the %s! Sink the %s ships. First team to %d sinks wins.' % (
+             TEAM_NAMES[team], TEAM_NAMES[otherTeam(team)], self.scoreLimit))
++        # 0292: how the battle stands, and the team hears who joined
++        avatar.d_setSystemMessage(0, 'Ships at sea: French %d, Spanish %d. Score: French %d, Spanish %d.' % (
++            self.teamShipCount(FRENCH), self.teamShipCount(SPANISH), self.scores[FRENCH], self.scores[SPANISH]))
++        if not rejoin:
++            self.tellTeam(team, '%s joined the %s with the %s.' % (avatar.getName(), TEAM_NAMES[team], ship.getName()),
++                exceptIds=[pirate.doId for pirate in [avatar] + list(self._piratesAboard(ship))])
+ 
+     def joinAvatar(self, avatar, team):
+         self.awaySince.pop(avatar.doId, None)
+@@ -238,6 +245,7 @@ class SeaBattleManagerAI:
+             if ship.zoneId == 0 and state not in ('Sinking', 'Sunk'):
+                 # docked or put away without sinking: out of the match
+                 self.leaveShip(ship)
++                self.tellTeam(team, 'The %s sailed home and left the Sea Battle.' % ship.getName())
+                 continue
+ 
+             for pirate in self._piratesAboard(ship):
+@@ -367,6 +375,15 @@ class SeaBattleManagerAI:
+             if avatar is not None:
+                 avatar.d_setSystemMessage(0, text)
+ 
++    def tellTeam(self, team, text, exceptIds=()):
++        # 0292: one team's pirates
++        for avId, avTeam in list(self.members.items()):
++            if avTeam != team or avId in exceptIds:
++                continue
++            avatar = self.air.doId2do.get(avId)
++            if avatar is not None:
++                avatar.d_setSystemMessage(0, text)
++
+     # ---- sinking
+     def shipSunk(self, ship):
+         """A Sea Battle ship's hull reached 0 (DistributedShipAI.setHp)."""
+-- 
+2.53.0
+

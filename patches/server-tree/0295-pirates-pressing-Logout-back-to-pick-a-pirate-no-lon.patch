@@ -1,0 +1,36 @@
+From 082c513a78fb031d509624d464485747db357083 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 16:10:11 -0800
+Subject: [PATCH 295/371] pirates: pressing Logout (back to pick-a-pirate) no
+ longer boots the player; the pirate stops being a session object before it is
+ deleted (0379)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/uberdog/ClientServicesManagerUD.py | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/pirates/uberdog/ClientServicesManagerUD.py b/pirates/uberdog/ClientServicesManagerUD.py
+index 30c4287..19490cc 100644
+--- a/pirates/uberdog/ClientServicesManagerUD.py
++++ b/pirates/uberdog/ClientServicesManagerUD.py
+@@ -1068,6 +1068,16 @@ class UnloadAvatarFSM(OperationFSM):
+         datagram.addChannel(self.target<<32)
+         self.csm.air.send(datagram)
+ 
++        # family server (2026-11-20): the pirate stops being a session object first. Deleting a
++        # session object makes the client agent boot the player (153) on Logout.
++        datagram = PyDatagram()
++        datagram.addServerHeader(
++            channel,
++            self.csm.air.ourChannel,
++            CLIENTAGENT_REMOVE_SESSION_OBJECT)
++        datagram.addUint32(self.avId)
++        self.csm.air.send(datagram)
++
+         # Unload avatar object:
+         datagram = PyDatagram()
+         datagram.addServerHeader(
+-- 
+2.53.0
+

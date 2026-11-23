@@ -1,0 +1,78 @@
+From e12fb82d57742b935bfec6339d60e8f4aba6b893 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 310/371] family server (11-20): pressing Friendship on a
+ friend only says he is already your friend, so the boys can't end their
+ friendship by accident (0394)
+
+Game: Stop -> Yes ended the friendship in two presses, and an open invite's No ended a new one (Player2 11-19 17:31
+and 18:04). An invite now closes once they are friends. Lane: social. Test: test_friend_buttons.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/friends/FriendInvitee.py | 14 ++++++++++++--
+ pirates/friends/FriendInviter.py | 11 ++++++-----
+ 2 files changed, 18 insertions(+), 7 deletions(-)
+
+diff --git a/pirates/friends/FriendInvitee.py b/pirates/friends/FriendInvitee.py
+index f64fdff..a5f1ea2 100644
+--- a/pirates/friends/FriendInvitee.py
++++ b/pirates/friends/FriendInvitee.py
+@@ -42,14 +42,24 @@ class FriendInvitee(GuiPanel.GuiPanel):
+         self.bNo.reparentTo(self)
+         self.bNo.setPos(0.3, 0, 0.05)
+         self.accept('cancelFriendInvitation', self.__handleCancelFromAbove)
+-    
++        # family server (11-20): the invite closes once the two are friends (both asked each other) or the other
++        # pirate took it back or left. Before, it stayed open, and its "No" then ended the new friendship.
++        self.accept(OTPGlobals.AvatarFriendAddEvent, self.__handleFriendDone)
++        self.accept(OTPGlobals.AvatarFriendRetractInviteEvent, self.__handleFriendDone)
++
+     def destroy(self):
+         if hasattr(self, 'destroyed'):
+             return
+-        
++
+         self.destroyed = 1
+         self.ignore('cancelFriendInvitation')
++        self.ignore(OTPGlobals.AvatarFriendAddEvent)
++        self.ignore(OTPGlobals.AvatarFriendRetractInviteEvent)
+         GuiPanel.GuiPanel.destroy(self)
++
++    def __handleFriendDone(self, avId, info = None):
++        if avId == self.avId and not self.isPlayerInvite:
++            self.destroy()
+     
+     def __handleOk(self):
+         if self.isPlayerInvite:
+diff --git a/pirates/friends/FriendInviter.py b/pirates/friends/FriendInviter.py
+index 21965c9..852e9bd 100644
+--- a/pirates/friends/FriendInviter.py
++++ b/pirates/friends/FriendInviter.py
+@@ -306,17 +306,18 @@ class FriendInviter(GuiPanel.GuiPanel):
+         self.bOk.hide()
+     
+     def enterAlreadyFriends(self):
++        # family server (11-20): only OK here. The "Stop" button led to "stop being friends? Yes", and Player2 pressed
++        # Friendship on Player1, then Stop, then Yes, and lost him as a friend twice on 11-19 (17:31 and 18:04); the
++        # first time he asked him again ten seconds later.
+         self.message['text'] = OTPLocalizer.FriendInviterAlready % self.avName
+         self['text_pos'] = (0.0, 0.2)
+         self.context = None
+-        self.bStop.show()
+-        self.bCancel.show()
+-    
++        self.bOk.show()
++
+     def exitAlreadyFriends(self):
+         self.message['text'] = ''
+         self['text_pos'] = (0.0, 0.13)
+-        self.bStop.hide()
+-        self.bCancel.hide()
++        self.bOk.hide()
+ 
+     def enterAlreadyInvited(self):
+         self.message['text'] = OTPLocalizer.FriendInviterAlreadyInvited % self.avName
+-- 
+2.53.0
+

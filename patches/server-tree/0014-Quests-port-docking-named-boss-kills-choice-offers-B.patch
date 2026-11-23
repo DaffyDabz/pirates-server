@@ -1,0 +1,209 @@
+From b1d96947cc848ddac8fe32d372c38e658bd09914 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 14:14:08 -0800
+Subject: [PATCH 014/371] Quests: port docking, named boss kills, choice
+ offers, Black Pearl map, card rewards
+
+- New QuestManagerAI.dockedAtPort, called per crew member from DistributedShipAI.dropAnchor
+  (30 maroon / smuggle / deliver-to-port quests); a missing crew avatar is skipped, not asserted.
+- New QuestManagerAI.npcDefeated from enemyDefeated, keyed on the boss spawn node (12 DefeatNPC quests).
+- Quest choice offers: containers become QuestOffers and pendingOffers is always stored, so a pick works.
+- Black Pearl treasure map and PirateInventoryAI.giveCards fixes so those quest steps finish.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/npc/DistributedNPCTownfolkAI.py       |  9 ++--
+ pirates/quest/DistributedQuestGiverAI.py      | 18 ++++++-
+ pirates/quest/QuestManagerAI.py               | 49 ++++++++++++++++++-
+ pirates/ship/DistributedShipAI.py             | 10 +++-
+ .../treasuremap/TreasureMapBlackPearlAI.py    |  5 ++
+ pirates/uberdog/PirateInventoryAI.py          |  8 ++-
+ 6 files changed, 91 insertions(+), 8 deletions(-)
+
+diff --git a/pirates/npc/DistributedNPCTownfolkAI.py b/pirates/npc/DistributedNPCTownfolkAI.py
+index e332abc..97c370d 100644
+--- a/pirates/npc/DistributedNPCTownfolkAI.py
++++ b/pirates/npc/DistributedNPCTownfolkAI.py
+@@ -122,12 +122,15 @@ class DistributedNPCTownfolkAI(DistributedBattleNPCAI, DistributedShopKeeperAI):
+             self.air.questMgr.attemptBribeNPC(avatar, self)
+         elif option == InteractGlobals.QUEST:
+             finalOffers, container, numAssignedIncomplete = avatar.questStatus.getQuestOffersFromGiver(self.dnaId)
+-            if not finalOffers:
+-                finalOffers = []
++            finalOffers = self.toQuestOffers(avatar, finalOffers)
+ 
+             if not finalOffers and numAssignedIncomplete == 0:
+                 finalOffers = self.getAvailableQuestOffers(avatar, getattr(self, 'spawnUid', '') or self.dnaId)
+-                self.pendingOffers[avatar.doId] = finalOffers
++
++            # family server: every branch must remember its offers, the choice-ladder
++            # branch used to send them without storing them, so the pick was refused
++            # as a "bad offer index".
++            self.pendingOffers[avatar.doId] = finalOffers
+ 
+             if numAssignedIncomplete == 0:
+                 self.d_setQuestOffer(avatar.doId, finalOffers)
+diff --git a/pirates/quest/DistributedQuestGiverAI.py b/pirates/quest/DistributedQuestGiverAI.py
+index 1af4c17..c3b6a4b 100644
+--- a/pirates/quest/DistributedQuestGiverAI.py
++++ b/pirates/quest/DistributedQuestGiverAI.py
+@@ -58,6 +58,22 @@ class DistributedQuestGiverAI(DistributedObjectAI):
+                 break
+         return offers
+ 
++    def toQuestOffers(self, avatar, items):
++        # family server: the client is sent QuestOffer structs and setOfferResponse
++        # looks the pick up in pendingOffers, so both must hold the same QuestOffers.
++        # QuestStatus.getQuestOffersFromGiver (choice ladders) returns QuestContainers,
++        # which cannot be sent as a struct; turn each one into the offer for its first quest.
++        offers = []
++        for item in items or []:
++            if isinstance(item, QuestOffer):
++                offers.append(item)
++                continue
++            try:
++                offers.append(QuestOffer.create(item.getFirstQuestId(), avatar))
++            except Exception as e:
++                self.notify.warning('cannot turn %r into a quest offer: %r' % (item, e))
++        return offers
++
+     def setOfferResponse(self, index, ladder):
+         avId = self.air.getAvatarIdFromSender()
+         offers = self.pendingOffers.pop(avId, [])
+@@ -65,7 +81,7 @@ class DistributedQuestGiverAI(DistributedObjectAI):
+         if not avatar or index == QuestConstants.CANCEL_QUEST:
+             return
+         if index < 0 or index >= len(offers):
+-            self.notify.warning('bad offer index %d from %d' % (index, avId))
++            self.notify.warning('bad offer index %d from %d (%d offers pending, ladder=%r)' % (index, avId, len(offers), ladder))
+             return
+         self.air.questMgr.createQuest(avatar, offers[index].getQuestId())
+ 
+diff --git a/pirates/quest/QuestManagerAI.py b/pirates/quest/QuestManagerAI.py
+index 78fbe3c..49ae88c 100644
+--- a/pirates/quest/QuestManagerAI.py
++++ b/pirates/quest/QuestManagerAI.py
+@@ -579,7 +579,15 @@ class QuestManagerAI(DirectObject):
+         questEvent.setLevel(enemy.getLevel())
+         questEvent.setWeaponType(weaponType)
+ 
+-        return self.completeTaskState(avatar, questEvent)
++        result = self.completeTaskState(avatar, questEvent)
++
++        # DefeatNPC quests (named boss kills) wait for their own event.
++        try:
++            self.npcDefeated(avatar, enemy)
++        except Exception as e:
++            self.notify.warning('npcDefeated failed for avatar %s: %r' % (avatar.doId, e))
++
++        return result
+ 
+     def shipDefeated(self, avatar, ship):
+         # No AI code ever fired QuestEvent.ShipDefeated, so every sink / capture /
+@@ -609,6 +617,45 @@ class QuestManagerAI(DirectObject):
+ 
+         return self.completeTaskState(avatar, questEvent)
+ 
++    def dockedAtPort(self, avatar, island):
++        # No AI code ever fired QuestEvent.DockedAtPort, so MaroonNPC quests and the
++        # Deliver/Smuggle quests that ask for a port (no NPC) never progressed.
++        # The quest location of a port is the island's unique id.
++        questEvent = QuestEvent.DockedAtPort()
++        questEvent.setLocation(island.getUniqueId())
++
++        return self.completeTaskState(avatar, questEvent)
++
++    def npcDefeated(self, avatar, enemy):
++        # DefeatNPCTaskDNA.npcId is the world-data key of the (boss) spawn node. The enemy
++        # keeps it as spawnUid (a boss's uniqueId is '' so getUniqueId cannot be used).
++        npcId = getattr(enemy, 'spawnUid', '')
++        if not npcId:
++            spawnNode = enemy.getSpawnNode() if hasattr(enemy, 'getSpawnNode') else None
++            npcId = getattr(spawnNode, 'objKey', '')
++
++        if not npcId:
++            return
++
++        questEvent = QuestEvent.NPCDefeated()
++        parentObj = avatar.getParentObj()
++        if parentObj:
++            questEvent.setLocation(parentObj.getUniqueId())
++
++        questEvent.setNpcId(npcId)
++
++        return self.completeTaskState(avatar, questEvent)
++
++    def bossBattleCompleted(self, avatar, treasureMapId):
++        questEvent = QuestEvent.BossBattleCompleted()
++        parentObj = avatar.getParentObj()
++        if parentObj:
++            questEvent.setLocation(parentObj.getUniqueId())
++
++        questEvent.setTreasureMapId(treasureMapId)
++
++        return self.completeTaskState(avatar, questEvent)
++
+     def pokerHandWon(self, avatar, gold):
+         parentObj = avatar.getParentObj()
+         if not parentObj:
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index d26e900..7661f1d 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -947,9 +947,17 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         # send everyone on the ship to the island
+         for avatarId in self.crew:
+             avatar = self.air.doId2do.get(avatarId)
+-            assert(avatar is not None)
++            if avatar is None:
++                continue
++
+             self.d_sendCrewToIsland(avatar.doId, islandDoId, spawnPt)
+ 
++            # family server: docking is the event MaroonNPC and by-port Deliver quests wait for
++            try:
++                self.air.questMgr.dockedAtPort(avatar, island)
++            except Exception as e:
++                self.notify.warning('dockedAtPort quest event failed for avatar %s: %r' % (avatarId, e))
++
+     def d_sendCrewToIsland(self, avatarId, islandDoId, posH):
+         self.sendUpdateToAvatarId(avatarId, 'sendCrewToIsland', [islandDoId, posH])
+ 
+diff --git a/pirates/treasuremap/TreasureMapBlackPearlAI.py b/pirates/treasuremap/TreasureMapBlackPearlAI.py
+index 768a1a8..a465ec9 100644
+--- a/pirates/treasuremap/TreasureMapBlackPearlAI.py
++++ b/pirates/treasuremap/TreasureMapBlackPearlAI.py
+@@ -885,6 +885,11 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+             if avatar:
+                 # Award gold, reputation, loot
+                 playerResults.append([avatarId, 1])  # 1 = success
++                # family server: the Black Pearl quest (BossBattleTaskDNA) waits for this
++                try:
++                    self.air.questMgr.bossBattleCompleted(avatar, PiratesGlobals.GAME_STYLE_TM_BLACK_PEARL)
++                except Exception as e:
++                    self.notify.warning('bossBattleCompleted quest event failed for avatar %s: %r' % (avatarId, e))
+ 
+         self.d_setTMComplete(instanceResults, playerResults)
+ 
+diff --git a/pirates/uberdog/PirateInventoryAI.py b/pirates/uberdog/PirateInventoryAI.py
+index c81cbb4..0c123d7 100644
+--- a/pirates/uberdog/PirateInventoryAI.py
++++ b/pirates/uberdog/PirateInventoryAI.py
+@@ -120,8 +120,12 @@ class PirateInventoryAI(DistributedInventoryAI):
+         if not avatar:
+             return
+ 
+-        avatar.giveCardMessage(cardId)
+-        self.b_setStackQuantity(InventoryType.begin_Cards + cardId, amount)
++        # family server: callers pass the absolute stack id (BattleManagerAI draws it from
++        # begin_Cards..end_Cards), the old code added begin_Cards a second time (a stack
++        # that does not exist) and overwrote the count instead of adding to it.
++        stackType = cardId if cardId >= InventoryType.begin_Cards else InventoryType.begin_Cards + cardId
++        avatar.giveCardMessage(stackType)
++        self.b_setStackQuantity(stackType, self.getStackQuantity(stackType) + amount)
+ 
+     def setShipDoIdList(self, shipList):
+         return self.b_setDoIdListCategory(InventoryCategory.SHIPS, shipList)
+-- 
+2.53.0
+

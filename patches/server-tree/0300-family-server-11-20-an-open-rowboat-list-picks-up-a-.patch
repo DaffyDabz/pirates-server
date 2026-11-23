@@ -1,0 +1,220 @@
+From 5f427b7728e04e2dc9e84d6c9b89b6640bfc52df Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 17:48:16 -0800
+Subject: [PATCH 300/371] family server (11-20): an open rowboat list picks up
+ a friend's ship launched while it is open, and drops a ship that sinks or
+ docks (0384)
+
+Server: while a pirate's rowboat list is open, the dinghy checks the ships every 3 s and re-sends the lists only when
+a ship came or went; it stops when he closes it, picks a ship, logs out, the dinghy goes, or after 10 minutes.
+Game: each list replaces that tab's list. Old clients only gain the new ships, with no duplicates.
+Lane: boats. Tests: test_watch_ai.py, test_boats.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/piratesgui/ShipDeployPanel.py | 19 ++++++
+ pirates/world/DistributedDinghy.py    |  8 +++
+ pirates/world/DistributedDinghyAI.py  | 95 +++++++++++++++++++++++----
+ 3 files changed, 111 insertions(+), 11 deletions(-)
+
+diff --git a/pirates/piratesgui/ShipDeployPanel.py b/pirates/piratesgui/ShipDeployPanel.py
+index 81dad86..2d8a566 100644
+--- a/pirates/piratesgui/ShipDeployPanel.py
++++ b/pirates/piratesgui/ShipDeployPanel.py
+@@ -126,6 +126,25 @@ class ShipDeployPanel(ShipSelectionPanel):
+         ShipSelectionPanel.addFramePublic(self, shipFrame, index)
+         self._showOnOwnPage(shipFrame)
+ 
++    # family server (11-20): while the list is open the dinghy sends its lists again when a ship came or went. Each
++    # list is the whole list for its tab: a ship no longer in it (sunk, docked, gone) leaves that tab, and leaves the
++    # panel once no tab holds it. His own ships are never dropped here.
++    def keepOnly(self, pageId, shipIds):
++        others = [p for p in (self.CREW, self.FRIEND, self.GUILD, self.PUBLIC) if p != pageId]
++        for frame in list(self.shipFrames.get(pageId, [])):
++            if frame['shipId'] in shipIds or frame['shipType'] == ShipFrameDeploy.STOwn:
++                continue
++            self.shipFrames[pageId].remove(frame)
++            if [p for p in others if frame in self.shipFrames.get(p, [])]:
++                frame.detachNode()
++                self.repackScrollFrame()
++                self.refreshTabStates()
++            else:
++                self.removeFrame(frame)
++
++        if self.page != -1:
++            self.setPage(self.page)
++
+     def addPublicShip(self, shipInfo, callback):
+         (ownerId, shipId, shipHp, shipSp, cargo, crew, time, shipClass, shipName, siegeTeam, avatarName) = shipInfo
+         shipFrame = self._makeFrame(shipId, shipName, shipClass, ShipGlobals.getMastInfo(shipClass), shipHp, shipSp, cargo, crew, time, siegeTeam, avatarName, callback)
+diff --git a/pirates/world/DistributedDinghy.py b/pirates/world/DistributedDinghy.py
+index 46e83e1..afd1c69 100644
+--- a/pirates/world/DistributedDinghy.py
++++ b/pirates/world/DistributedDinghy.py
+@@ -222,24 +222,32 @@ class DistributedDinghy(DistributedInteractive):
+             for shipInfo in optionsSorted:
+                 self.shipSelection.addBandShip(shipInfo, self.bandShipSelected)
+ 
++            self.shipSelection.keepOnly(self.shipSelection.CREW, [shipInfo[1] for shipInfo in options])
++
+     def offerFriendOptions(self, options):
+         if self.shipSelection:
+             optionsSorted = sorted(options, key = itemgetter(5))
+             for shipInfo in optionsSorted:
+                 self.shipSelection.addFriendShip(shipInfo, self.friendShipSelected)
+ 
++            self.shipSelection.keepOnly(self.shipSelection.FRIEND, [shipInfo[1] for shipInfo in options])
++
+     def offerGuildOptions(self, options):
+         if self.shipSelection:
+             optionsSorted = sorted(options, key = itemgetter(5))
+             for shipInfo in optionsSorted:
+                 self.shipSelection.addGuildShip(shipInfo, self.guildShipSelected)
+ 
++            self.shipSelection.keepOnly(self.shipSelection.GUILD, [shipInfo[1] for shipInfo in options])
++
+     def offerPublicOptions(self, publicOptions):
+         if self.shipSelection:
+             publicOptionsSorted = sorted(publicOptions, key = itemgetter(5))
+             for shipInfo in publicOptionsSorted:
+                 self.shipSelection.addPublicShip(shipInfo, self.publicShipSelected)
+ 
++            self.shipSelection.keepOnly(self.shipSelection.PUBLIC, [shipInfo[1] for shipInfo in publicOptions])
++
+     def ownShipSelected(self, shipId, teamSpec = 0):
+         if localAvatar.getWorld().getParentObj().shardType == PiratesGlobals.SHARD_WELCOME:
+             base.cr.teleportMgr.initiateCrossShardDeploy(0, localAvatar.getParentObj().uniqueId, shipId, doEffect = False)
+diff --git a/pirates/world/DistributedDinghyAI.py b/pirates/world/DistributedDinghyAI.py
+index 07336f0..0a07620 100644
+--- a/pirates/world/DistributedDinghyAI.py
++++ b/pirates/world/DistributedDinghyAI.py
+@@ -1,3 +1,5 @@
++import time
++
+ from direct.directnotify import DirectNotifyGlobal
+ 
+ from pirates.distributed.DistributedInteractiveAI import DistributedInteractiveAI
+@@ -15,6 +17,7 @@ class DistributedDinghyAI(DistributedInteractiveAI):
+         self.interactRadius = 0
+         self.locationId = 0
+         self.siegeTeam = 0
++        self._shipWatch = {}
+ 
+     def getPublicShipInfo(self, shipDoId):
+         ship = self.air.doId2do.get(shipDoId)
+@@ -277,31 +280,101 @@ class DistributedDinghyAI(DistributedInteractiveAI):
+         self.sendAvatarToShip(avatar, ship)
+ 
+     def handlePostRequestInteraction(self, avatar):
++        offers = self._gatherOffers(avatar)
++        self._sendOffers(avatar.doId, offers, self._bandInfoChanged)
++        self._startShipWatch(avatar.doId, offers)
++
++    def _gatherOffers(self, avatar):
+         publicOptions = self.getOfferPublicOptions(avatar)
+         self._bandInfoChanged = False
+         bandOptions = self.getOfferBandOptions(avatar)
+-        self.d_offerPublicOptions(avatar.doId, publicOptions)
+-        # family server (11-19, 0376): the crew card's ship info goes out through the state server, the offer
+-        # straight to his game, so a card updated just now arrived after the offer and his game left the crewmate's
+-        # ship out (it checks the card). The offer then waits a second.
+-        if self._bandInfoChanged and bandOptions:
+-            taskMgr.doMethodLater(1.0, self._lateBandOffer, 'family-band-offer-%d-%d' % (self.doId, avatar.doId),
+-                extraArgs=[avatar.doId, bandOptions])
+-        else:
+-            self.d_offerBandOptions(avatar.doId, bandOptions)
+         offered = set(info[1] for info in publicOptions + bandOptions)
++        friendOptions = []
+         try:
+             friendOptions = self.getOfferFriendOptions(avatar, offered)
+-            self.d_offerFriendOptions(avatar.doId, friendOptions)
+             offered.update(info[1] for info in friendOptions)
+         except Exception as e:
+             self.notify.warning('friend ship offer for %s failed: %r' % (avatar.doId, e))
+ 
++        guildOptions = []
+         try:
+-            self.d_offerGuildOptions(avatar.doId, self.getOfferGuildOptions(avatar, offered))
++            guildOptions = self.getOfferGuildOptions(avatar, offered)
+         except Exception as e:
+             self.notify.warning('guild ship offer for %s failed: %r' % (avatar.doId, e))
+ 
++        return (publicOptions, bandOptions, friendOptions, guildOptions)
++
++    def _sendOffers(self, avatarId, offers, lateBand):
++        (publicOptions, bandOptions, friendOptions, guildOptions) = offers
++        self.d_offerPublicOptions(avatarId, publicOptions)
++        # family server (11-19, 0376): the crew card's ship info goes out through the state server, the offer
++        # straight to his game, so a card updated just now arrived after the offer and his game left the crewmate's
++        # ship out (it checks the card). The offer then waits a second.
++        if lateBand and bandOptions:
++            taskMgr.doMethodLater(1.0, self._lateBandOffer, 'family-band-offer-%d-%d' % (self.doId, avatarId),
++                extraArgs=[avatarId, bandOptions])
++        else:
++            self.d_offerBandOptions(avatarId, bandOptions)
++        self.d_offerFriendOptions(avatarId, friendOptions)
++        self.d_offerGuildOptions(avatarId, guildOptions)
++
++    # family server (11-20): the lists went out once, when he clicked the dinghy, so a ship launched while his list
++    # was open never showed up (and one that sank or docked stayed). While his list is open the dinghy looks again
++    # every few seconds and, when a ship came or went, sends the lists again; his game keeps each list as sent.
++    # A game without that part only gains the new ships (a ship offered twice reuses its frame).
++    SHIP_WATCH_PERIOD = 3.0
++    SHIP_WATCH_MAX = 600.0
++
++    def _offerKey(self, offers):
++        return tuple(tuple(sorted(info[1] for info in options)) for options in offers)
++
++    def _shipWatchName(self, avatarId):
++        return 'family-dinghy-ship-watch-%d-%d' % (self.doId, avatarId)
++
++    def _startShipWatch(self, avatarId, offers):
++        self._stopShipWatch(avatarId)
++        self._shipWatch[avatarId] = [self._offerKey(offers), time.monotonic()]
++        taskMgr.doMethodLater(self.SHIP_WATCH_PERIOD, self._shipWatchTask, self._shipWatchName(avatarId),
++            extraArgs=[avatarId], appendTask=True)
++
++    def _stopShipWatch(self, avatarId):
++        if self._shipWatch.pop(avatarId, None) is not None:
++            taskMgr.remove(self._shipWatchName(avatarId))
++
++    def _shipWatchTask(self, avatarId, task):
++        watch = self._shipWatch.get(avatarId)
++        avatar = self.air.doId2do.get(avatarId)
++        if watch is None or avatar is None or self.air.doId2do.get(self.doId) is not self or \
++                time.monotonic() - watch[1] > self.SHIP_WATCH_MAX:
++            self._shipWatch.pop(avatarId, None)
++            return task.done
++
++        try:
++            offers = self._gatherOffers(avatar)
++            key = self._offerKey(offers)
++            # a crew card updated just now reaches his game after an offer would; the next look sends it
++            if key != watch[0] and not self._bandInfoChanged:
++                watch[0] = key
++                self._sendOffers(avatarId, offers, False)
++        except Exception as e:
++            self.notify.warning('ship watch for %s failed: %r' % (avatarId, e))
++
++        return task.again
++
++    def handlePostRequestExit(self, avatar):
++        self._stopShipWatch(avatar.doId)
++
++    def demandExit(self):
++        avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
++        if avatar:
++            self._stopShipWatch(avatar.doId)
++        DistributedInteractiveAI.demandExit(self)
++
++    def delete(self):
++        for avatarId in list(self._shipWatch):
++            self._stopShipWatch(avatarId)
++        DistributedInteractiveAI.delete(self)
++
+     def handleRequestExit(self, avatar):
+         return self.ACCEPT
+ 
+-- 
+2.53.0
+

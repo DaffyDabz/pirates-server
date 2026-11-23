@@ -1,0 +1,576 @@
+From 8e596567d6f04bd4a55530f69b64e7d91884fd6d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 14:14:08 -0800
+Subject: [PATCH 013/371] Ships: repair spots, ship skills and ramming,
+ broadside timing
+
+- Repair spots on small player ships (L1-L3 hulls, 4 spots), want-ship-repair-spots prc switch;
+  only crew may use them, the spot frees when the user leaves or logs off.
+- Repair ticks every 2 s, faster with more crew repairing; purchaseRepairAll charges gold.
+- Ship skills: grantShipSkill / requestShipSkill (sender-checked), ramming with hull rammingPower,
+  25% backlash, ram kills credit the quest manager.
+- Broadside: flight time clamped 1-255, damage lands after the last ball's delay.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedShipBroadsideAI.py  |  13 +-
+ pirates/battle/WeaponBaseAI.py                |  16 +
+ pirates/ship/DistributedShipAI.py             | 385 ++++++++++++++++++
+ .../shipparts/DistributedShipRepairSpotAI.py  |  29 ++
+ 4 files changed, 439 insertions(+), 4 deletions(-)
+
+diff --git a/pirates/battle/DistributedShipBroadsideAI.py b/pirates/battle/DistributedShipBroadsideAI.py
+index d7ba01a..f6f17e4 100644
+--- a/pirates/battle/DistributedShipBroadsideAI.py
++++ b/pirates/battle/DistributedShipBroadsideAI.py
+@@ -161,7 +161,10 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+             
+             # Get distance for flight time calculation
+             dist = ship.getDistance(targetShip)
+-            flightTime = max(1.0, dist / 500.0)  # Approximate flight time
++            # pirates.dc declares doBroadside's flightTime and delays as uint8 with no
++            # divisor, so the packer rounds floats to whole numbers. Send whole seconds
++            # so the shells the clients draw and the damage below use the same value.
++            flightTime = max(1, min(255, int(round(dist / 500.0))))  # Approximate flight time
+             
+             # Get actual number of cannons on this side
+             if side == 0:
+@@ -181,7 +184,8 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+             hitsLanded = 0
+ 
+             for i in range(numCannons):
+-                delays.append(random.uniform(0, 0.5))
++                # whole seconds (uint8 in the dc): most cannons fire at once, some a second later
++                delays.append(random.choice((0, 0, 1)))
+                 if random.random() < hitChance:
+                     hitsLanded += 1
+                     spreadX = random.gauss(0, 8)
+@@ -196,8 +200,9 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+             self.doBroadside(side, delays, hitPosList, zoneId, flightTime)
+ 
+             # Apply damage directly on server
+-            # AI broadsides apply damage after a delay matching flight time
+-            self._applyBroadsideDamage(targetShip, numCannons, dist, flightTime, hitsLanded)
++            # AI broadsides apply damage when the clients' shells land: the cannon's
++            # own delay, the client's 0.5 s wind-up, then the flight time
++            self._applyBroadsideDamage(targetShip, numCannons, dist, flightTime + 0.5 + max(delays), hitsLanded)
+             
+             return True
+             
+diff --git a/pirates/battle/WeaponBaseAI.py b/pirates/battle/WeaponBaseAI.py
+index d3a9549..2288f5c 100644
+--- a/pirates/battle/WeaponBaseAI.py
++++ b/pirates/battle/WeaponBaseAI.py
+@@ -120,6 +120,22 @@ class WeaponBaseAI(WeaponBaseBase):
+         # from the target manager so the avatar can use the skill again...
+         self.air.targetMgr.removeProjectile(avatar.doId, skillId, ammoSkillId)
+ 
++    def requestShipSkill(self, skillId, ammoSkillId, clientResult, targetId, timestamp):
++        # Ship skills (Full Sail, Come About, Ramming Speed) are cast by the
++        # captain on the ship, and the client sends the ship's doId as the target.
++        # The ship decides whether the skill is allowed and applies the buff, which
++        # reaches every client through the ship's setSkillEffects.
++        avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
++        if not avatar or avatar is not self:
++            return
++
++        ship = self.air.doId2do.get(targetId)
++        from pirates.ship.DistributedShipAI import DistributedShipAI
++        if not isinstance(ship, DistributedShipAI):
++            return
++
++        ship.grantShipSkill(avatar, skillId)
++
+     def useTargetedSkill(self, avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos, charge):
+         targetResult = self.air.battleMgr.getTargetedSkillResult(avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos, charge)
+         if not targetResult:
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index e433899..d26e900 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -1,8 +1,12 @@
++import inspect
++import math
++
+ from direct.directnotify import DirectNotifyGlobal
+ from direct.distributed.ClockDelta import *
+ 
+ from pirates.battle.Teamable import Teamable
+ from pirates.battle import WeaponGlobals
++from pirates.ship import ShipBalance
+ from pirates.ship import ShipGlobals
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.world.DistributedOceanGridAI import DistributedOceanGridAI
+@@ -16,6 +20,7 @@ from pirates.shipparts.DistributedSailAI import DistributedSailAI
+ from pirates.shipparts.DistributedCabinAI import DistributedCabinAI
+ from pirates.shipparts.DistributedHullAI import DistributedHullAI
+ from pirates.shipparts.DistributedMastAI import DistributedMastAI
++from pirates.shipparts.DistributedShipRepairSpotAI import DistributedShipRepairSpotAI
+ from pirates.battle.DistributedShipBroadsideAI import DistributedShipBroadsideAI
+ from pirates.battle.DistributedShipCannonAI import DistributedShipCannonAI
+ from pirates.world.DistributedIslandAI import DistributedIslandAI
+@@ -24,6 +29,31 @@ from pirates.ship.GameFSMShipAI import GameFSMShipAI
+ from pirates.uberdog.UberDogGlobals import InventoryCategory, InventoryType
+ 
+ 
++# Ship skills the captain casts on the ship (the client sends requestShipSkill with the
++# ship as target): skill -> the buff the ship gets. Duration and recharge come from the
++# skill table in WeaponGlobals. OpenFire, TakeCover and PowerRecharge are not granted yet.
++SHIP_SKILL_BUFFS = {
++    InventoryType.SailFullSail: WeaponGlobals.C_FULLSAIL,
++    InventoryType.SailComeAbout: WeaponGlobals.C_COMEABOUT,
++    InventoryType.SailRammingSpeed: WeaponGlobals.C_RAM,
++}
++DEFAULT_SHIP_SKILL_SECONDS = 10.0
++
++# Repair at sea. The client builds repair spots (and the wood piles) only for these nine
++# player ship classes: PVPGlobals.ShipClass2repairLocators, which is not imported here
++# because that module needs the client's base at import time.
++REPAIR_SPOT_SHIP_CLASSES = (
++    ShipGlobals.INTERCEPTORL1, ShipGlobals.INTERCEPTORL2, ShipGlobals.INTERCEPTORL3,
++    ShipGlobals.MERCHANTL1, ShipGlobals.MERCHANTL2, ShipGlobals.MERCHANTL3,
++    ShipGlobals.WARSHIPL1, ShipGlobals.WARSHIPL2, ShipGlobals.WARSHIPL3)
++REPAIR_SPOT_COUNT = 4  # repair_spot_0 .. repair_spot_3 on every ship model
++# same as PVPGlobals.RepairRateMultipliers: one repairer, two, three, four
++REPAIR_RATE_MULTIPLIERS = (1.0, 2.0, 3.0, 4.0)
++
++# A ram costs the rammer this share of the damage it deals
++RAM_BACKLASH = 0.25
++
++
+ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectAI, Teamable):
+     notify = DirectNotifyGlobal.directNotify.newCategory('DistributedShipAI')
+ 
+@@ -72,6 +102,8 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         self.cannons = []
+         self.broadside = None
+         self.steeringWheel = None
++        self.repairSpots = []
++        self._shipSkillReadyAt = {}
+ 
+     def setSkillEffects(self, skillEffects):
+         self.skillEffects = skillEffects
+@@ -422,6 +454,16 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         self.steeringWheel.setShipId(self.doId)
+         self.generateChildWithRequired(self.steeringWheel, PiratesGlobals.ShipZoneOnDeck)
+ 
++        # the client's ShipRepairSpotMgr only exists on player ships, and it only knows
++        # the classes in REPAIR_SPOT_SHIP_CLASSES
++        if self._wantsRepairSpots():
++            for index in range(REPAIR_SPOT_COUNT):
++                spot = DistributedShipRepairSpotAI(self.air)
++                spot.setShipId(self.doId)
++                spot.setIndex(index)
++                self.generateChildWithRequired(spot, PiratesGlobals.ShipZoneOnDeck)
++                self.repairSpots.append(spot)
++
+     def setSailAnimState(self, animState):
+         for sail in self.sails:
+             sail.b_setAnimState(animState)
+@@ -461,6 +503,10 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         assert(isinstance(avatar, DistributedPlayerPirateAI))
+         self.ignore(avatar.getDeleteEvent())
+         self.removeCrewMember(avatar)
++        for spot in self.repairSpots:
++            if spot.userId == avatar.doId:
++                spot.b_setUserId(0)
++
+         avatar.b_setShipId(0)
+         avatar.b_setActiveShipId(0)
+         avatar.b_setCrewShipId(0)
+@@ -518,6 +564,18 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         if comboDiary is not None and getattr(comboDiary, 'owner', None) is self:
+             comboDiary.owner = None
+ 
++        # the delete() near the top of this class is shadowed by this one, so the
++        # skill effect timers and the repair work are cleaned up here
++        for taskName in list(self._skillEffectTasks.keys()):
++            taskMgr.remove(taskName)
++
++        self._skillEffectTasks = {}
++        taskMgr.remove(self.uniqueName('ship-repair-tick'))
++        for spot in self.repairSpots:
++            spot.requestDelete()
++
++        self.repairSpots = []
++
+         if self.steeringWheel:
+             self.steeringWheel.requestDelete()
+             self.steeringWheel = None
+@@ -1034,6 +1092,333 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+ 
+         self.sendUpdate('recordSkillEvent', [skillId, ammoSkillId])
+ 
++    def _isAfloat(self):
++        if self.hp <= 0:
++            return False
++
++        return self.gameState[0] not in ('Sinking', 'Sunk', 'Off', 'PutAway')
++
++    # ------------------------------------------------------------------
++    # Ship skills: Full Sail, Come About and Ramming Speed
++    # ------------------------------------------------------------------
++
++    def grantShipSkill(self, avatar, skillId):
++        # Called from WeaponBaseAI.requestShipSkill. Nothing sent setSkillEffects for a
++        # ship skill before, so no ship ever got the Ramming Speed buff the client
++        # needs before it sends requestShipRam.
++        effectId = SHIP_SKILL_BUFFS.get(skillId)
++        if effectId is None:
++            return False
++
++        if avatar.doId not in self.crew or not self._isAfloat():
++            return False
++
++        now = globalClock.getFrameTime()
++        if now < self._shipSkillReadyAt.get(skillId, 0.0):
++            return False
++
++        try:
++            duration = WeaponGlobals.getAttackDuration(skillId)
++        except KeyError:
++            duration = 0
++
++        try:
++            recharge = WeaponGlobals.getAttackRechargeTime(skillId)
++        except KeyError:
++            recharge = 0.0
++
++        duration = int(max(1, round(duration or DEFAULT_SHIP_SKILL_SECONDS)))
++        # the client times its own recharge, so leave it a second of slack
++        self._shipSkillReadyAt[skillId] = now + max(0.0, recharge - 1.0)
++        self.addSkillEffect(effectId, duration, avatar.doId)
++        return True
++
++    def _consumeSkillEffect(self, effectId):
++        # remove one buff right away, and the timer that would have removed it later
++        for skillEffect in list(self.skillEffects):
++            if skillEffect[0] != effectId:
++                continue
++
++            self.skillEffects.remove(skillEffect)
++            taskName = self.uniqueName('ship-skill-effect-%s-%s' % (effectId, skillEffect[3]))
++            taskMgr.remove(taskName)
++            self._skillEffectTasks.pop(taskName, None)
++            self.d_setSkillEffects(self.skillEffects)
++            return True
++
++        return False
++
++    # ------------------------------------------------------------------
++    # Repair at sea
++    # ------------------------------------------------------------------
++
++    def _wantsRepairSpots(self):
++        return (not self.npcShip
++            and self.shipClass in REPAIR_SPOT_SHIP_CLASSES
++            and config.GetBool('want-ship-repair-spots', True))
++
++    def canUseRepairSpot(self, avatar, spot):
++        # Called by DistributedShipRepairSpotAI.handleRequestInteraction. The client
++        # sends requestInteraction whenever the avatar walks into a spot, so every rule
++        # the client shows a warning for is enforced here too.
++        if spot not in self.repairSpots or avatar.doId not in self.crew:
++            return False
++
++        if not self._isAfloat():
++            return False
++
++        # CannotRepairRepairedShipWarning
++        if self.hp >= self.maxHp and self.sp >= self.maxSp:
++            return False
++
++        # CannotRepairWhileWheelOccupiedWarning
++        if self.steeringWheel and self.steeringWheel.userId > 0:
++            return False
++
++        # someone else is on the spot (a user who left the crew is not holding it)
++        if spot.userId and spot.userId != avatar.doId and spot.userId in self.crew:
++            return False
++
++        for other in self.repairSpots:
++            if other is not spot and other.userId == avatar.doId:
++                return False
++
++        return True
++
++    def repairSpotsChanged(self):
++        # a spot was taken or left: make sure the healing task is running
++        if self._activeRepairers():
++            self._startRepairTask()
++
++    def _activeRepairers(self):
++        return [spot for spot in self.repairSpots if spot.userId and spot.userId in self.crew]
++
++    def _startRepairTask(self):
++        taskName = self.uniqueName('ship-repair-tick')
++        if taskMgr.hasTaskNamed(taskName):
++            return
++
++        period = max(0.5, float(ShipBalance.RepairPeriod.getValue()))
++        taskMgr.doMethodLater(period, self._repairTick, taskName)
++
++    def _repairTick(self, task):
++        repairers = self._activeRepairers()
++        if not repairers or not self._isAfloat():
++            return task.done
++
++        # same scale as the client's PVPGlobals: one repairer heals RepairRate per
++        # RepairPeriod, more repairers heal faster
++        multiplier = REPAIR_RATE_MULTIPLIERS[min(len(repairers), len(REPAIR_RATE_MULTIPLIERS)) - 1]
++        self._repairByAmount(float(ShipBalance.RepairRate.getValue()) * multiplier)
++        # keep ticking while somebody stays on a spot, so damage taken after the ship
++        # was fully repaired is healed too
++        return task.again
++
++    def _repairByAmount(self, amount):
++        amount = int(math.ceil(amount))
++        if amount <= 0 or self.maxHp <= 0:
++            return
++
++        if self.hp + amount >= self.maxHp:
++            self._restoreAll()
++            return
++
++        fraction = amount / float(self.maxHp)
++        self.b_setHp(self.hp + amount)
++        if self.sp < self.maxSp:
++            self.b_setSp(min(self.maxSp, self.sp + int(math.ceil(self.maxSp * fraction))))
++
++        self._healParts(fraction)
++
++    def _restoreAll(self):
++        # ship hull points, ship sail points, hull and mast sections, and every sail
++        self._healParts(1.0)
++        if self.sp < self.maxSp:
++            self.b_setSp(self.maxSp)
++
++        if self.hp < self.maxHp:
++            self.b_setHp(self.maxHp)
++
++    def _healParts(self, fraction):
++        # every part heals the same share of its own maximum as the ship did
++        if self.hull:
++            self._healArrayHp(self.hull, fraction)
++
++        for mast in self.masts:
++            self._healArrayHp(mast, fraction)
++
++        for sail in self.sails:
++            self._healSail(sail, fraction)
++
++    def _healArrayHp(self, part, fraction):
++        maxArrayHp = part.getMaxArrayHp()
++        arrayHp = list(part.getArrayHp())
++        changed = False
++        for index in range(min(len(arrayHp), len(maxArrayHp))):
++            if arrayHp[index] >= maxArrayHp[index]:
++                continue
++
++            arrayHp[index] = min(maxArrayHp[index], arrayHp[index] + int(math.ceil(maxArrayHp[index] * fraction)))
++            changed = True
++
++        if changed:
++            part.b_setArrayHp(arrayHp)
++
++    def _healSail(self, sail, fraction):
++        if sail.maxHp <= 0:
++            return
++
++        if sail.hp >= sail.maxHp and sail.animState != 'Falling':
++            return
++
++        # DistributedSailAI.setHp does not keep hp under maxHp, so clamp here
++        newHp = min(sail.maxHp, sail.hp + int(math.ceil(sail.maxHp * fraction)))
++        if newHp != sail.hp:
++            sail.b_setHp(newHp)
++
++        # the client sail respawns when its hp reaches the maximum, so a fallen
++        # sail is put back to its stowed state at the same moment
++        if newHp >= sail.maxHp and sail.animState == 'Falling':
++            sail.b_setAnimState('TiedUp')
++
++    def purchaseRepairAll(self):
++        # HighSeasScoreboard.payForShipRepairs -> DistributedShip.requestRepairAll
++        avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
++        if not avatar or avatar.doId not in self.crew:
++            return
++
++        if not self._isAfloat():
++            return
++
++        cost = ShipGlobals.calcRepairCost(self.maxHp, self.hp, self.maxSp, self.sp,
++            ShipGlobals.getModelClass(self.shipClass))
++
++        if cost > 0:
++            inventory = self.air.inventoryManager.getInventory(avatar.doId)
++            if inventory is None:
++                return
++
++            gold = inventory.getGoldInPocket()
++            if gold < cost:
++                self.notify.debug('Avatar %d cannot afford to repair ship %d; cost=%d gold=%d' % (
++                    avatar.doId, self.doId, cost, gold))
++
++                return
++
++            inventory.setGoldInPocket(gold - cost)
++
++        self._restoreAll()
++        self.air.writeServerEvent('ship-repair-all', shipId=self.doId, avatarId=avatar.doId, cost=cost)
++
++    # ------------------------------------------------------------------
++    # Ramming
++    # ------------------------------------------------------------------
++
++    def _getRamTeam(self):
++        # player ships are on the player team, NPC ships on their own team
++        if not self.npcShip:
++            return PiratesGlobals.PLAYER_TEAM
++
++        if self.baseTeam != ShipGlobals.INVALID_TEAM:
++            return self.baseTeam
++
++        return ShipGlobals.getShipTeam(self.shipClass)
++
++    def _canRam(self, target):
++        myTeam = self._getRamTeam()
++        theirTeam = target._getRamTeam()
++        if ShipGlobals.INVALID_TEAM in (myTeam, theirTeam):
++            return False
++
++        # in a PVP match only the other team's ships can be rammed
++        myPvpTeam = self.getPVPTeam()
++        theirPvpTeam = target.getPVPTeam()
++        if myPvpTeam and theirPvpTeam:
++            return myPvpTeam != theirPvpTeam
++
++        from pirates.piratesbase import TeamUtils
++        return TeamUtils.teamStatus(myTeam, theirTeam) == PiratesGlobals.ENEMY
++
++    def _getRamDamage(self):
++        stats = ShipGlobals.getHullStats(self.shipClass) or ShipGlobals.getHullStats(
++            ShipGlobals.getModelClass(self.shipClass)) or {}
++
++        return max(1, int(stats.get('rammingPower', 1)))
++
++    def receiveRamDamage(self, damage, attackerShipId):
++        if damage <= 0 or not self._isAfloat() or self.hasSpawnBuff():
++            return
++
++        damage = int(damage)
++        takeDamage = getattr(self, 'takeDamage', None)
++        if takeDamage is not None:
++            # NPC ships track the attacker and sink themselves. The ram damage is
++            # already final, so skip the NPC input modifier where takeDamage has one
++            # (BlackPearlShipAI.takeDamage does not).
++            if 'applyModifiers' in inspect.signature(takeDamage).parameters:
++                takeDamage(damage, attackerShipId, applyModifiers=False)
++            else:
++                takeDamage(damage, attackerShipId)
++
++            return
++
++        # setHp sinks the ship at 0
++        self.b_setHp(max(0, self.hp - damage))
++        onDamageReceived = getattr(getattr(self, 'gameFSM', None), 'onDamageReceived', None)
++        if onDamageReceived is not None:
++            onDamageReceived(attackerShipId, damage)
++
++    def requestShipRam(self, targetId, pos, timestamp):
++        # Sent by the client of the ramming ship while it holds the Ramming Speed buff;
++        # it removes the buff on its own side. The ship position the AI knows is not
++        # reliable, so there is no distance check: the client's contact report is
++        # trusted, but only for an enemy ship, once per buff.
++        avatar = self.air.doId2do.get(self.air.getAvatarIdFromSender())
++        if not avatar or avatar.doId not in self.crew:
++            return
++
++        if not self.hasSkillEffect(WeaponGlobals.C_RAM):
++            return
++
++        target = self.air.doId2do.get(targetId)
++        if not isinstance(target, DistributedShipAI) or target is self:
++            return
++
++        if not self._isAfloat() or not target._isAfloat() or target.hasSpawnBuff():
++            return
++
++        if not self._canRam(target):
++            return
++
++        self._consumeSkillEffect(WeaponGlobals.C_RAM)
++
++        damage = self._getRamDamage()
++        targetWasAfloat = target._isAfloat()
++        target.receiveRamDamage(damage, self.doId)
++
++        # the ram's impact effect: the contact point is in the rammer's frame, so the
++        # target plays its own effect at its bow
++        try:
++            ramPos = tuple(pos)[:3]
++            if len(ramPos) != 3:
++                ramPos = (0, 0, 0)
++        except TypeError:
++            ramPos = (0, 0, 0)
++
++        self.sendUpdate('useShipRam', [ramPos])
++        target.sendUpdate('useShipRam', [(0, 0, 0)])
++
++        # a ram hurts the rammer too, but never sinks it
++        backlash = int(damage * RAM_BACKLASH)
++        if backlash > 0 and self._isAfloat():
++            self.b_setHp(max(1, self.hp - backlash))
++
++        if targetWasAfloat and not target._isAfloat():
++            try:
++                self.air.questMgr.shipDefeated(avatar, target)
++            except Exception as e:
++                self.notify.warning('Could not credit ship defeat for ram: %s' % str(e))
++
+     def generateChildWithRequired(self, do, zoneId, optionalFields=[]):
+         self.generateChildWithRequiredAndId(do, self.air.allocateChannel(), self.doId, zoneId, optionalFields)
+ 
+diff --git a/pirates/shipparts/DistributedShipRepairSpotAI.py b/pirates/shipparts/DistributedShipRepairSpotAI.py
+index 16c1591..598aa30 100644
+--- a/pirates/shipparts/DistributedShipRepairSpotAI.py
++++ b/pirates/shipparts/DistributedShipRepairSpotAI.py
+@@ -24,6 +24,35 @@ class DistributedShipRepairSpotAI(DistributedInteractiveAI):
+     def getShipId(self):
+         return self.shipId
+ 
++    def getShip(self):
++        return self.air.doId2do.get(self.shipId)
++
++    def handleRequestInteraction(self, avatar, interactType, instant):
++        # the ship decides: crew only, something to repair, wheel free, spot free
++        ship = self.getShip()
++        if ship is None or not ship.canUseRepairSpot(avatar, self):
++            return self.DENY
++
++        return self.ACCEPT
++
++    def handlePostRequestInteraction(self, avatar):
++        # the user id is already set, so the ship can start healing
++        ship = self.getShip()
++        if ship is not None:
++            ship.repairSpotsChanged()
++
++    def handleRequestExit(self, avatar):
++        # only the avatar using the spot can leave it (a free spot has nothing to deny)
++        if self.userId and avatar.doId != self.userId:
++            return self.DENY
++
++        return self.ACCEPT
++
++    def handlePostRequestExit(self, avatar):
++        ship = self.getShip()
++        if ship is not None:
++            ship.repairSpotsChanged()
++
+     def setIndex(self, index):
+         self.index = index
+ 
+-- 
+2.53.0
+

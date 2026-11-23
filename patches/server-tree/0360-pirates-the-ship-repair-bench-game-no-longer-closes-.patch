@@ -1,0 +1,41 @@
+From dd880170699c384b0ae7c841efb7d5350f389d40 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Sat, 21 Nov 2026 22:10:18 -0800
+Subject: [PATCH 360/371] pirates: the ship repair bench game no longer closes
+ the game when it opens (the repair window asked the GUI manager for a minimap
+ this client does not have; the finish step lacked its Sequence/Wait/Func
+ import), client code only (client patch 57 = v500, no DC change, no restart)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/RepairGameFSM.py | 1 +
+ pirates/minigame/RepairGameGUI.py | 2 --
+ 2 files changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/pirates/minigame/RepairGameFSM.py b/pirates/minigame/RepairGameFSM.py
+index fbb86cc..d2ab7da 100644
+--- a/pirates/minigame/RepairGameFSM.py
++++ b/pirates/minigame/RepairGameFSM.py
+@@ -1,5 +1,6 @@
+ from pirates.minigame.MinigameFSM import MinigameFSM
+ from direct.directnotify import DirectNotifyGlobal
++from direct.interval.IntervalGlobal import Sequence, Wait, Func
+ 
+ class RepairGameFSM(MinigameFSM):
+ 
+diff --git a/pirates/minigame/RepairGameGUI.py b/pirates/minigame/RepairGameGUI.py
+index 553e32d..9eb03c3 100644
+--- a/pirates/minigame/RepairGameGUI.py
++++ b/pirates/minigame/RepairGameGUI.py
+@@ -27,8 +27,6 @@ class RepairGameGUI(DirectFrame):
+         self.accept('clientLogout', self.handleExitGame)
+         if base.localAvatar.guiMgr.seaChestActive:
+             base.localAvatar.guiMgr.hideSeaChest()
+-        if base.localAvatar.guiMgr.minimap:
+-            base.localAvatar.guiMgr.hideMinimap()
+         self.accept('seachestOpened', self.handleExitGame)
+         self.accept('avatarDetailsOpened', self.handleExitGame)
+         self.accept('minimapOpened', self.handleExitGame)
+-- 
+2.53.0
+

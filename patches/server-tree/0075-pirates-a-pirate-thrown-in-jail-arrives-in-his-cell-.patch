@@ -1,0 +1,33 @@
+From 1868b0bb15fb539330d885d7b1c3013b9118fd54 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 14:39:04 -0800
+Subject: [PATCH 075/371] pirates: a pirate thrown in jail arrives in his cell
+ instead of his trip being aborted, as server-tree patch 0089 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pirate/PlayerPirateGameFSMAI.py | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/pirate/PlayerPirateGameFSMAI.py b/pirates/pirate/PlayerPirateGameFSMAI.py
+index 023039d..232d78f 100644
+--- a/pirates/pirate/PlayerPirateGameFSMAI.py
++++ b/pirates/pirate/PlayerPirateGameFSMAI.py
+@@ -112,8 +112,13 @@ class PlayerPirateGameFSMAI(BattleAvatarGameFSMAI):
+         # this is where the avatar will spawn in the jail cell...
+         parentWorld = parentObj.getParentObj()
+         (x, y, z, h) = parentWorld.getSpawnPt(parentObj.getUniqueId(), self.avatar.getJailCellIndex())
++        # the client reads parents as [area, zone, parent] (DistributedTeleportMgr.
++        # createSpawnInterests opens setInterest(parents[2], parents[1])), the same
++        # order patch 0075 gave DistributedTeleportHandlerAI. Sent as [area, parent,
++        # zone], a pirate thrown in a jail his client had not loaded yet had his
++        # trip aborted ("does not exist locally, aborting teleport")
+         parentWorld.d_setSpawnInfo(self.avatar.doId, x, y, z, h, 0, [parentObj.doId,
+-            parentObj.parentId, parentObj.zoneId])
++            parentObj.zoneId, parentObj.parentId])
+ 
+     def exitThrownInJail(self):
+         pass
+-- 
+2.53.0
+

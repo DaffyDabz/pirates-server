@@ -1,0 +1,151 @@
+From e22b416bea3d3cfd04de873ab05075ddb96bbd21 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 02:47:20 -0800
+Subject: [PATCH 220/371] pirates: the Sea Battle can call a truce, and admins
+ get siege magic words (0296)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/pvp/SeaBattleManagerAI.py | 101 ++++++++++++++++++++++++++++++
+ 1 file changed, 101 insertions(+)
+
+diff --git a/pirates/pvp/SeaBattleManagerAI.py b/pirates/pvp/SeaBattleManagerAI.py
+index a8bfabb..121f17c 100644
+--- a/pirates/pvp/SeaBattleManagerAI.py
++++ b/pirates/pvp/SeaBattleManagerAI.py
+@@ -22,6 +22,7 @@ from direct.task import Task
+ from pirates.battle import WeaponGlobals
+ from pirates.piratesbase import PiratesGlobals
+ from pirates.quest import QuestEvent
++from otp.ai.MagicWordGlobal import *
+ from pirates.ship import ShipGlobals
+ from pirates.uberdog.UberDogGlobals import InventoryType
+ 
+@@ -102,6 +103,7 @@ class SeaBattleManagerAI:
+         self.balanceMargin = max(0, config.GetInt('sea-battle-balance-margin', 0))
+         # 0295: the harbour guard's seconds (0 = off): the ship's spawn shield, which the client already shows
+         self.guardSeconds = max(0.0, config.GetFloat('sea-battle-harbour-guard', 30.0))
++        self.truce = False  # 0296: ~siegeTruce: no team ship can hurt another
+         self.siegeManager = None
+         self.announcer = None
+         self._taskName = 'seaBattleSync-%d' % id(self)
+@@ -351,6 +353,8 @@ class SeaBattleManagerAI:
+         if mine and theirs:
+             if mine == theirs:
+                 return False
++            if self.truce:
++                return False  # 0296: an admin's truce
+             # 0295: a ship under the harbour guard can't be hurt, and firing on the other team ends your own guard
+             if self.isGuarded(targetShip):
+                 return False
+@@ -601,6 +605,57 @@ class SeaBattleManagerAI:
+         except Exception as e:
+             self.notify.warning('quest event for %s failed: %s' % (avatar.doId, e))
+ 
++    # ---- admin (0296: the magic words below)
++    def statusText(self):
++        return ('Sea Battle: score French %d, Spanish %d (first to %d). Ships: French %d, Spanish %d (%d each at most). '
++                'Pirates: French %d, Spanish %d. Room: French %s, Spanish %s. Harbour guard %ds.%s') % (
++            self.scores[FRENCH], self.scores[SPANISH], self.scoreLimit,
++            self.teamShipCount(FRENCH), self.teamShipCount(SPANISH), self.maxShipsPerTeam,
++            self.teamPirateCount(FRENCH), self.teamPirateCount(SPANISH),
++            'no' if self.isTeamFull(FRENCH) else 'yes', 'no' if self.isTeamFull(SPANISH) else 'yes',
++            self.guardSeconds, ' TRUCE.' if self.truce else '')
++
++    def adminJoin(self, avatar, side):
++        side = str(side).strip().lower()
++        ship = avatar.getParentObj()
++        if not (self.isPlayerShip(ship) and ship.getOwnerId() == avatar.doId):
++            ship = None  # only his own ship comes with him
++
++        if side in ('none', 'off', 'leave', '0'):
++            if ship is not None and (ship.doId in self.ships or ship.getSiegeTeam()):
++                self.leaveShip(ship)
++            self.leaveAvatar(avatar)
++            return 'You are out of the Sea Battle.'
++
++        team = {'french': FRENCH, 'f': FRENCH, '1': FRENCH, 'spanish': SPANISH, 's': SPANISH, '2': SPANISH}.get(side)
++        if team is None:
++            return 'Say french, spanish or none.'
++        if ship is not None:
++            self.joinShip(avatar, ship, team)
++            return 'You and your ship sail for the %s.' % TEAM_NAMES[team]
++        self.joinAvatar(avatar, team)
++        return 'You are on the %s side: launch or board a ship to fight.' % TEAM_NAMES[team]
++
++    def resetBattle(self):
++        self.scores = {FRENCH: 0, SPANISH: 0}
++        for shipId in list(self.bounties):
++            ship = self.air.doId2do.get(shipId)
++            if ship is not None:
++                self.sendBounty(ship, 0)
++        self.bounties.clear()
++        self.streaks.clear()
++        self.recentHits.clear()
++        self.tellAll('The Sea Battle starts again: French 0, Spanish 0.')
++
++    def setTruce(self, on):
++        self.truce = bool(on)
++        if self.siegeManager is not None:
++            self.siegeManager.b_setPvpEnabled(not self.truce)
++        if self.truce:
++            self.tellAll('Truce! No ship can be hurt in the Sea Battle until it ends.')
++        else:
++            self.tellAll('The truce is over: the Sea Battle is on again!')
++
+     # ---- team chat (SiegeManagerAI passes it here)
+     def teamChat(self, sender, message, chatFlags, kind):
+         team = self.teamOf(sender)
+@@ -620,3 +675,49 @@ class SeaBattleManagerAI:
+                 self.siegeManager.sendUpdateToAvatarId(avId, field, [sender.doId, message, chatFlags, 0, sender.getName()])
+             count += 1
+         return count
++
++
++# ---- magic words (0296)
++def _invokerSeaBattle():
++    invoker = spellbook.getInvoker()
++    air = getattr(invoker, 'air', None) or spellbook.getManager().air
++    return invoker, getSeaBattleManager(air)
++
++
++@magicWord(category=CATEGORY_SYSTEM_ADMIN)
++def siegeStatus():
++    """The Sea Battle: the score, each team's ships and pirates, which teams have room."""
++    invoker, mgr = _invokerSeaBattle()
++    if mgr is None:
++        return 'The Sea Battle is off (want-sea-battle 0).'
++    return mgr.statusText()
++
++
++@magicWord(category=CATEGORY_SYSTEM_ADMIN, types=[str])
++def siegeJoin(side='french'):
++    """Put yourself, and your own ship if you stand on it, on the french or spanish side, or none."""
++    invoker, mgr = _invokerSeaBattle()
++    if mgr is None:
++        return 'The Sea Battle is off (want-sea-battle 0).'
++    return mgr.adminJoin(invoker, side)
++
++
++@magicWord(category=CATEGORY_SYSTEM_ADMIN)
++def siegeReset():
++    """Start the Sea Battle's score again at 0 to 0 (streaks and bounties too)."""
++    invoker, mgr = _invokerSeaBattle()
++    if mgr is None:
++        return 'The Sea Battle is off (want-sea-battle 0).'
++    mgr.resetBattle()
++    return 'The Sea Battle score is 0 to 0.'
++
++
++@magicWord(category=CATEGORY_SYSTEM_ADMIN, types=[str])
++def siegeTruce(state='on'):
++    """on: no Sea Battle ship can hurt another; off: the battle is on again."""
++    invoker, mgr = _invokerSeaBattle()
++    if mgr is None:
++        return 'The Sea Battle is off (want-sea-battle 0).'
++    on = str(state).strip().lower() not in ('off', '0', 'no', 'false')
++    mgr.setTruce(on)
++    return 'Truce %s.' % ('on' if on else 'off')
+-- 
+2.53.0
+

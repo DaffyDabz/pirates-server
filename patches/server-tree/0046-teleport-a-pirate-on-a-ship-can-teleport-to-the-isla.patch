@@ -1,0 +1,98 @@
+From 101f87f0df9986a570816f374cb1d771d3255d65 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 22:18:06 -0800
+Subject: [PATCH 046/371] teleport: a pirate on a ship can teleport to the
+ island he asked for
+
+The teleport manager took the world to be the parent of the pirate's
+parent. On a ship that is the ocean grid (ship -> ocean grid -> world),
+so every teleport asked from a ship stopped with "Cannot initiate
+teleport for unknown world" (the 0037 sink fix found it).
+
+Boarding a ship also clears the pirate's current island, and the login
+rule "no current island = send him to his return location" then sent a
+pirate at sea who asked for a place (an island, a treasure map island)
+to his return location instead.
+
+- getStandingWorld walks up the pirate's parents to the first world
+  (island -> world, ship -> ocean grid -> world); None when he stands
+  in no world, as when logging in.
+- getMainWorld finds the main world by its type.
+- A teleport with no world named uses the world he stands in, or the
+  main world when he stands in none (it raised on a pirate with no
+  parent before).
+- The return-location rule is kept for logging in, and skipped when he
+  stands in a world and asked for a place.
+
+Teleports that name a world are unchanged: the clients that ask for
+INSTANCE_MAIN 'mainWorld' (the main world's file is 'piratesWorld')
+still find none, as the Black Pearl end relies on that while the server
+sends the pirates home (0039).
+
+AI only; needs a server restart, no client files.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/instance/DistributedTeleportMgrAI.py | 32 ++++++++++++++++++--
+ 1 file changed, 30 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/instance/DistributedTeleportMgrAI.py b/pirates/instance/DistributedTeleportMgrAI.py
+index 8f1e9bd..6374bd6 100644
+--- a/pirates/instance/DistributedTeleportMgrAI.py
++++ b/pirates/instance/DistributedTeleportMgrAI.py
+@@ -130,6 +130,27 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+ 
+         return names
+ 
++    def getStandingWorld(self, avatar):
++        # family server (11-16): the world the avatar stands in, up his parent chain. On an island it is the
++        # island's parent; on a ship it is two up (ship -> ocean grid -> world). None in no world (logging in)
++        obj = avatar.getParentObj()
++        for i in range(6):
++            if obj is None or isinstance(obj, DistributedInstanceBaseAI):
++                return obj
++
++            obj = obj.getParentObj() if hasattr(obj, 'getParentObj') else None
++
++        return None
++
++    def getMainWorld(self):
++        # family server (11-16): the main world found by its type, whatever its file is called
++        for name in self.getWorldNames(PiratesGlobals.INSTANCE_MAIN):
++            world = self.getWorld(PiratesGlobals.INSTANCE_MAIN, name)
++            if world:
++                return world
++
++        return None
++
+     def d_initiateTeleport(self, avatar, instanceType=None, instanceName=None, locationUid=None, spawnPt=None):
+         if avatar.doId in self.avatar2fsm:
+             self.notify.warning('Cannot initiate teleport for avatar %d, '
+@@ -143,7 +164,12 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+         # check to see which island the avatar exited last at,
+         # then ensure this is their login teleport; not a normal teleport request...
+         # family server: not into the tutorial (a new pirate has a return location already)
+-        if returnLocation and not currentIsland and instanceType != PiratesGlobals.INSTANCE_TUTORIAL:
++        # family server (11-16): and not when he stands in a world and asked for a place. Boarding a ship clears the
++        # current island, so a pirate at sea who asked for an island (a teleport, a treasure map) was sent to his
++        # return location instead
++        standingWorld = self.getStandingWorld(avatar)
++        if returnLocation and not currentIsland and instanceType != PiratesGlobals.INSTANCE_TUTORIAL and \
++                not (standingWorld and locationUid):
+             locationUid = returnLocation
+ 
+         gameArea = avatar.getParentObj()
+@@ -154,7 +180,9 @@ class DistributedTeleportMgrAI(DistributedObjectAI):
+             return
+ 
+         if not instanceType and not instanceName:
+-            world = gameArea.getParentObj()
++            # family server (11-16): the world he stands in (on a ship the parent is the ocean grid, not the world,
++            # so this found none), or the main world when he stands in none
++            world = standingWorld or self.getMainWorld()
+         else:
+             world = self.getWorld(instanceType, instanceName)
+ 
+-- 
+2.53.0
+

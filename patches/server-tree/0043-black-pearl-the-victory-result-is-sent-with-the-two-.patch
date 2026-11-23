@@ -1,0 +1,31 @@
+From 013ae5586d9821be1a44a8eedc11027c9d8745de Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 21:58:51 -0800
+Subject: [PATCH 043/371] black pearl: the victory result is sent with the
+ two-string pairs setTMComplete takes
+
+[avatarId, 1] made sendUpdate raise TypeError in enterReward, so a real win never sent its result.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ pirates/treasuremap/TreasureMapBlackPearlAI.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/pirates/treasuremap/TreasureMapBlackPearlAI.py b/pirates/treasuremap/TreasureMapBlackPearlAI.py
+index 093ef52..305e272 100644
+--- a/pirates/treasuremap/TreasureMapBlackPearlAI.py
++++ b/pirates/treasuremap/TreasureMapBlackPearlAI.py
+@@ -1060,7 +1060,9 @@ class TreasureMapBlackPearlAI(DistributedTreasureMapInstanceAI):
+             avatar = self.air.doId2do.get(avatarId)
+             if avatar:
+                 # Award gold, reputation, loot
+-                playerResults.append([avatarId, 1])  # 1 = success
++                # setTMComplete takes resultPair [] (two strings each): the avatar and the result. [avatarId, 1] made
++                # sendUpdate raise, so a real win never sent the result (found 2026-11-16)
++                playerResults.append([str(avatarId), 'success'])
+                 # family server: the Black Pearl quest (BossBattleTaskDNA) waits for this
+                 try:
+                     self.air.questMgr.bossBattleCompleted(avatar, PiratesGlobals.GAME_STYLE_TM_BLACK_PEARL)
+-- 
+2.53.0
+

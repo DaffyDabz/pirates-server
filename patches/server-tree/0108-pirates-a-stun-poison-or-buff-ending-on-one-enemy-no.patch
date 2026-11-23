@@ -1,0 +1,139 @@
+From 978fadf85ba7116e4508b80587301759c4b502a6 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 17:53:20 -0800
+Subject: [PATCH 108/371] pirates: a stun, poison or buff ending on one enemy
+ no longer ends it on everyone, as server-tree patch 0122 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/BattleManagerAI.py           | 40 ++++++++++++---------
+ pirates/battle/DistributedBattleAvatarAI.py | 27 ++++++++++++--
+ 2 files changed, 48 insertions(+), 19 deletions(-)
+
+diff --git a/pirates/battle/BattleManagerAI.py b/pirates/battle/BattleManagerAI.py
+index f0744f2..035af7e 100644
+--- a/pirates/battle/BattleManagerAI.py
++++ b/pirates/battle/BattleManagerAI.py
+@@ -324,18 +324,17 @@ class BattleManagerAI(BattleManagerBase):
+ 
+         self._pendingSkillEffects.append(pendingSkillEffect)
+ 
+-    def removePendingSkillEffect(self, effectId):
+-        if effectId in self._removedPendingSkillEffects:
+-            return
+-
++    def removePendingSkillEffect(self, effectId, target=None):
++        # family server: queue (effectId, target), not the bare id. A bare id removed the first pending effect
++        # with that id on anybody in the district, and two stacks removed together were folded into one.
+         if effectId == WeaponGlobals.C_ATTUNE:
+             return
+ 
+-        self._removedPendingSkillEffects.append(effectId)
++        self._removedPendingSkillEffects.append((effectId, target))
+ 
+-    def getPendingSkillEffect(self, effectId):
++    def getPendingSkillEffect(self, effectId, target=None):
+         for pendingSkillEffect in list(self._pendingSkillEffects):
+-            if pendingSkillEffect.effectId == effectId:
++            if pendingSkillEffect.effectId == effectId and (target is None or pendingSkillEffect.target is target):
+                 return pendingSkillEffect
+ 
+         return None
+@@ -379,10 +378,20 @@ class BattleManagerAI(BattleManagerBase):
+         target = pendingSkillEffect.target
+         assert(target is not None)
+ 
++        # family server: an avatar that left (died, logged out, zone unloaded) keeps no effects
++        if target.isDeleted():
++            return False
++
+         # check to see if the skill effect has expired
+         currentTime = globalClockDelta.getFrameNetworkTime()
+         if time.time() - pendingSkillEffect.timestamp >= pendingSkillEffect.duration:
+-            target.removeSkillEffect(pendingSkillEffect.effectId)
++            # family server: removeSkillEffect queued a cancel by id, which then ended the same effect early on
++            # the next avatar that had it (or on this avatar's second stack)
++            expire = getattr(target, 'expireSkillEffect', None)
++            if expire is not None:
++                expire(pendingSkillEffect.effectId, getattr(attacker, 'doId', None))
++            else:
++                target.removeSkillEffect(pendingSkillEffect.effectId)
+             return False
+ 
+         if pendingSkillEffect.effectId in [WeaponConstants.C_FLAMING,
+@@ -411,17 +420,14 @@ class BattleManagerAI(BattleManagerBase):
+ 
+     def _updateSkillEffects(self, task):
+         for _ in range(len(self._removedPendingSkillEffects)):
+-            effectId = self._removedPendingSkillEffects.popleft()
++            effectId, target = self._removedPendingSkillEffects.popleft()
+             assert(effectId != WeaponGlobals.C_ATTUNE)
+ 
+-            pendingSkillEffect = self.getPendingSkillEffect(effectId)
+-            if pendingSkillEffect is not None:
+-                target = pendingSkillEffect.target
+-                assert(target is not None)
+-
+-                if pendingSkillEffect in self._pendingSkillEffects:
+-                    self._pendingSkillEffects.remove(pendingSkillEffect)
+-                    target.removeSkillEffect(pendingSkillEffect.effectId)
++            # family server: only this target's effect; the avatar already took its own entry off, so calling
++            # target.removeSkillEffect again here took a second stack off and queued yet another cancel
++            pendingSkillEffect = self.getPendingSkillEffect(effectId, target)
++            if pendingSkillEffect is not None and pendingSkillEffect in self._pendingSkillEffects:
++                self._pendingSkillEffects.remove(pendingSkillEffect)
+ 
+         for _ in range(len(self._pendingSkillEffects)):
+             pendingSkillEffect = self._pendingSkillEffects.popleft()
+diff --git a/pirates/battle/DistributedBattleAvatarAI.py b/pirates/battle/DistributedBattleAvatarAI.py
+index f937248..5e50d7e 100644
+--- a/pirates/battle/DistributedBattleAvatarAI.py
++++ b/pirates/battle/DistributedBattleAvatarAI.py
+@@ -431,11 +431,34 @@ class DistributedBattleAvatarAI(DistributedReputationAvatarAI, WeaponBaseAI, Tea
+ 
+                 # attempt to remove the skill effect from the battle manager's
+                 # deque of pending skill effects:
+-                self.air.battleMgr.removePendingSkillEffect(effectId)
++                # family server: say whose effect it is, or the battle manager cut short the same effect on
++                # whoever else had it
++                self.air.battleMgr.removePendingSkillEffect(effectId, self)
+                 break
+ 
+         self.d_setSkillEffects(self.skillEffects)
+ 
++    def expireSkillEffect(self, effectId, attackerId=None):
++        # family server: the battle manager calls this when an effect runs out; it takes the entry off without
++        # asking the battle manager to cancel it again (that cancelled the next stun/poison/buff with this id)
++        match = None
++        for skillEffect in self.skillEffects:
++            if skillEffect[0] == effectId and (attackerId is None or skillEffect[3] == attackerId):
++                match = skillEffect
++                break
++
++        if match is None:
++            for skillEffect in self.skillEffects:
++                if skillEffect[0] == effectId:
++                    match = skillEffect
++                    break
++
++        if match is None:
++            return
++
++        self.skillEffects.remove(match)
++        self.d_setSkillEffects(self.skillEffects)
++
+     def getSkillEffectCount(self, effectId):
+         numSkillEffects = 0
+         for skillEffect in list(self.skillEffects):
+@@ -446,7 +469,7 @@ class DistributedBattleAvatarAI(DistributedReputationAvatarAI, WeaponBaseAI, Tea
+ 
+     def clearSkillEffects(self):
+         for skillEffect in list(self.skillEffects):
+-            self.air.battleMgr.removePendingSkillEffect(skillEffect[0])
++            self.air.battleMgr.removePendingSkillEffect(skillEffect[0], self)
+ 
+         self.skillEffects = []
+         self.d_setSkillEffects(self.skillEffects)
+-- 
+2.53.0
+

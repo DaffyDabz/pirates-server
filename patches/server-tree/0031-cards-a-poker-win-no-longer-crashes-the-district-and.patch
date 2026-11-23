@@ -1,0 +1,47 @@
+From ddd0e8b116a421b64be6c03fe6cf3620321c1517 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 20:47:09 -0800
+Subject: [PATCH 031/371] cards: a poker win no longer crashes the district,
+ and Hold'em tables deal the shared cards
+
+The poker payout read the reputation accumulators as a dict (they are a list of pairs), so the first win raised
+and took the district down. Parlor tables got the world data's game name string, which the poker table compares
+against its PlayingCardGlobals constant, so Hold'em never dealt community cards; tables now use their class constant.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/minigame/DistributedPokerTableAI.py | 2 +-
+ pirates/world/InteriorAreaBuilderAI.py      | 4 +++-
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/minigame/DistributedPokerTableAI.py b/pirates/minigame/DistributedPokerTableAI.py
+index 10074c1..1b26ef9 100644
+--- a/pirates/minigame/DistributedPokerTableAI.py
++++ b/pirates/minigame/DistributedPokerTableAI.py
+@@ -525,7 +525,7 @@ class DistributedPokerTableAI(DistributedGameTableAI):
+                 # Reputation
+                 repInv = self.air.inventoryManager.getInventory(seat.doId)
+                 if repInv:
+-                    current = repInv.getAccumulators().get(InventoryType.PokerGame, 0)
++                    current = dict(repInv.getAccumulators()).get(InventoryType.PokerGame, 0)
+                     repInv.b_setAccumulator(InventoryType.PokerGame,
+                         min(current + winnings, 9999))
+ 
+diff --git a/pirates/world/InteriorAreaBuilderAI.py b/pirates/world/InteriorAreaBuilderAI.py
+index fefdeda..e997646 100644
+--- a/pirates/world/InteriorAreaBuilderAI.py
++++ b/pirates/world/InteriorAreaBuilderAI.py
+@@ -142,7 +142,9 @@ class InteriorAreaBuilderAI(GameAreaBuilderAI):
+         gameTable.generatePlayers()
+ 
+         if hasattr(gameTable, 'setGameType'):
+-            gameTable.setGameType(gameType)
++            # family server: world data names the game ('Holdem'); the poker tables compare against their
++            # PlayingCardGlobals constant, so with the string no community cards were ever dealt
++            gameTable.setGameType(getattr(tableCls, 'GameType', gameType))
+ 
+         if hasattr(gameTable, 'setBetMultiplier'):
+             gameTable.setBetMultiplier(int(objectData.get('BetMultiplier', '1')))
+-- 
+2.53.0
+

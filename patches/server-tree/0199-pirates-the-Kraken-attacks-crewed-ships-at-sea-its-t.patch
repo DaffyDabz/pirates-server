@@ -1,0 +1,794 @@
+From 6bfc97fbc1042b1e1afc6604af5a67fa7d68260d Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 01:07:55 -0800
+Subject: [PATCH 199/371] pirates: the Kraken attacks crewed ships at sea, its
+ tentacles can be fought, and beating it pays 500 gold and plunder (0221)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ai/PiratesMagicWordManagerAI.py |  49 ++++
+ pirates/battle/WeaponBaseAI.py          |  28 +-
+ pirates/kraken/GrabberTentacleAI.py     | 165 +++++++++++-
+ pirates/kraken/KrakenAI.py              | 330 +++++++++++++++++++++++-
+ pirates/kraken/KrakenManagerAI.py       | 121 +++++++++
+ pirates/ship/ShipManagerAI.py           |  12 +-
+ 6 files changed, 699 insertions(+), 6 deletions(-)
+ create mode 100644 pirates/kraken/KrakenManagerAI.py
+
+diff --git a/pirates/ai/PiratesMagicWordManagerAI.py b/pirates/ai/PiratesMagicWordManagerAI.py
+index d306845..fd7d8e1 100644
+--- a/pirates/ai/PiratesMagicWordManagerAI.py
++++ b/pirates/ai/PiratesMagicWordManagerAI.py
+@@ -186,6 +186,55 @@ def bpdestroy(barricadeId=0):
+     return "Destroyed barricade %d" % barricadeId
+ 
+ 
++@magicWord(category=CATEGORY_SYSTEM_ADMIN, types=[str])
++def kraken(what='attack'):
++    """
++    The Kraken (patch 0221): 'attack' sends one at the ship you are on now (even in the starter waters),
++    'why' says whether it may attack your ship by itself, 'beat' knocks every tentacle down, 'off' sends it away.
++    """
++    invoker = spellbook.getInvoker()
++    air = spellbook.getManager().air
++    shipMgr = getattr(air, 'shipManager', None)
++    krakenMgr = getattr(shipMgr, 'krakenMgr', None)
++    if krakenMgr is None:
++        from pirates.kraken.KrakenManagerAI import KrakenManagerAI
++        krakenMgr = KrakenManagerAI(air, shipMgr)
++        if shipMgr is not None:
++            shipMgr.krakenMgr = krakenMgr
++
++    from pirates.ship.DistributedShipAI import DistributedShipAI
++    ship = None
++    for shipId in (getattr(invoker, 'getActiveShipId', lambda: 0)(), getattr(invoker, 'getCrewShipId', lambda: 0)(),
++                   getattr(invoker, 'parentId', 0)):
++        obj = air.doId2do.get(shipId)
++        if isinstance(obj, DistributedShipAI):
++            ship = obj
++            break
++    if ship is None:
++        return "You are not on a ship"
++
++    if what == 'why':
++        return "Kraken on ship %d: %s" % (ship.doId, krakenMgr.whyNot(ship) or 'it may attack now')
++    if what in ('beat', 'off'):
++        kraken = getattr(ship, 'kraken', None)
++        if kraken is None:
++            return "No Kraken on ship %d" % ship.doId
++        if what == 'off':
++            kraken.finish('magic word')
++            return "The Kraken leaves ship %d" % ship.doId
++        tentacles = kraken.livingTentacles()
++        for tentacle in tentacles:
++            tentacle.b_setHp(0)
++        return "Knocked down %d tentacles" % len(tentacles)
++    if what != 'attack':
++        return "Valid: attack, why, beat, off"
++
++    kraken, why = krakenMgr.summon(ship)
++    if kraken is None:
++        return "No Kraken: %s" % why
++    return "The Kraken attacks ship %d with %d tentacles" % (ship.doId, len(kraken.tentacles))
++
++
+ @magicWord(category=CATEGORY_SYSTEM_ADMIN, types=[str])
+ def bpkill(target='goliath'):
+     """
+diff --git a/pirates/battle/WeaponBaseAI.py b/pirates/battle/WeaponBaseAI.py
+index a51a4f5..c6a1d42 100644
+--- a/pirates/battle/WeaponBaseAI.py
++++ b/pirates/battle/WeaponBaseAI.py
+@@ -204,7 +204,30 @@ class WeaponBaseAI(WeaponBaseBase):
+ 
+         ship.grantShipSkill(avatar, skillId)
+ 
++    def _krakenHit(self, avatar, target, skillId, ammoSkillId, areaIdList, pos, charge):
++        """
++        A Kraken tentacle (patch 0221) takes a fixed bite from every cannonball or
++        weapon hit instead of the normal battle maths, and is not an enemy kill for
++        rep or quests: the Kraken pays the crew when the last tentacle goes down.
++        """
++        isCannon = False
++        try:
++            isCannon = WeaponGlobals.getSkillReputationCategoryId(skillId) == InventoryType.CannonRep
++        except Exception:
++            pass
++
++        damage = target.takeKrakenHit(avatar, isCannon)
++        skillResult = WeaponGlobals.RESULT_HIT if damage else WeaponGlobals.RESULT_MISS
++        attackerEffects = [0, 0, 0, 0, 0]
++        targetEffects = [-damage, 0, 0, 0, 0]
++        return [skillId, ammoSkillId, skillResult, target.doId, areaIdList, attackerEffects, targetEffects,
++            [attackerEffects, targetEffects], globalClockDelta.getRealNetworkTime(bits=32), pos, charge]
++
+     def useTargetedSkill(self, avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos, charge):
++        if getattr(target, 'takeKrakenHit', None) is not None:
++            self.sendUpdate('useTargetedSkill', self._krakenHit(avatar, target, skillId, ammoSkillId, areaIdList, pos, charge))
++            return
++
+         targetResult = self.air.battleMgr.getTargetedSkillResult(avatar, target, skillId, ammoSkillId, areaIdList, timestamp, pos, charge)
+         if not targetResult:
+             self.notify.debug('Cannot get targeted skill, no valid result was given; '
+@@ -215,7 +238,10 @@ class WeaponBaseAI(WeaponBaseBase):
+         self.sendUpdate('useTargetedSkill', targetResult)
+ 
+     def useProjectileSkill(self, avatar, target, skillId, ammoSkillId, result, targetId, areaIdList, pos, normal, codes, timestamp):
+-        targetResult = self.air.battleMgr.getTargetedSkillResult(avatar, target, skillId, ammoSkillId, result, areaIdList, timestamp, pos)
++        if getattr(target, 'takeKrakenHit', None) is not None:
++            targetResult = self._krakenHit(avatar, target, skillId, ammoSkillId, areaIdList, pos, 0)
++        else:
++            targetResult = self.air.battleMgr.getTargetedSkillResult(avatar, target, skillId, ammoSkillId, result, areaIdList, timestamp, pos)
+         if not targetResult:
+             self.notify.debug('Cannot get projectile targeted skill, '
+                 'no valid result was given; avatarId=%d, skillId=%d!' % (avatar.doId, skillId))
+diff --git a/pirates/kraken/GrabberTentacleAI.py b/pirates/kraken/GrabberTentacleAI.py
+index 8c65db8..1e17eb8 100644
+--- a/pirates/kraken/GrabberTentacleAI.py
++++ b/pirates/kraken/GrabberTentacleAI.py
+@@ -1,8 +1,167 @@
+-from direct.distributed.DistributedObjectAI import DistributedObjectAI
++"""
++One grabber tentacle of the Kraken (patch 0221, 2026-11-18). See KrakenAI.
++
++It is a battle creature only so the client can draw its health bar and the
++crew's cannons and guns can target it. It never walks, never fights back on
++its own (the Kraken squeezes the hull for it), never grabs a pirate or a mast,
++and is not an enemy kill for rep or quests: hits are a fixed bite (see
++takeKrakenHit) and the Kraken pays out when the last tentacle goes down.
++"""
+ from direct.directnotify import DirectNotifyGlobal
+ 
+-class GrabberTentacleAI(DistributedObjectAI):
++from pirates.creature.DistributedCreatureAI import DistributedCreatureAI
++from pirates.pirate.BattleAvatarGameFSMAI import BattleAvatarGameFSMAI
++from pirates.pirate import AvatarTypes
++from pirates.piratesbase import PiratesGlobals
++
++
++class GrabberTentacleGameFSMAI(BattleAvatarGameFSMAI):
++    notify = DirectNotifyGlobal.directNotify.newCategory('GrabberTentacleGameFSMAI')
++
++    def __init__(self, air, avatar):
++        BattleAvatarGameFSMAI.__init__(self, air, avatar)
++        self.setBroadcastStateChanges(True)
++        self.accept(self.getStateChangeEvent(), self.__updateGameState)
++
++    def __updateGameState(self):
++        if self.avatar is not None and self.avatar.air is not None:
++            self.avatar.d_setGameState(self.getCurrentOrNextState())
++
++    def enterIdle(self):
++        pass
++
++    def exitIdle(self):
++        pass
++
++    def enterDeath(self):
++        self.avatar.dead = True
++        kraken = self.avatar.getKraken()
++        if kraken is not None:
++            kraken.tentacleDied(self.avatar)
++
++
++class GrabberTentacleAI(DistributedCreatureAI):
+     notify = DirectNotifyGlobal.directNotify.newCategory('GrabberTentacleAI')
+ 
++    ALLOWED_STATES = ('Off', 'Idle', 'Death')
++
+     def __init__(self, air):
+-        DistributedObjectAI.__init__(self, air)
+\ No newline at end of file
++        DistributedCreatureAI.__init__(self, air)
++        self.gameFSM.destroy()
++        self.gameFSM = GrabberTentacleGameFSMAI(self.air, self)
++        self.krakenId = 0
++        self.locatorId = 0
++        self.emerged = 0
++        self.grabbedAvatar = 0
++        self.grabbedMast = 0
++        self.dead = False
++        self.kraken = None
++
++    def setupTentacle(self, kraken, locatorId):
++        from pirates.kraken.KrakenAI import KrakenKnobs
++        hp = min(32767, KrakenKnobs.tentacleHp())
++        self.kraken = kraken
++        self.setKrakenId(kraken.doId)
++        self.setLocatorId(locatorId)
++        self.setPos(0, 0, 0)
++        self.setCollisionMode(PiratesGlobals.COLL_MODE_NONE)
++        self.setSpawnPos((0, 0, 0))
++        self.setInitZ(0)
++        self.setAvatarType(AvatarTypes.GrabberTentacle)
++        self.setTeam(PiratesGlobals.UNDEAD_TEAM)
++        self.setLevel(KrakenKnobs.tentacleLevel())
++        self.setMaxHp(hp)
++        self.setHp(hp, True)
++        self.setName('Kraken Tentacle')
++        self.setAnimSet('default')
++
++    def getKraken(self):
++        if self.kraken is not None:
++            return self.kraken
++        if self.air is not None:
++            return self.air.doId2do.get(self.krakenId)
++        return None
++
++    def isAlive(self):
++        return not self.dead and self.hp > 0
++
++    # ---- states: only Off, Idle and Death; a tentacle never chases or fights on its own
++    def setGameState(self, gameState, timestamp=0):
++        if gameState not in self.ALLOWED_STATES:
++            return
++        DistributedCreatureAI.setGameState(self, gameState, timestamp)
++
++    def b_setGameState(self, gameState):
++        if gameState not in self.ALLOWED_STATES:
++            return
++        DistributedCreatureAI.b_setGameState(self, gameState)
++
++    def requestClientAggro(self):
++        pass
++
++    def handleClientAggro(self, avatar):
++        pass
++
++    # ---- hits: a fixed bite, so kids always see the bar go down the same amount
++    def takeKrakenHit(self, avatar, isCannon):
++        """Returns the damage done (0 when the tentacle is down or still under water)."""
++        from pirates.kraken.KrakenAI import KrakenKnobs
++        if not self.isAlive() or not self.emerged:
++            return 0
++        damage = KrakenKnobs.cannonDamage() if isCannon else KrakenKnobs.weaponDamage()
++        damage = min(damage, self.hp)
++        if damage <= 0:
++            return 0
++        kraken = self.getKraken()
++        if kraken is not None:
++            kraken.tentacleHit(self, avatar)
++        self.b_setHp(self.hp - damage)
++        return damage
++
++    # ---- dc fields
++    def setKrakenId(self, krakenId):
++        self.krakenId = krakenId
++
++    def getKrakenId(self):
++        return self.krakenId
++
++    def setLocatorId(self, locatorId):
++        self.locatorId = locatorId
++
++    def getLocatorId(self):
++        return self.locatorId
++
++    def d_emerge(self, value):
++        self.sendUpdate('emerge', [value])
++
++    def setEmerged(self, value):
++        self.emerged = value
++
++    def d_setEmerged(self, value):
++        self.sendUpdate('setEmerged', [value])
++
++    def getEmerged(self):
++        return self.emerged
++
++    def b_emerge(self, value):
++        """Rise (1) or sink back (0); the ram field keeps late joiners right."""
++        value = 1 if value else 0
++        self.setEmerged(value)
++        self.d_emerge(value)
++        self.d_setEmerged(value)
++
++    def setGrabbedAvatar(self, avId):
++        self.grabbedAvatar = avId
++
++    def getGrabbedAvatar(self):
++        return self.grabbedAvatar
++
++    def setGrabbedMast(self, mast):
++        self.grabbedMast = mast
++
++    def getGrabbedMast(self):
++        return self.grabbedMast
++
++    def delete(self):
++        self.kraken = None
++        DistributedCreatureAI.delete(self)
+diff --git a/pirates/kraken/KrakenAI.py b/pirates/kraken/KrakenAI.py
+index cf4d650..cfed6ee 100644
+--- a/pirates/kraken/KrakenAI.py
++++ b/pirates/kraken/KrakenAI.py
+@@ -1,8 +1,336 @@
++"""
++The Kraken (patch 0221, 2026-11-18). The 2008 game shipped the art and a client
++prototype but no server side; this is a kid-friendly first version.
++
++One Kraken attacks one pirate ship out in the deep water (never in the starter
++waters round Port Royal and Tortuga):
++
++- it rises as 4 or 6 grabber tentacles round the hull (one per side for each
++  entry in ShipGlobals.KrakenLocators; only the ship classes in that table);
++- every few seconds each tentacle still up squeezes the hull for a small
++  share of its max hull points, so a ship that does nothing sinks in about
++  four minutes, and the client plays the old Kraken sink cutscene;
++- the crew beats it with the cannons (or guns and swords): each tentacle has
++  a fixed, small health bar, a cannonball always takes the same bite;
++- when the last tentacle goes down every pirate aboard gets gold and the hold
++  gets a chest and a royal chest (the loot pop-up shows them);
++- the tentacles never grab a pirate or a mast in this version;
++- it gives up and sinks back after a time limit, and goes away if the ship
++  sinks, docks or is put away.
++
++Every number is a config knob (see KrakenKnobs below).
++"""
+ from direct.distributed.DistributedObjectAI import DistributedObjectAI
+ from direct.directnotify import DirectNotifyGlobal
+ 
++from pirates.piratesbase import PiratesGlobals
++from pirates.ship import ShipGlobals
++
++
++def _knob(kind, name, default):
++    try:
++        cfg = config
++    except NameError:
++        return default
++    try:
++        if kind == 'bool':
++            return bool(cfg.GetBool(name, default))
++        if kind == 'int':
++            return int(cfg.GetInt(name, default))
++        return float(cfg.GetFloat(name, default))
++    except Exception:
++        return default
++
++
++class KrakenKnobs:
++    # read on use, so a test or a magic word sees the current value
++    @staticmethod
++    def tentacleHp():
++        return max(1, _knob('int', 'kraken-tentacle-hp', 400))
++
++    @staticmethod
++    def tentacleLevel():
++        return max(1, _knob('int', 'kraken-tentacle-level', 10))
++
++    @staticmethod
++    def cannonDamage():
++        return max(0, _knob('int', 'kraken-cannon-damage', 100))
++
++    @staticmethod
++    def weaponDamage():
++        return max(0, _knob('int', 'kraken-weapon-damage', 25))
++
++    @staticmethod
++    def squeezePercent():
++        # share of the ship's max hull points one tentacle takes per squeeze
++        return max(0.0, _knob('float', 'kraken-tentacle-damage-percent', 0.5))
++
++    @staticmethod
++    def squeezePeriod():
++        return max(1.0, _knob('float', 'kraken-attack-period', 5.0))
++
++    @staticmethod
++    def emergeDelay():
++        return max(0.0, _knob('float', 'kraken-emerge-delay', 3.0))
++
++    @staticmethod
++    def timeLimit():
++        return max(10.0, _knob('float', 'kraken-time-limit', 300.0))
++
++    @staticmethod
++    def hullFloorPercent():
++        # 0: the Kraken can sink the ship; 25: it never takes the hull below a quarter
++        return min(100.0, max(0.0, _knob('float', 'kraken-hull-floor-percent', 0.0)))
++
++    @staticmethod
++    def gold():
++        return max(0, _knob('int', 'kraken-gold', 500))
++
++    @staticmethod
++    def sinkLinger():
++        # the client's sink cutscene (doom tentacle) needs the Kraken object for about 10 s
++        return max(0.0, _knob('float', 'kraken-sink-linger', 15.0))
++
++    @staticmethod
++    def cleanupDelay():
++        return max(0.0, _knob('float', 'kraken-cleanup-delay', 4.0))
++
++
++KRAKEN_SHIP_STATES_BLOCKED = ('Off', 'Spawn', 'Docked', 'Sinking', 'Sunk', 'PutAway', 'RecoverFromSunk',
++                              'InBoardingPosition', 'WaitingForGrapple', 'GrappleLerping', 'InPosition',
++                              'Boarded', 'Defeated', 'Parley')
++
++
++def tentacleCount(shipClass):
++    return 2 * len(ShipGlobals.KrakenLocators.get(shipClass, ()))
++
++
++def whyNotTarget(air, ship, ignoreStarterWaters=False):
++    """'' when a Kraken may attack this ship now, else the reason it may not."""
++    if ship is None or getattr(ship, 'air', None) is None:
++        return 'no ship'
++    if getattr(ship, 'npcShip', 0):
++        return 'an enemy ship'
++    if not tentacleCount(ship.getShipClass()):
++        return 'ship class %s has no Kraken locators' % ship.getShipClass()
++    if getattr(ship, 'kraken', None) is not None:
++        return 'already has a Kraken'
++    afloat = getattr(ship, '_isAfloat', None)
++    if afloat is not None and not afloat():
++        return 'not afloat'
++    state = (getattr(ship, 'gameState', None) or ['Off'])[0]
++    if state in KRAKEN_SHIP_STATES_BLOCKED:
++        return 'ship state %s' % state
++    if not ship.getPiratesAboard():
++        return 'nobody aboard'
++    if not ignoreStarterWaters:
++        from pirates.ship import StarterWaters
++        if StarterWaters.inStarterWaters(air, ship.getX(), ship.getY()):
++            return 'in the starter waters'
++    return ''
++
++
+ class KrakenAI(DistributedObjectAI):
+     notify = DirectNotifyGlobal.directNotify.newCategory('KrakenAI')
+ 
+     def __init__(self, air):
+-        DistributedObjectAI.__init__(self, air)
+\ No newline at end of file
++        DistributedObjectAI.__init__(self, air)
++        self.shipId = 0
++        self.tentacles = {}
++        self.state = 'Off'
++        self.startTime = 0.0
++        self.attackers = set()
++        self.squeezeTotal = 0
++        self.onDone = None
++
++    # ---- dc fields
++    def setShipId(self, shipId):
++        self.shipId = shipId
++
++    def d_setShipId(self, shipId):
++        self.sendUpdate('setShipId', [shipId])
++
++    def b_setShipId(self, shipId):
++        self.setShipId(shipId)
++        self.d_setShipId(shipId)
++
++    def getShipId(self):
++        return self.shipId
++
++    def getShip(self):
++        if self.air is None:
++            return None
++        return self.air.doId2do.get(self.shipId)
++
++    # ---- life
++    def attackShip(self, ship):
++        """Generate this Kraken on the ship and raise its tentacles. Returns True when it started."""
++        from pirates.kraken.GrabberTentacleAI import GrabberTentacleAI
++        self.setShipId(ship.doId)
++        ship.generateChildWithRequired(self, PiratesGlobals.ShipZoneSilhouette)
++        ship.kraken = self
++        self.startTime = globalClock.getFrameTime()
++        self.state = 'Rising'
++        for locatorId in range(tentacleCount(ship.getShipClass())):
++            tentacle = GrabberTentacleAI(self.air)
++            tentacle.setupTentacle(self, locatorId)
++            ship.generateChildWithRequired(tentacle, PiratesGlobals.ShipZoneSilhouette)
++            tentacle.b_setGameState('Idle')
++            self.tentacles[locatorId] = tentacle
++
++        self._tellCrew(ship, 'The Kraken is attacking! Shoot its tentacles with the cannons!')
++        taskMgr.doMethodLater(KrakenKnobs.emergeDelay(), self._emerge, self.uniqueName('kraken-emerge'))
++        self.notify.info('Kraken %s attacks ship %s (class %s) with %d tentacles' % (
++            self.doId, ship.doId, ship.getShipClass(), len(self.tentacles)))
++        return True
++
++    def _emerge(self, task):
++        for tentacle in self.livingTentacles():
++            tentacle.b_emerge(1)
++        self.state = 'Attacking'
++        taskMgr.doMethodLater(KrakenKnobs.squeezePeriod(), self._squeeze, self.uniqueName('kraken-squeeze'))
++        return task.done
++
++    def livingTentacles(self):
++        return [t for t in self.tentacles.values() if t is not None and t.isAlive()]
++
++    def _squeeze(self, task):
++        if self.state != 'Attacking':
++            return task.done
++        try:
++            ship = self.getShip()
++            why = self._shipGoneReason(ship)
++            if why:
++                self.finish(why)
++                return task.done
++
++            if globalClock.getFrameTime() - self.startTime >= KrakenKnobs.timeLimit():
++                self._tellCrew(ship, 'The Kraken gives up and sinks back into the deep.')
++                self.finish('time limit')
++                return task.done
++
++            squeezers = [t for t in self.livingTentacles() if t.emerged]
++            maxHp = max(1, int(ship.getMaxHp() or 1))
++            bite = max(1, int(round(maxHp * KrakenKnobs.squeezePercent() / 100.0)))
++            damage = bite * len(squeezers)
++            floor = int(maxHp * KrakenKnobs.hullFloorPercent() / 100.0)
++            hp = int(ship.getHp() or 0)
++            newHp = max(floor, hp - damage) if hp > floor else hp
++            if damage and newHp != hp:
++                self.squeezeTotal += hp - newHp
++                ship.b_setHp(newHp)   # 0 sinks the ship; the next squeeze sees it and lingers for the cutscene
++        except Exception as e:
++            self.notify.warning('Kraken %s squeeze failed: %r' % (self.doId, e))
++            self.finish('error')
++            return task.done
++
++        task.delayTime = KrakenKnobs.squeezePeriod()
++        return task.again
++
++    def _shipGoneReason(self, ship):
++        if ship is None or getattr(ship, 'air', None) is None:
++            return 'ship gone'
++        afloat = getattr(ship, '_isAfloat', None)
++        if afloat is not None and not afloat():
++            return 'ship sunk'
++        state = (getattr(ship, 'gameState', None) or ['Off'])[0]
++        if state in ('Docked', 'PutAway', 'Off'):
++            return 'ship left'
++        return ''
++
++    def tentacleHit(self, tentacle, avatar):
++        if avatar is not None:
++            self.attackers.add(avatar.doId)
++
++    def tentacleDied(self, tentacle):
++        if self.state not in ('Rising', 'Attacking'):
++            return
++        if self.livingTentacles():
++            return
++        ship = self.getShip()
++        if ship is not None and not self._shipGoneReason(ship):
++            self._reward(ship)
++        self.finish('beaten')
++
++    def _reward(self, ship):
++        from pirates.economy.EconomyGlobals import ItemId
++        gold = KrakenKnobs.gold()
++        paid = []
++        pirates = {av.doId: av for av in ship.getPiratesAboard()}
++        for avId in self.attackers:
++            av = self.air.doId2do.get(avId)
++            if av is not None and avId not in pirates and hasattr(av, 'getInventory'):
++                pirates[avId] = av
++        for avId, av in pirates.items():
++            try:
++                inventory = av.getInventory()
++                if inventory is not None and gold:
++                    inventory.addGoldInPocket(gold)
++                paid.append(avId)
++            except Exception as e:
++                self.notify.warning('Kraken %s: could not pay %s: %r' % (self.doId, avId, e))
++        try:
++            if hasattr(ship, 'addPlunder'):
++                ship.addPlunder([ItemId.CARGO_CHEST, ItemId.CARGO_SKCHEST])
++        except Exception as e:
++            self.notify.warning('Kraken %s: no plunder for ship %s: %r' % (self.doId, ship.doId, e))
++        self._tellCrew(ship, 'You beat the Kraken! %d gold each, and a treasure chest in the hold!' % gold)
++        self.notify.info('Kraken %s beaten on ship %s: %d gold to %s' % (self.doId, ship.doId, gold, sorted(paid)))
++        self.rewarded = paid
++
++    def _tellCrew(self, ship, text):
++        try:
++            for av in ship.getPiratesAboard():
++                if hasattr(av, 'd_setSystemMessage'):
++                    av.d_setSystemMessage(0, text)
++        except Exception:
++            pass
++
++    def finish(self, reason):
++        if self.state in ('Leaving', 'Off'):
++            return
++        self.notify.info('Kraken %s on ship %s ends: %s (hull taken %d)' % (self.doId, self.shipId, reason, self.squeezeTotal))
++        self.state = 'Leaving'
++        self.endReason = reason
++        taskMgr.remove(self.uniqueName('kraken-emerge'))
++        taskMgr.remove(self.uniqueName('kraken-squeeze'))
++        if reason == 'ship sunk':
++            delay = KrakenKnobs.sinkLinger()
++        else:
++            delay = KrakenKnobs.cleanupDelay()
++            for tentacle in self.livingTentacles():
++                tentacle.b_emerge(0)
++        if reason == 'ship gone':
++            delay = 0.0
++        taskMgr.doMethodLater(delay, self._cleanup, self.uniqueName('kraken-cleanup'))
++
++    def _cleanup(self, task=None):
++        for locatorId, tentacle in list(self.tentacles.items()):
++            if tentacle is not None and tentacle.air is not None:
++                tentacle.requestDelete()
++        self.tentacles = {}
++        ship = self.getShip()
++        if ship is not None and getattr(ship, 'kraken', None) is self:
++            ship.kraken = None
++        self.state = 'Off'
++        if self.onDone is not None:
++            onDone, self.onDone = self.onDone, None
++            onDone(self)
++        if self.air is not None:
++            self.requestDelete()
++        return None if task is None else task.done
++
++    def delete(self):
++        taskMgr.remove(self.uniqueName('kraken-emerge'))
++        taskMgr.remove(self.uniqueName('kraken-squeeze'))
++        taskMgr.remove(self.uniqueName('kraken-cleanup'))
++        if self.state != 'Off':
++            self.state = 'Off'
++            ship = self.getShip()
++            if ship is not None and getattr(ship, 'kraken', None) is self:
++                ship.kraken = None
++            if self.onDone is not None:
++                onDone, self.onDone = self.onDone, None
++                onDone(self)
++        self.tentacles = {}
++        DistributedObjectAI.delete(self)
+diff --git a/pirates/kraken/KrakenManagerAI.py b/pirates/kraken/KrakenManagerAI.py
+new file mode 100644
+index 0000000..e38a475
+--- /dev/null
++++ b/pirates/kraken/KrakenManagerAI.py
+@@ -0,0 +1,121 @@
++"""
++Sends the Kraken after pirate ships out in the deep water (patch 0221, 2026-11-18).
++
++Every kraken-check-period seconds (60) each crewed pirate ship that is sailing
++outside the starter waters has a kraken-chance (0.15) of being attacked, at most
++kraken-max (2) Krakens at once in the world, and a ship that just met one is
++left alone for kraken-cooldown seconds (900). want-kraken 0 turns it all off.
++"""
++import random
++
++from direct.directnotify import DirectNotifyGlobal
++
++from pirates.kraken.KrakenAI import KrakenAI, whyNotTarget, _knob
++
++
++class KrakenManagerAI:
++    notify = DirectNotifyGlobal.directNotify.newCategory('KrakenManagerAI')
++
++    TASK_NAME = 'kraken-manager-upkeep'
++
++    def __init__(self, air, shipManager=None):
++        self.air = air
++        self.shipManager = shipManager
++        self.krakens = {}
++        self.lastAttack = {}
++        self.random = random.Random()
++
++    @staticmethod
++    def wantKraken():
++        return _knob('bool', 'want-kraken', True)
++
++    @staticmethod
++    def checkPeriod():
++        return max(5.0, _knob('float', 'kraken-check-period', 60.0))
++
++    @staticmethod
++    def chance():
++        return min(1.0, max(0.0, _knob('float', 'kraken-chance', 0.15)))
++
++    @staticmethod
++    def maxKrakens():
++        return max(0, _knob('int', 'kraken-max', 2))
++
++    @staticmethod
++    def cooldown():
++        return max(0.0, _knob('float', 'kraken-cooldown', 900.0))
++
++    def start(self):
++        if not self.wantKraken():
++            self.notify.info('want-kraken is off')
++            return
++        taskMgr.doMethodLater(self.checkPeriod(), self.__upkeep, self.TASK_NAME)
++
++    def stop(self):
++        taskMgr.remove(self.TASK_NAME)
++        for kraken in list(self.krakens.values()):
++            kraken.finish('stopped')
++
++    def candidateShips(self):
++        ships = []
++        if self.shipManager is not None and hasattr(self.shipManager, 'getPlayerShips'):
++            ships = list(self.shipManager.getPlayerShips())
++        if not ships:
++            from pirates.ship.DistributedShipAI import DistributedShipAI
++            ships = [do for do in list(self.air.doId2do.values()) if isinstance(do, DistributedShipAI)]
++        return ships
++
++    def whyNot(self, ship, now=None, ignoreStarterWaters=False, ignoreCooldown=False):
++        why = whyNotTarget(self.air, ship, ignoreStarterWaters)
++        if why:
++            return why
++        if len(self.krakens) >= self.maxKrakens():
++            return 'already %d Krakens out' % len(self.krakens)
++        if not ignoreCooldown:
++            now = globalClock.getFrameTime() if now is None else now
++            last = self.lastAttack.get(ship.doId)
++            if last is not None and now - last < self.cooldown():
++                return 'met a Kraken %d s ago' % int(now - last)
++        return ''
++
++    def __upkeep(self, task):
++        try:
++            self.upkeep()
++        except Exception as e:
++            self.notify.warning('Kraken upkeep failed: %r' % (e,))
++        task.delayTime = self.checkPeriod()
++        return task.again
++
++    def upkeep(self):
++        if not self.wantKraken():
++            return []
++        started = []
++        now = globalClock.getFrameTime()
++        for ship in self.candidateShips():
++            if self.whyNot(ship, now):
++                continue
++            if self.random.random() >= self.chance():
++                continue
++            if self.attack(ship):
++                started.append(ship.doId)
++        return started
++
++    def attack(self, ship):
++        kraken = KrakenAI(self.air)
++        kraken.onDone = self.__krakenDone
++        if not kraken.attackShip(ship):
++            return None
++        self.krakens[kraken.doId] = kraken
++        self.lastAttack[ship.doId] = globalClock.getFrameTime()
++        return kraken
++
++    def __krakenDone(self, kraken):
++        self.krakens.pop(kraken.doId, None)
++        self.lastAttack[kraken.shipId] = globalClock.getFrameTime()
++
++    def summon(self, ship):
++        """The ~kraken magic word: skips the chance, the cooldown and the starter waters rule."""
++        why = self.whyNot(ship, ignoreStarterWaters=True, ignoreCooldown=True)
++        if why:
++            return None, why
++        return self.attack(ship), ''
+diff --git a/pirates/ship/ShipManagerAI.py b/pirates/ship/ShipManagerAI.py
+index d450f66..15d157e 100644
+--- a/pirates/ship/ShipManagerAI.py
++++ b/pirates/ship/ShipManagerAI.py
+@@ -536,5 +536,15 @@ class ShipManagerAI:
+         # Start flagship spawning (delayed start to give world time to load)
+         self.FlagshipUpkeepTask = taskMgr.doMethodLater(
+             30.0,  # Wait 30 seconds before spawning flagships
+-            self._upkeepFlagshipPop, 
++            self._upkeepFlagshipPop,
+             'ShipManagerAI-FlagshipUpkeepPop')
++
++        # the Kraken hunts crewed pirate ships out in the deep water (patch 0221)
++        try:
++            from pirates.kraken.KrakenManagerAI import KrakenManagerAI
++            if getattr(self, 'krakenMgr', None) is not None:
++                self.krakenMgr.stop()
++            self.krakenMgr = KrakenManagerAI(self.air, self)
++            self.krakenMgr.start()
++        except Exception as e:
++            self.notify.warning('Kraken manager did not start: %r' % (e,))
+-- 
+2.53.0
+

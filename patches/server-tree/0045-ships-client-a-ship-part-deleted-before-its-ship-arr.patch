@@ -1,0 +1,114 @@
+From 590e61054154e99c2279ba00bd0777c96012ec60 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 22:04:24 -0800
+Subject: [PATCH 045/371] ships client: a ship part deleted before its ship
+ arrived no longer crashes the game
+
+Sailing in and out of an NPC ship's range can drop the ship while it is
+still loading. Its parts (hull, masts, sails, cabin, cannons...) then
+arrive with "parent not present", wait for a ship that never comes and
+are deleted with no ship. DistributedHull.delete read self.ship.hull and
+crashed the client (AREA3 bot run, 11-16, NPC ship 401004421).
+
+- DistributedHull.delete skips the ship's hull slot when there is no
+  ship.
+- DistributedShipRepairSpot waits for its ship through the related
+  object manager instead of reading doId2do[shipId] (a KeyError when the
+  ship is gone), and drops the wait when it is disabled first.
+- DistributedMast.playDeath and setBreakAnim do nothing when the mast
+  has no model yet.
+
+Every other ship part and ship-attached class (sail, cabin, bowsprit,
+decor, wheel, cannons, broadside) already handled a missing ship.
+
+Client files only; no server restart.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/shipparts/DistributedHull.py           |  6 ++++--
+ pirates/shipparts/DistributedMast.py           |  4 ++--
+ pirates/shipparts/DistributedShipRepairSpot.py | 15 ++++++++++++++-
+ 3 files changed, 20 insertions(+), 5 deletions(-)
+
+diff --git a/pirates/shipparts/DistributedHull.py b/pirates/shipparts/DistributedHull.py
+index c9f5891..adf55ba 100644
+--- a/pirates/shipparts/DistributedHull.py
++++ b/pirates/shipparts/DistributedHull.py
+@@ -98,8 +98,10 @@ class DistributedHull(DistributedShippart.DistributedShippart, DistributedDestru
+     def delete(self):
+         self.notify.debug('Delete ' + str(self.doId))
+         del self.dna
+-        if self.ship.hull:
+-            self.ship.hull[1] = None
++        # (no ship if the hull was deleted while still waiting for it to arrive)
++        hull = self.ship.hull if self.ship is not None else None
++        if hull:
++            hull[1] = None
+ 
+         del self.leftDamageLvl
+         del self.rightDamageLvl
+diff --git a/pirates/shipparts/DistributedMast.py b/pirates/shipparts/DistributedMast.py
+index 7cf82f8..c9e49d4 100644
+--- a/pirates/shipparts/DistributedMast.py
++++ b/pirates/shipparts/DistributedMast.py
+@@ -110,7 +110,7 @@ class DistributedMast(DistributedShippart.DistributedShippart, DistributedDestru
+         self.prop.projectileWeaponHit(skillId, ammoSkillId, skillResult, targetEffects, pos, normal, codes, attacker)
+     
+     def playDeath(self, index = None):
+-        if self.prop.mastsState[index] == 0 and self.isGenerated():
++        if self.prop and self.prop.mastsState[index] == 0 and self.isGenerated():
+             if index != None and self.prop:
+                 self.prop.death(index)
+ 
+@@ -121,7 +121,7 @@ class DistributedMast(DistributedShippart.DistributedShippart, DistributedDestru
+                     self.prop.respawn(i)
+     
+     def setBreakAnim(self, index, animMultiplier = 1.0):
+-        if self.prop.mastsState[index] == 0:
++        if self.prop and self.prop.mastsState[index] == 0:
+             self.prop.setBreakAnim(index, animMultiplier)
+     
+     def loadStats(self):
+diff --git a/pirates/shipparts/DistributedShipRepairSpot.py b/pirates/shipparts/DistributedShipRepairSpot.py
+index 9d4d4b5..f8536d9 100644
+--- a/pirates/shipparts/DistributedShipRepairSpot.py
++++ b/pirates/shipparts/DistributedShipRepairSpot.py
+@@ -12,6 +12,7 @@ class DistributedShipRepairSpot(DistributedInteractive):
+     
+     def __init__(self, cr):
+         DistributedInteractive.__init__(self, cr)
++        self._pendingShip = None
+ 
+     def setShipId(self, shipId):
+         self._shipId = shipId
+@@ -21,7 +22,15 @@ class DistributedShipRepairSpot(DistributedInteractive):
+ 
+     def announceGenerate(self):
+         DistributedInteractive.announceGenerate(self)
+-        ship = self.cr.doId2do[self._shipId]
++        # a spot can arrive after its ship left sight mid-load (AREA3 11-16); doId2do[...] crashed the client
++        ship = self.cr.doId2do.get(self._shipId)
++        if ship is not None:
++            self._placeOnShip(ship)
++        else:
++            self._pendingShip = self.cr.relatedObjectMgr.requestObjects([self._shipId], eachCallback = self._placeOnShip)
++
++    def _placeOnShip(self, ship):
++        self._pendingShip = None
+         NodePath.__init__(self, 'ship-%s-repairSpot-%s' % (ship.doId, self._index))
+         locName = PVPGlobals.RepairSpotLocatorNames[self._index]
+         locator = ship.locators.find('**/%s;+s' % locName)
+@@ -40,6 +49,10 @@ class DistributedShipRepairSpot(DistributedInteractive):
+         self._statePushes = None
+ 
+     def disable(self):
++        if self._pendingShip:
++            self.cr.relatedObjectMgr.abortRequest(self._pendingShip)
++            self._pendingShip = None
++
+         self.stopWatchingShip()
+         if self.userId == localAvatar.doId:
+             self.stopRepairing()
+-- 
+2.53.0
+

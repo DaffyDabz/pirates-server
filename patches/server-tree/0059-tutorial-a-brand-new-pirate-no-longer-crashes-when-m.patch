@@ -1,0 +1,51 @@
+From b9b73770ddee27ffb79e116206509830793ff3ad Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 00:15:03 -0800
+Subject: [PATCH 059/371] tutorial: a brand-new pirate no longer crashes when
+ make-a-pirate opens after Jack's jail-break scene
+
+enterAct1MakeAPirate looked for the jail model only under the pirate's parent
+area. Since 0072 sends him straight into the jail interior, which stands in a
+container of its own, that search came back empty and setLightOff asserted
+(!is_empty). Search the whole scene when the area does not hold it, and skip
+the jail lighting (here and when make-a-pirate ends) if it is still not found.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/tutorial/DistributedPiratesTutorial.py | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/tutorial/DistributedPiratesTutorial.py b/pirates/tutorial/DistributedPiratesTutorial.py
+index d40008b..1022e59 100644
+--- a/pirates/tutorial/DistributedPiratesTutorial.py
++++ b/pirates/tutorial/DistributedPiratesTutorial.py
+@@ -443,7 +443,15 @@ class DistributedPiratesTutorial(DistributedObject.DistributedObject, FSM.FSM):
+             light.turnOff()
+         
+         self.jail = ga.find('**/*navy_jail_interior*')
+-        self.jail.setLightOff()
++        if self.jail.isEmpty():
++            # family server (11-17): the jail model is not under the pirate's parent area when he spawns straight into
++            # the jail (the interior stands in its own container), and an empty NodePath crashed the game right after
++            # Jack's jail-break scene. Look for it in the whole scene, and do without the lighting if it is not there
++            self.jail = render.find('**/*navy_jail_interior*')
++
++        if not self.jail.isEmpty():
++            self.jail.setLightOff()
++
+         self.map.enter()
+         self.accept('makeAPirateComplete', self.handleMakeAPirate)
+         UserFunnel.logSubmit(1, 'CREATE_PIRATE_LOADS')
+@@ -483,7 +491,8 @@ class DistributedPiratesTutorial(DistributedObject.DistributedObject, FSM.FSM):
+         if ga is not None:
+             for light in ga.dynamicLights:
+                 light.turnOn()
+-                self.jail.setLight(light.lightNodePath)
++                if self.jail and not self.jail.isEmpty():
++                    self.jail.setLight(light.lightNodePath)
+ 
+     def avatarPopulated(self, success=True):
+         if not success:
+-- 
+2.53.0
+

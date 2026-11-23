@@ -1,0 +1,333 @@
+From 908b832464b0229bc2ec93c688da2fd2066a6a27 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Tue, 17 Nov 2026 20:57:25 -0800
+Subject: [PATCH 122/371] pirates: grapples tow the flagship alongside and the
+ captain is asked to board, as server-tree patch 0136 (AI only)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/WeaponBaseAI.py |  12 +++-
+ pirates/ship/GameFSMShipAI.py  | 100 ++++++++++++++++++++++++++--
+ pirates/ship/NPCShipAI.py      | 118 +++++++++++++++++++++++++++++++++
+ 3 files changed, 223 insertions(+), 7 deletions(-)
+
+diff --git a/pirates/battle/WeaponBaseAI.py b/pirates/battle/WeaponBaseAI.py
+index b78199a..5e27ef2 100644
+--- a/pirates/battle/WeaponBaseAI.py
++++ b/pirates/battle/WeaponBaseAI.py
+@@ -142,12 +142,22 @@ class WeaponBaseAI(WeaponBaseBase):
+             cannonCode, hullCode, sailCode = codes
+             skillResult = self.air.battleMgr.willWeaponHit(avatar, target, skillId, ammoSkillId, 0)
+ 
++            # flagship boarding (2026-11-17): a grapple hook hit one of the green
++            # targets on a crippled flagship (the client sends codes [0, 99, target
++            # number]). It lands a rope instead of hurting the hull and every sail
++            from pirates.battle import WeaponGlobals
++            isGrapple = WeaponGlobals.getIsGrappleSkill(skillId, ammoSkillId)
++            if isGrapple:
++                skillResult = WeaponGlobals.RESULT_HIT
++                if hasattr(target, 'landGrapple'):
++                    target.landGrapple(avatar, sailCode)
++
+             attackerEffects = [0, 0, 0, 0, 0]
+             targetEffects = [0, 0, 0, 0, 0]
+             areaIdEffects = [attackerEffects, targetEffects]
+ 
+             timestamp = globalClockDelta.getRealNetworkTime(bits=32)
+-            if skillResult:
++            if skillResult and not isGrapple:
+                 if hullCode > 0:
+                     target.hull.projectileWeaponHit(skillId, ammoSkillId, skillResult, targetEffects, pos, normal, codes, avatar)
+ 
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index 46b3de9..2c51e99 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -2842,12 +2842,19 @@ class GameFSMShipAI(FSM.FSM):
+         # which changed only the AI's state: no client saw the sink and nobody was
+         # paid. The ship sinks itself through b_setGameState (sinkFlagship), when
+         # the clock runs out or the pirate ship that may board it is gone or sunk
++        self._startCrippledClock(resetDeadline=True)
++
++    def _startCrippledClock(self, resetDeadline=False):
++        # the clock is set once, when the flagship is crippled, and keeps running
++        # while it is towed and while it waits alongside (2026-11-17)
++        self._stopCrippledClock()
+         if hasattr(self.ship, 'getCrippledTimeout'):
+             timeout = self.ship.getCrippledTimeout()
+         else:
+             timeout = FlagshipGlobals.FLAGSHIP_CRIPPLED_TIMEOUT
+ 
+-        self._crippledDeadline = globalClock.getFrameTime() + timeout
++        if resetDeadline or getattr(self, '_crippledDeadline', None) is None:
++            self._crippledDeadline = globalClock.getFrameTime() + timeout
+ 
+         def _crippledCheck(task):
+             ship = self.ship
+@@ -2871,20 +2878,75 @@ class GameFSMShipAI(FSM.FSM):
+         self._crippledTimeoutTask = taskMgr.doMethodLater(
+             5.0, _crippledCheck, self.ship.uniqueName('crippled-timeout'))
+ 
+-    def exitWaitingForGrapple(self):
+-        if hasattr(self, '_crippledTimeoutTask') and self._crippledTimeoutTask:
++    def _stopCrippledClock(self):
++        if getattr(self, '_crippledTimeoutTask', None):
+             taskMgr.remove(self._crippledTimeoutTask)
+             self._crippledTimeoutTask = None
+ 
++    def exitWaitingForGrapple(self):
++        self._stopCrippledClock()
++
+     def enterGrappleLerping(self):
+         """
+         Flagship is being pulled into boarding position by grappling hooks.
+         """
+         self._stopAllTasks()
+-        # The actual lerping is handled by the client/DC field updates
++        # family server (2026-11-17): nothing moved it ("handled by the client"),
++        # but the clients only smooth to the positions the AI sends. The AI tows
++        # it beside the pirate ship over FLAGSHIP_GRAPPLE_PULL_TIME, faster for
++        # each extra rope, following the pirate ship if it moves
++        ship = self.ship
++        if ship is None or not hasattr(ship, 'getAlongsideTarget'):
++            return
++
++        self._startCrippledClock()
++        boarder = ship.getBoarderShip()
++        if boarder is None:
++            return
++
++        distance = ship.chooseAlongsideSide(boarder)
++        self._pullStart = (ship.getX(), ship.getY(), ship.getH())
++        self._pullProgress = 0.0
++        x, y, h = ship.getAlongsideTarget(boarder)
++        ship.notify.warning('TEMP-DIAG flagship %d towed toward ship %d: %.0f ft apart, flagship at (%.0f, %.0f) h %.0f '
++            'under %s, pirate ship at (%.0f, %.0f) h %.0f under %s, target (%.0f, %.0f) h %.0f' % (
++            ship.doId, boarder.doId, distance, ship.getX(), ship.getY(), ship.getH(), ship.getParent().getName(),
++            boarder.getX(), boarder.getY(), boarder.getH(), boarder.getParent().getName(), x, y, h))
++        self._pullTask = taskMgr.add(self._grapplePull, ship.uniqueName('grapple-pull'))
++
++    def _grapplePull(self, task):
++        ship = self.ship
++        if ship is None:
++            return Task.done
++
++        boarder = ship.getBoarderShip()
++        if boarder is None:
++            # the crippled clock sinks us
++            return Task.done
++
++        ropes = max(1, ship.getNumGrapples(boarder))
++        dt = min(globalClock.getDt(), 0.5)
++        self._pullProgress = min(1.0, self._pullProgress + dt * ropes / max(ship.getGrapplePullTime(), 0.1))
++        t = self._pullProgress
++        t = t * t * (3.0 - 2.0 * t)
++        x, y, h = ship.getAlongsideTarget(boarder)
++        sx, sy, sh = self._pullStart
++        dh = ((h - sh + 180.0) % 360.0) - 180.0
++        ship.setPos(sx + (x - sx) * t, sy + (y - sy) * t, 0)
++        ship.setH(sh + dh * t)
++        if self._pullProgress >= 1.0:
++            self._pullTask = None
++            ship.reachedAlongside(boarder)
++            return Task.done
++
++        return Task.cont
+ 
+     def exitGrappleLerping(self):
+-        pass
++        if getattr(self, '_pullTask', None):
++            taskMgr.remove(self._pullTask)
++            self._pullTask = None
++
++        self._stopCrippledClock()
+ 
+     def enterInPosition(self):
+         """
+@@ -2892,9 +2954,35 @@ class GameFSMShipAI(FSM.FSM):
+         Captain can order crew to board or parley.
+         """
+         self._stopAllTasks()
++        # family server (2026-11-17): it stays beside the pirate ship (held
++        # there by its ropes) until it is boarded or the crippled clock runs out
++        ship = self.ship
++        if ship is None or not hasattr(ship, 'getAlongsideTarget'):
++            return
++
++        self._startCrippledClock()
++        self._holdTask = taskMgr.add(self._holdAlongside, ship.uniqueName('hold-alongside'))
++
++    def _holdAlongside(self, task):
++        ship = self.ship
++        if ship is None:
++            return Task.done
++
++        boarder = ship.getBoarderShip()
++        if boarder is None:
++            return Task.done
++
++        x, y, h = ship.getAlongsideTarget(boarder)
++        ship.setPos(x, y, 0)
++        ship.setH(h)
++        return Task.cont
+ 
+     def exitInPosition(self):
+-        pass
++        if getattr(self, '_holdTask', None):
++            taskMgr.remove(self._holdTask)
++            self._holdTask = None
++
++        self._stopCrippledClock()
+ 
+     def enterBoarded(self):
+         """
+diff --git a/pirates/ship/NPCShipAI.py b/pirates/ship/NPCShipAI.py
+index 4fb2dcf..3b5036b 100644
+--- a/pirates/ship/NPCShipAI.py
++++ b/pirates/ship/NPCShipAI.py
+@@ -1,4 +1,5 @@
+ import random
++import math
+ 
+ from direct.directnotify import DirectNotifyGlobal
+ from direct.distributed.ClockDelta import globalClockDelta
+@@ -69,6 +70,11 @@ class NPCShipAI(DistributedShipAI):
+         self._lastAttackerShipId = 0
+         self._boarderShipId = 0
+         self._forceSink = False
++        # which side of the pirate ship we are towed to, and whether we end up
++        # facing the other way (so the ropes stay on the sides they landed on)
++        self._alongsideSide = 1
++        self._alongsideFlip = False
++        self._alongsideGap = 0.0
+ 
+     @property
+     def isNpc(self):
+@@ -260,12 +266,124 @@ class NPCShipAI(DistributedShipAI):
+         self._forceSink = True
+         self.b_setGameState('Sinking', 0)
+ 
++    # Grapples (boarding step 2). The client puts green targets on the side of a
++    # crippled flagship facing the pirate ship; a grapple hook that hits one lands
++    # a rope (setLandedGrapples on the PIRATE ship draws it). The first rope starts
++    # the tow, each one after it tows faster (FlagshipGrappleLerpingInstructions),
++    # and when the flagship is alongside it waits there for the captain.
++
++    # half the hull's width at its grapple points, by model class, measured from
++    # the *-locators.bam models (grapple_right_* / grapple_left_* X)
++    ALONGSIDE_HALF_WIDTH = {
++        ShipGlobals.INTERCEPTORL1: 15.4, ShipGlobals.INTERCEPTORL2: 23.6, ShipGlobals.INTERCEPTORL3: 25.1,
++        ShipGlobals.MERCHANTL1: 19.8, ShipGlobals.MERCHANTL2: 31.7, ShipGlobals.MERCHANTL3: 40.3,
++        ShipGlobals.WARSHIPL1: 24.6, ShipGlobals.WARSHIPL2: 37.7, ShipGlobals.WARSHIPL3: 48.4,
++        ShipGlobals.BLACK_PEARL: 33.9, ShipGlobals.GOLIATH: 100.8,
++        ShipGlobals.SKEL_WARSHIPL3: 25.8, ShipGlobals.SKEL_INTERCEPTORL3: 22.7,
++    }
++
++    def _getHalfWidth(self, ship):
++        try:
++            modelClass = ShipGlobals.getModelClass(ship.getShipClass())
++        except Exception:
++            modelClass = 0
++
++        return self.ALONGSIDE_HALF_WIDTH.get(modelClass, 40.0)
++
++    def getGrapplePullTime(self):
++        return config.GetFloat('flagship-grapple-pull-time', FlagshipGlobals.FLAGSHIP_GRAPPLE_PULL_TIME)
++
++    def getNumGrapples(self, boarder=None):
++        if boarder is None:
++            boarder = self.getBoarderShip()
++
++        if boarder is None:
++            return 0
++
++        return len([g for g in (getattr(boarder, 'landedGrapples', None) or []) if g[0] == self.doId])
++
++    def landGrapple(self, avatar, targetIndex):
++        """A grapple hook from avatar hit green target targetIndex on us."""
++        state = self.gameFSM.getCurrentOrNextState() if getattr(self, 'gameFSM', None) else None
++        if state not in ('WaitingForGrapple', 'GrappleLerping'):
++            return False
++
++        boarder = self.getBoarderShip()
++        if boarder is None:
++            return False
++
++        if avatar.doId not in (getattr(boarder, 'crew', None) or []):
++            self.notify.warning('TEMP-DIAG flagship %d: grapple from pirate %d ignored, not in the crew of ship %d' % (
++                self.doId, avatar.doId, boarder.doId))
++            return False
++
++        grapples = [list(g) for g in (getattr(boarder, 'landedGrapples', None) or [])]
++        rope = [self.doId, int(targetIndex)]
++        if rope in grapples:
++            return False
++
++        grapples.append(rope)
++        boarder.b_setLandedGrapples(grapples)
++        self.notify.warning('TEMP-DIAG flagship %d: grapple %d landed on target %d by pirate %d (state %s)' % (
++            self.doId, self.getNumGrapples(boarder), int(targetIndex), avatar.doId, state))
++        if state == 'WaitingForGrapple':
++            DistributedShipAI.b_setGameState(self, 'GrappleLerping', avatar.doId)
++
++        return True
++
++    def chooseAlongsideSide(self, boarder):
++        """Pick where we are towed to: beside the pirate ship on the side we are
++        already on, facing its way, or the other way if that keeps the side of us
++        the ropes landed on toward it."""
++        bx, by, bh = boarder.getX(), boarder.getY(), math.radians(boarder.getH())
++        fx, fy, fh = self.getX(), self.getY(), math.radians(self.getH())
++        # +1 when the other ship is on our +X side (Panda: X = (cos h, sin h))
++        sideOfBoarder = 1 if (fx - bx) * math.cos(bh) + (fy - by) * math.sin(bh) >= 0 else -1
++        sideOfFlagship = 1 if (bx - fx) * math.cos(fh) + (by - fy) * math.sin(fh) >= 0 else -1
++        self._alongsideSide = sideOfBoarder
++        self._alongsideFlip = sideOfFlagship == sideOfBoarder
++        self._alongsideGap = (self._getHalfWidth(self) + self._getHalfWidth(boarder) +
++            config.GetFloat('flagship-alongside-margin', 8.0))
++        return math.hypot(fx - bx, fy - by)
++
++    def getAlongsideTarget(self, boarder):
++        """(x, y, h) beside the pirate ship, in our parent's frame."""
++        h = boarder.getH()
++        r = math.radians(h)
++        x = boarder.getX() + math.cos(r) * self._alongsideSide * self._alongsideGap
++        y = boarder.getY() + math.sin(r) * self._alongsideSide * self._alongsideGap
++        if self._alongsideFlip:
++            h += 180.0
++
++        return x, y, h
++
++    def reachedAlongside(self, boarder):
++        self.notify.warning('TEMP-DIAG flagship %d in position beside ship %d (%d grapples, %.0f ft apart): '
++            'the captain may board' % (self.doId, boarder.doId, self.getNumGrapples(boarder), self._alongsideGap))
++        # the client's "Board" check reads the pirate ship's flag
++        boarder.b_setIsInBoardingPosition(1)
++        self.b_setIsInBoardingPosition(1)
++        DistributedShipAI.b_setGameState(self, 'InPosition', 0)
++
+     def _clearBoarder(self):
+         if not self._boarderShipId:
+             return
+ 
+         boarder = self.air.doId2do.get(self._boarderShipId) if self.air else None
+         self._boarderShipId = 0
++        if boarder is not None:
++            # take our ropes off the pirate ship, and it is no longer in position
++            grapples = [list(g) for g in (getattr(boarder, 'landedGrapples', None) or [])]
++            rest = [g for g in grapples if g[0] != self.doId]
++            if len(rest) != len(grapples):
++                boarder.b_setLandedGrapples(rest)
++
++            if getattr(boarder, 'isInBoardingPosition', 0) and not rest:
++                boarder.b_setIsInBoardingPosition(0)
++
++        if getattr(self, 'isInBoardingPosition', 0) and self.air and self.air.doId2do.get(self.doId) is self:
++            self.b_setIsInBoardingPosition(0)
++
+         if boarder is not None and getattr(boarder, 'boardableShipId', 0) == self.doId:
+             # the client clears its "fighting a flagship" teleport flag on 0
+             boarder.b_setBoardableShipId(0)
+-- 
+2.53.0
+

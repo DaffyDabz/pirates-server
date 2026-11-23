@@ -1,0 +1,70 @@
+From ef420cbe488c2aa2906ff5024acc6e4c3bc3ddf9 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 22:56:11 -0800
+Subject: [PATCH 163/371] pirates: sinking an enemy ship pays gold from a ship
+ table (a Ferret 21-32), server-tree patch 0200
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/NPCShipAI.py | 31 ++++++++++++++++++++++++++++---
+ 1 file changed, 28 insertions(+), 3 deletions(-)
+
+diff --git a/pirates/ship/NPCShipAI.py b/pirates/ship/NPCShipAI.py
+index b18e66e..61be1b8 100644
+--- a/pirates/ship/NPCShipAI.py
++++ b/pirates/ship/NPCShipAI.py
+@@ -34,6 +34,31 @@ def rollPlunder(level):
+     weights = [PLUNDER_WEIGHTS[kind] for kind in kinds]
+     return [random.choices(kinds, weights)[0] for _ in range(count)]
+ 
++def shipGoldDrop(avatarType, level):
++    """
++    patch 0200: the gold each pirate who helped sink an enemy ship gets. It was
++    the land enemies' table (EnemyGlobals.getGoldDrop), which pays 1-4 gold for
++    the level-2 Ferret of the starter waters and 32 at most for a level-30 ship:
++    too little for a ship fight, a repair or a first new ship. Now it is
++    10 * level + level * level, give or take a fifth: a Ferret 24, a level-12
++    Greyhound 264, a level-30 ship 1,200, the level-44 Juggernaut 2,376. On top
++    is the land table's faction bonus (Navy +10%, Trading Company +20%).
++    """
++    try:
++        level = int(level)
++    except Exception:
++        level = 1
++
++    level = max(1, min(level, 60))
++    amount = (10 * level + level * level) * random.uniform(0.8, 1.2)
++    if avatarType is not None:
++        if avatarType.isA(AvatarTypes.Navy):
++            amount *= 1.1
++        elif avatarType.isA(AvatarTypes.TradingCo):
++            amount *= 1.2
++
++    return max(1, int(round(amount)))
++
+ # the enemy faction a ship's team counts as, for its gold drop (the same map
+ # QuestManagerAI.shipDefeated uses for quest credit)
+ SHIP_TEAM_AVATAR_TYPES = {
+@@ -636,8 +661,8 @@ class NPCShipAI(DistributedShipAI):
+         Pay every pirate who hurt this ship, once, as it starts to sink: the ship's
+         experience (ShipGlobals.getShipExp, by level) in each reputation he used
+         (sailing if he only sailed with the shooters) plus overall reputation, and
+-        the faction's gold drop for that level (EnemyGlobals.getGoldDrop, the land
+-        enemies' table). The amount floats over the sinking ship.
++        the ship gold for that level and faction (shipGoldDrop, patch 0200; it
++        was the land enemies' table). The amount floats over the sinking ship.
+         """
+         credit, self._sinkCredit = self._sinkCredit, {}
+         if not credit:
+@@ -716,7 +741,7 @@ class NPCShipAI(DistributedShipAI):
+             inventory.setReputation(category, inventory.getReputation(category) + exp)
+ 
+         inventory.setOverallRep(inventory.getOverallRep() + exp)
+-        gold = EnemyGlobals.getGoldDrop(avatarType, goldLevel)
++        gold = shipGoldDrop(avatarType, goldLevel)
+         if gold > 0:
+             inventory.addGoldInPocket(gold)
+ 
+-- 
+2.53.0
+

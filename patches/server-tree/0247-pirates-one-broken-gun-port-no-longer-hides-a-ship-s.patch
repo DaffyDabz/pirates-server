@@ -1,0 +1,38 @@
+From 9f8ac3c59f2d07f6f91825785e2b52d8d8da8aef Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 05:58:05 -0800
+Subject: [PATCH 247/371] pirates: one broken gun port no longer hides a ship's
+ whole broadside (0321, patch 22)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedShipBroadside.py | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/pirates/battle/DistributedShipBroadside.py b/pirates/battle/DistributedShipBroadside.py
+index 5b3a250..0a2167f 100644
+--- a/pirates/battle/DistributedShipBroadside.py
++++ b/pirates/battle/DistributedShipBroadside.py
+@@ -298,7 +298,8 @@ class DistributedShipBroadside(DistributedWeapon, DistributedShippart):
+             for index in range(len(self.leftBroadside)):
+                 if self.leftBroadside[index]:
+                     if not self.leftBroadside[index].isEnabled():
+-                        return
++                        # family server (0321): a broken port skips its own shot, not the rest of the broadside
++                        continue
+ 
+                     targetPos = 0
+                     if index < len(hitPosList) and hitPosList[index] != (100, 100, 100):
+@@ -318,7 +319,8 @@ class DistributedShipBroadside(DistributedWeapon, DistributedShippart):
+             for index in range(len(self.rightBroadside)):
+                 if self.rightBroadside[index]:
+                     if not self.rightBroadside[index].isEnabled():
+-                        return
++                        # family server (0321): a broken port skips its own shot, not the rest of the broadside
++                        continue
+ 
+                     targetPos = 0
+                     if index < len(hitPosList) and hitPosList[index] != (100, 100, 100):
+-- 
+2.53.0
+

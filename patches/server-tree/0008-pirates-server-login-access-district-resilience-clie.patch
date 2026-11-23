@@ -1,0 +1,82 @@
+From 2bf101097fab255efbde0d093834bc5b63961deb Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 13:03:36 -0800
+Subject: [PATCH 008/371] pirates: server - login access, district resilience,
+ client-agent port (Sept 2026 family-server fixes)
+
+- ClientServicesManager: tell the client every family account is Unlimited
+  after the Astron login, so the Basic-access gates (stores, Kingshead,
+  secrets) are open.
+- PiratesInternalRepository: one bad message no longer takes the district
+  down; log it, eject the sender if it is a player, keep serving the rest.
+- astrond.yml: client agent binds to port 7100 instead of 6667.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ astron/config/astrond.yml                     |  2 +-
+ .../distributed/PiratesInternalRepository.py  | 20 +++++++++++++++++++
+ pirates/uberdog/ClientServicesManager.py      |  4 ++++
+ 3 files changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/astron/config/astrond.yml b/astron/config/astrond.yml
+index 875f007..9a0602d 100644
+--- a/astron/config/astrond.yml
++++ b/astron/config/astrond.yml
+@@ -49,7 +49,7 @@ uberdogs:
+ 
+ roles:
+     - type: clientagent
+-      bind: 0.0.0.0:6667
++      bind: 0.0.0.0:7100
+       version: pirates-dev
+       client:
+        relocate: true
+diff --git a/pirates/distributed/PiratesInternalRepository.py b/pirates/distributed/PiratesInternalRepository.py
+index 2638247..423e37d 100644
+--- a/pirates/distributed/PiratesInternalRepository.py
++++ b/pirates/distributed/PiratesInternalRepository.py
+@@ -32,6 +32,26 @@ class PiratesInternalRepository(OTPInternalRepository):
+         else:
+             OTPInternalRepository.handleDatagram(self, di)
+ 
++    def readerPollOnce(self):
++        # One bad message must not take the whole district down (09-20 dinghy crash dropped two kids):
++        # log it, eject the sender if it is a player, keep serving everyone else.
++        try:
++            return OTPInternalRepository.readerPollOnce(self)
++        except (SystemExit, KeyboardInterrupt):
++            raise
++        except Exception as e:
++            sender = self.getMsgSender()
++            avatarId = self.getAvatarIdFromSender()
++            self.notify.warning('district-survived: message from %s (avatar %s) raised %r\n%s' % (
++                sender, avatarId, e, traceback.format_exc()))
++            if ConfigVariableBool('boot-on-error', True).getValue() and avatarId in self.doId2do:
++                self.kickChannel(sender, reason=153)
++            try:
++                self.logException(e)
++            except Exception as e2:
++                self.notify.warning('district-survived: logException failed: %r' % (e2,))
++        return 1
++
+     def handleConnected(self):
+         OTPInternalRepository.handleConnected(self)
+ 
+diff --git a/pirates/uberdog/ClientServicesManager.py b/pirates/uberdog/ClientServicesManager.py
+index 56789d8..d27c828 100644
+--- a/pirates/uberdog/ClientServicesManager.py
++++ b/pirates/uberdog/ClientServicesManager.py
+@@ -26,6 +26,10 @@ class ClientServicesManager(DistributedObjectGlobal):
+         self.sendUpdate('login', [token, address, clientKey])
+ 
+     def acceptLogin(self):
++        # Family patch: every family account is Unlimited (the UD stores PAID_LEVEL 2 and the avatar
++        # gets setAccess(2)), but the Astron login path never told the client, so base.cr.isPaid()
++        # stayed 0 and every Basic-access gate (Kingshead, stores, secrets) stayed shut.
++        self.cr.setIsPaid(OTPGlobals.AccessFull)
+         messenger.send(self.doneEvent, [{'mode': 'success'}])
+ 
+         # TODO?
+-- 
+2.53.0
+

@@ -1,0 +1,134 @@
+From 6676f3248efea355c265d7a0345572adac13af21 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 20:40:25 -0800
+Subject: [PATCH 328/371] pirates: a full cargo hold always sells now, when he
+ leaves the ship or launches it, not only on Drop Anchor (hold-0001)
+
+The host: "can't take the boat out, cargo full". The hold sold only on Drop Anchor (dropAnchor -> sellPlunder). A voyage
+that ended any other way (teleport home, log off, walk off) put the ship away still full, so it sailed out full the
+next time, and every ship he sank said "Your hold is full!" and gave nothing.
+
+- DistributedShipAI._playerDeparted: the last pirate off a ship that is not sinking is sold the hold (sellHoldTo)
+  before the ship is put away; a failed sale is logged and the ship is still put away.
+- DistributedDinghyAI.selectOwnShip: a launched ship with nobody aboard sells plunder left in its hold to the boy
+  launching it, so the three full ships now (Player1 100000731, Player2 100000713 + 100000719) empty at their next launch.
+- sellPlunder(payTo=None, panel=True): with nobody to pay the hold is kept, not emptied; the leave and launch sales
+  send no end-of-voyage panel. Drop Anchor works as before.
+- The hold-full message adds "...or it sells when you leave the ship."
+
+At log-off the avatar's inventory is removed before the ship hears he left, so a log-off keeps the hold and it sells
+at his next launch. Test: test_hold_sells.py live FAIL 3/9, patched PASS 9/9; test_sea_ship.py 26/26.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/DistributedShipAI.py    | 33 +++++++++++++++++++++++-----
+ pirates/world/DistributedDinghyAI.py |  5 +++++
+ 2 files changed, 32 insertions(+), 6 deletions(-)
+
+diff --git a/pirates/ship/DistributedShipAI.py b/pirates/ship/DistributedShipAI.py
+index 41ae8f6..aab2b8b 100644
+--- a/pirates/ship/DistributedShipAI.py
++++ b/pirates/ship/DistributedShipAI.py
+@@ -557,6 +557,7 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+             if self.gameState[0] == 'Sinking':
+                 return    # the sinking task deletes a sunk ship once nobody is aboard
+ 
++            self.sellHoldTo(avatar)   # hold-0001: the last pirate off sells the hold
+             self.b_setGameState('PutAway', 0)
+             self._leaveOceanGrid()
+             self.b_setLocation(self.parentId, 0)
+@@ -1010,7 +1011,8 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+             for avId in self.crew:
+                 avatar = self.air.doId2do.get(avId)
+                 if avatar is not None and hasattr(avatar, 'd_setSystemMessage'):
+-                    avatar.d_setSystemMessage(0, 'Your hold is full! Drop anchor at a port to sell your plunder.')
++                    avatar.d_setSystemMessage(0, 'Your hold is full! Drop anchor at a port to sell your plunder, '
++                                                 'or it sells when you leave the ship.')
+ 
+             return []
+ 
+@@ -1035,12 +1037,15 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         if getattr(self, '_voyageStart', None) is None:
+             self._voyageStart = time.time()
+ 
+-    def sellPlunder(self):
++    def sellPlunder(self, payTo=None, panel=True):
+         """
+         Dropping anchor at a port sells the hold: each crate or chest is opened
+         into one of its goods (EconomyGlobals' cargo table, by rarity) and the
+         gold is shared by the crew aboard, the captain taking the client's
+         captain bonus (CAPTAIN_LOOT_MULTIPLIER) when he has a crew.
++        family server (11-20, hold-0001): payTo names the pirates paid instead of
++        the crew aboard (sellHoldTo), panel=False sends no end-of-voyage panel, and
++        with nobody to pay the hold is kept for the next sale, not emptied.
+         """
+         from pirates.economy import EconomyGlobals
+         import random
+@@ -1049,6 +1054,12 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         if self.npcShip or not cargo:
+             return
+ 
++        if payTo is None:
++            payTo = [self.air.doId2do.get(avId) for avId in self.crew]
++        crew = [avatar for avatar in payTo if avatar is not None and avatar.getInventory()]
++        if not crew:
++            return
++
+         found = []
+         for container in cargo:
+             goods = EconomyGlobals.getAllCargoType(container)
+@@ -1070,9 +1081,7 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+         self._voyageStart = None
+         self._voyageSunk = 0
+ 
+-        crew = [self.air.doId2do.get(avId) for avId in self.crew]
+-        crew = [avatar for avatar in crew if avatar is not None and avatar.getInventory()]
+-        if not crew or value <= 0:
++        if value <= 0:
+             return
+ 
+         maxHp = int(self.maxHp or 0)
+@@ -1098,11 +1107,23 @@ class DistributedShipAI(DistributedMovingObjectAI, DistributedCharterableObjectA
+ 
+             avatar.getInventory().addGoldInPocket(gold)
+             avatar.d_setSystemMessage(0, 'You sold your plunder for %d gold!' % gold)
+-            avatar.sendUpdate('endMissionPanel', [team, player])
++            if panel:
++                avatar.sendUpdate('endMissionPanel', [team, player])
+ 
+         self.notify.info('ship %s: sold %d containers of plunder (%s) for %d gold, %d crew, %d ships sunk' % (
+             self.doId, len(cargo), found, value, len(crew), sunk))
+ 
++    def sellHoldTo(self, avatar):
++        # family server (11-20, hold-0001): the hold sold only on Drop Anchor, so a voyage that ended any other way
++        # (he teleported home, logged off, sank nothing more because the hold was full) kept the plunder aboard for
++        # good, and a full hold took nothing more. Now the last pirate off the ship sells it, and a ship launched
++        # with plunder still aboard sells it at the dock first. Gold and a chat line, no end-of-voyage panel.
++        try:
++            self.sellPlunder(payTo=[avatar], panel=False)
++        except Exception as e:
++            self.notify.warning('ship %s: could not sell the hold to %s: %r' % (
++                self.doId, getattr(avatar, 'doId', avatar), e))
++
+     def setMaxCrew(self, maxCrew):
+         self.maxCrew = maxCrew
+ 
+diff --git a/pirates/world/DistributedDinghyAI.py b/pirates/world/DistributedDinghyAI.py
+index 0a07620..3fec3aa 100644
+--- a/pirates/world/DistributedDinghyAI.py
++++ b/pirates/world/DistributedDinghyAI.py
+@@ -535,6 +535,11 @@ class DistributedDinghyAI(DistributedInteractiveAI):
+                     ship.b_setLocation(ship.parentId, 0)
+                 return
+ 
++            # family server (11-20, hold-0001): plunder left in the hold by an earlier voyage is sold at this dock
++            # before he sails, so a ship that came home full (before the last pirate off sold it) sails out empty
++            if not ship.crew:
++                ship.sellHoldTo(avatar)
++
+             self.air.bandManager.updateShipInfo(avatar.doId, ship)
+             # Sea Battle: a ship launched from a team's dock sails for that team
+             seaBattle = getattr(self.air, 'seaBattleMgr', None)
+-- 
+2.53.0
+

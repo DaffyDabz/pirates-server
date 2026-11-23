@@ -1,0 +1,203 @@
+From 43a93b49e3a097891f09ef550b1bf3346f901f48 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Mon, 16 Nov 2026 15:11:15 -0800
+Subject: [PATCH 016/371] Quest indicator: arrow points all game, beam survives
+ cutscenes and the pool, map dart finds the island
+
+- QuestStep: real == / != / hash (Python 3 never calls __cmp__). Every setQuestStep
+  rebuilt the arrow and beam, and the server's null step never cleared it.
+- LocalPirate: the ground arrow no longer switches off at TUT_GOT_PISTOL; after a
+  cutscene the beam is unmuted even with no arrow (it stayed muted for good).
+- QuestIndicatorEffect: unstash on startLoop (a pooled beam muted earlier came back
+  invisible); one resize task per beam instead of one shared name.
+- QuestStepIndicator.delete: indicatorNone typo.
+- AI: the last quest-step slot is the goal's island uid (the client's world-map dart
+  looks it up as an island); it carried the goal's own uid.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/effects/QuestIndicatorEffect.py   |  8 ++++++--
+ pirates/pirate/LocalPirate.py             | 17 ++++++++---------
+ pirates/quest/DistributedQuestAvatarAI.py | 22 +++++++++++++++++-----
+ pirates/quest/QuestPath.py                | 18 +++++++++++++++++-
+ pirates/quest/QuestStepIndicator.py       |  2 +-
+ 5 files changed, 49 insertions(+), 18 deletions(-)
+
+diff --git a/pirates/effects/QuestIndicatorEffect.py b/pirates/effects/QuestIndicatorEffect.py
+index 5d34542..f3023d3 100644
+--- a/pirates/effects/QuestIndicatorEffect.py
++++ b/pirates/effects/QuestIndicatorEffect.py
+@@ -127,6 +127,9 @@ class QuestIndicatorEffect(PooledEffect, EffectController):
+ 
+     def startLoop(self, pos = Point3(0), pdPos = Point3()):
+         EffectController.startLoop(self)
++        # a pooled effect that was muted (stashed) before it went back to the pool came out invisible;
++        # the owning indicator node mutes it again right after this when it is still muted
++        self.particleDummy.unstash()
+         self.particleDummy.hide()
+         self.hide()
+         self.setPos(pos)
+@@ -134,7 +137,8 @@ class QuestIndicatorEffect(PooledEffect, EffectController):
+ 
+     def startAdjustTask(self):
+         self.stopAdjustTask()
+-        task = taskMgr.doMethodLater(1, self.adjustTask, 'questIndicatorEffect-adjust')
++        # one task per beam: with one shared name, stopping any beam stopped every other beam's resizing
++        task = taskMgr.doMethodLater(1, self.adjustTask, 'questIndicatorEffect-adjust-%d' % id(self))
+         self.adjustTask(task, force = True)
+ 
+     def adjustTask(self, task, force = False):
+@@ -157,7 +161,7 @@ class QuestIndicatorEffect(PooledEffect, EffectController):
+         return task.again
+ 
+     def stopAdjustTask(self):
+-        taskMgr.remove('questIndicatorEffect-adjust')
++        taskMgr.remove('questIndicatorEffect-adjust-%d' % id(self))
+         if self.adjustIval:
+             self.adjustIval.pause()
+             self.adjustIval = None
+diff --git a/pirates/pirate/LocalPirate.py b/pirates/pirate/LocalPirate.py
+index f6a0329..3776343 100644
+--- a/pirates/pirate/LocalPirate.py
++++ b/pirates/pirate/LocalPirate.py
+@@ -1545,9 +1545,7 @@ class LocalPirate(DistributedPlayerPirate, LocalAvatar):
+             return
+         if not self.isGenerated():
+             return
+-        if self.style.getTutorial() >= PiratesGlobals.TUT_GOT_PISTOL:
+-            self.disableQuestArrow()
+-            return
++        # the ground arrow used to stop at TUT_GOT_PISTOL (right after the first quests); it now points the whole game
+         if not self.questArrow:
+             self.questArrow = loader.loadModelCopy('models/effects/arrow_ground')
+             g = self.questArrow.getChild(0)
+@@ -1576,16 +1574,17 @@ class LocalPirate(DistributedPlayerPirate, LocalAvatar):
+             self.arrowPlacer.off()
+ 
+     def showQuestArrow(self):
+-        if self.questArrow:
+-            if not self.noQuestArrow:
+-                self.questArrow.show()
+-                self.questArrow.setZ(0)
+-                self.questIndicator.showEffect()
++        # the beam comes back after a cutscene even when there is no arrow yet or the arrow is switched off;
++        # it used to stay muted for good after the first cutscene
++        if self.questArrow and not self.noQuestArrow:
++            self.questArrow.show()
++            self.questArrow.setZ(0)
++        self.questIndicator.showEffect()
+ 
+     def hideQuestArrow(self):
+         if self.questArrow:
+             self.questArrow.hide()
+-            self.questIndicator.hideEffect()
++        self.questIndicator.hideEffect()
+ 
+     def queueStoryQuest(self, quest):
+         self.currentStoryQuests.append(quest)
+diff --git a/pirates/quest/DistributedQuestAvatarAI.py b/pirates/quest/DistributedQuestAvatarAI.py
+index 5cb0432..f7dd491 100644
+--- a/pirates/quest/DistributedQuestAvatarAI.py
++++ b/pirates/quest/DistributedQuestAvatarAI.py
+@@ -170,7 +170,16 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+         goalParent = goalObject.getParentObj()
+         (x, y, z), (h, p, r) = self._getStepPosHpr(goalObject, goalParent)
+         originDoId = goalParent.doId if goalParent else self.doId
+-        self.sendUpdate('setQuestStep', [[originDoId, goalObject.doId, stepType, [x, y, z, h], goalUid]])
++        self.sendUpdate('setQuestStep', [[originDoId, goalObject.doId, stepType, [x, y, z, h], self._getIslandUidOf(goalObject)]])
++
++    def _getIslandUidOf(self, obj):
++        # the last slot of a quest step is the island the client puts the world-map quest dart on
++        # (uid2doId of it); it used to carry the goal's own uid, so the map never marked the quest
++        try:
++            island = self._getIslandOfArea(self._getAreaOf(obj))
++            return island.getUniqueId() if island is not None else ''
++        except Exception:
++            return ''
+ 
+     def _getAreaOf(self, obj):
+         from pirates.world.DistributedGameAreaAI import DistributedGameAreaAI
+@@ -304,7 +313,7 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+             pos, hpr = objInfo.get('Pos'), objInfo.get('Hpr', (0, 0, 0))
+             if pos is None:
+                 return None
+-            return [parentObj.doId, 0, QuestStep.STQuestNode, [pos[0], pos[1], pos[2], hpr[0]], goalUid]
++            return [parentObj.doId, 0, QuestStep.STQuestNode, [pos[0], pos[1], pos[2], hpr[0]], self._getIslandUidOf(parentObj)]
+ 
+         # another area linked to ours by a tunnel: point at that tunnel
+         myUid = myArea.getUniqueId() if myArea is not None and hasattr(myArea, 'getUniqueId') else None
+@@ -320,7 +329,8 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+                     tunnelParent = obj.getParentObj()
+                     (x, y, z), (h, p, r) = self._getStepPosHpr(obj, tunnelParent)
+                     originDoId = tunnelParent.doId if tunnelParent else self.doId
+-                    return [originDoId, obj.doId, QuestStep.STTunnel, [x, y, z, h], goalUid]
++                    return [originDoId, obj.doId, QuestStep.STTunnel, [x, y, z, h],
++                            self._getIslandUidOf(parentObj) or self._getIslandUidOf(obj)]
+ 
+         # the goal's area only hangs off another area through a tunnel (a cave or
+         # jungle behind an island we're not on, e.g. Barbossa's cave from the sea):
+@@ -346,7 +356,8 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+                         continue
+                     areaParent = area.getParentObj()
+                     (x, y, z), (h, p, r) = self._getStepPosHpr(area, areaParent)
+-                    return [areaParent.doId if areaParent else self.doId, area.doId, stepType, [x, y, z, h], goalUid]
++                    return [areaParent.doId if areaParent else self.doId, area.doId, stepType, [x, y, z, h],
++                            self._getIslandUidOf(parentObj) or self._getIslandUidOf(area)]
+ 
+         if not parentObj:
+             return None
+@@ -363,7 +374,8 @@ class DistributedQuestAvatarAI(QuestAvatarBase, QuestHolder):
+         stepParent = stepObject.getParentObj()
+         (x, y, z), (h, p, r) = self._getStepPosHpr(stepObject, stepParent)
+         originDoId = stepParent.doId if stepParent else self.doId
+-        return [originDoId, stepObject.doId, stepType, [x, y, z, h], goalUid]
++        return [originDoId, stepObject.doId, stepType, [x, y, z, h],
++                self._getIslandUidOf(parentObj) or self._getIslandUidOf(stepObject)]
+ 
+     def _swapQuest(self, oldQuests=[], giverId=None, questIds=None, rewards=None):
+         inventory = self.getInventory()
+diff --git a/pirates/quest/QuestPath.py b/pirates/quest/QuestPath.py
+index eb30f98..b3c1ac0 100644
+--- a/pirates/quest/QuestPath.py
++++ b/pirates/quest/QuestPath.py
+@@ -118,7 +118,23 @@ class QuestStep:
+     
+     def __cmp__(self, other):
+         return not isinstance(other, QuestStep) or cmp(self.originDoId, other.originDoId) or cmp(self.stepDoId, other.stepDoId) or cmp(self.stepType, other.stepType) or cmp(self.posH, other.posH) or cmp(self.islandId, other.islandId)
+-    
++
++    # Python 3 never calls __cmp__, so == was identity: every setQuestStep rebuilt the quest indicator (arrow + beam)
++    # and the server's null step never matched getNullStep(). Any step of type 0 is the null step.
++    def _key(self):
++        if not self.stepType:
++            return (0,)
++        return (self.originDoId, self.stepDoId, self.stepType, tuple(self.posH), self.islandId)
++
++    def __eq__(self, other):
++        return isinstance(other, QuestStep) and self._key() == other._key()
++
++    def __ne__(self, other):
++        return not self.__eq__(other)
++
++    def __hash__(self):
++        return hash(self._key())
++
+     def getOriginDoId(self):
+         return self.originDoId
+ 
+diff --git a/pirates/quest/QuestStepIndicator.py b/pirates/quest/QuestStepIndicator.py
+index c7c7a80..a913009 100644
+--- a/pirates/quest/QuestStepIndicator.py
++++ b/pirates/quest/QuestStepIndicator.py
+@@ -26,7 +26,7 @@ class QuestStepIndicator:
+     
+     def delete(self):
+         self.hideQuestStep()
+-        self.indicatorNone = None
++        self.indicatorNode = None
+         self.questStep = None
+ 
+     @report(types=['frameCount', 'args'], dConfigParam='want-quest-indicator-report')
+-- 
+2.53.0
+

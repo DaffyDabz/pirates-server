@@ -1,0 +1,92 @@
+From dfdae5e37841cc7dfa8466fb5da6a842752cd433 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Thu, 19 Nov 2026 08:51:16 -0800
+Subject: [PATCH 269/371] pirates: a pirate who logs out right after
+ Make-a-Pirate carries on with the tutorial (0361)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../tutorial/DistributedPiratesTutorialAI.py  | 57 +++++++++++++++++++
+ 1 file changed, 57 insertions(+)
+
+diff --git a/pirates/tutorial/DistributedPiratesTutorialAI.py b/pirates/tutorial/DistributedPiratesTutorialAI.py
+index caee388..5fc589d 100644
+--- a/pirates/tutorial/DistributedPiratesTutorialAI.py
++++ b/pirates/tutorial/DistributedPiratesTutorialAI.py
+@@ -18,9 +18,12 @@ class DistributedPiratesTutorialAI(DistributedObjectAI, FSM):
+         self.avatarId = None
+         self._jackIntroStarted = False
+         self._jackIntroTries = 0
++        self._resumeStarted = False
++        self._resumeTries = 0
+ 
+     def delete(self):
+         taskMgr.remove(self.uniqueName('jackIntro'))
++        taskMgr.remove(self.uniqueName('resumeChapter1'))
+         DistributedObjectAI.delete(self)
+ 
+     def setAvatarId(self, avatarId):
+@@ -66,6 +69,60 @@ class DistributedPiratesTutorialAI(DistributedObjectAI, FSM):
+         if avatar.getTutorial() == PiratesGlobals.TUT_STARTED and not self._jackIntroStarted:
+             self._jackIntroStarted = True
+             taskMgr.doMethodLater(1.0, self._startJackIntro, self.uniqueName('jackIntro'))
++        elif avatar.getTutorial() == PiratesGlobals.TUT_MADE_PIRATE and not self._resumeStarted:
++            self._resumeStarted = True
++            taskMgr.doMethodLater(1.0, self._resumeChapter1, self.uniqueName('resumeChapter1'))
++
++    # family server (11-19, 0361): a new pirate who closed the game after Make-A-Pirate but before the jail scene
++    # after it ended came back with the tutorial flag at 1 (TUT_MADE_PIRATE) and still holding Chapter1.rung1. The
++    # Jack Sparrow intro only plays at flag 0 and that scene was gone with his last login, so rung1 was never
++    # completed: no Chapter1.rung2, so Doggerel Dan never spoke to him and he was stuck on Rambleshack for good.
++    # Finish rung1 for him (the quest ladder then gives rung2 and his client starts Dan's scene). In the login he
++    # made his pirate in, the scene itself completes rung1, so this leaves it alone
++    def _resumeChapter1(self, task):
++        avatar = self.getAvatar()
++        if not avatar or avatar.getTutorial() != PiratesGlobals.TUT_MADE_PIRATE:
++            return Task.done
++
++        if 'makeAPirateComplete' in avatar.__dict__.get('finalizeEventsSeen', ()):
++            # he made his pirate in this login: the jail scene is playing and finishes rung1 itself
++            return Task.done
++
++        questMgr = self.air.questMgr
++        self._resumeTries += 1
++        if not avatar.getInventory() or avatar.doId in questMgr.avatar2fsm:
++            # the inventory or another quest job is not ready yet
++            if self._resumeTries > 60:
++                self.notify.warning('Avatar %d: gave up finishing %s' % (avatar.doId, TutorialGlobals.FIRST_QUEST))
++                return Task.done
++
++            return Task.again
++
++        quest = questMgr.getQuest(avatar, questId=TutorialGlobals.FIRST_QUEST)
++        if quest is not None:
++            self.notify.warning('Avatar %d came back after Make-A-Pirate still on %s; finishing it' % (
++                avatar.doId, TutorialGlobals.FIRST_QUEST))
++            # a late 'scene done' must not complete it a second time
++            questMgr.ignore('quest-finalize-%d' % quest.doId)
++            if quest.isComplete():
++                questMgr.completeQuest(avatar, quest)
++
++            return Task.done
++
++        if questMgr.quests.get(avatar.doId):
++            # rung1 is done and he holds his next quest (Dan's rung2)
++            return Task.done
++
++        from pirates.quest import QuestDB
++        history = avatar.getQuestHistory() or []
++        if QuestDB.QuestDict[TutorialGlobals.FIRST_QUEST].getQuestInt() in history and \
++                QuestDB.QuestDict[TutorialGlobals.SECOND_QUEST].getQuestInt() not in history:
++            # rung1 was finished but rung2 never arrived (the ladder's job was lost with the login)
++            self.notify.warning('Avatar %d came back with no tutorial quest; giving %s' % (
++                avatar.doId, TutorialGlobals.SECOND_QUEST))
++            questMgr.createQuest(avatar, TutorialGlobals.SECOND_QUEST)
++
++        return Task.done
+ 
+     def _startJackIntro(self, task):
+         avatar = self.getAvatar()
+-- 
+2.53.0
+

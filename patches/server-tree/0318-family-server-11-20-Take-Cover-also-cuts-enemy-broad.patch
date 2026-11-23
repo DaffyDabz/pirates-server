@@ -1,0 +1,57 @@
+From 28870a8257ea7cf4491a209f2c144c859ceff486 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Fri, 20 Nov 2026 18:25:14 -0800
+Subject: [PATCH 318/371] family server (11-20): Take Cover! also cuts enemy
+ broadsides and deck cannons to a quarter (0402)
+
+Server: BattleManagerBase applies the Take Cover! cut to enemy ship fire too, not only to pirates' cannons.
+Lands together with 0404 (enemy ships hit 2007 hard), so the boys get tougher only when bigger ships can sink them.
+Lane: sea (sea-0004). Test: test_sea_enemy.py.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/battle/DistributedShipBroadsideAI.py | 5 +++++
+ pirates/ship/GameFSMShipAI.py                | 4 ++++
+ 2 files changed, 9 insertions(+)
+
+diff --git a/pirates/battle/DistributedShipBroadsideAI.py b/pirates/battle/DistributedShipBroadsideAI.py
+index 731ef88..7afd705 100644
+--- a/pirates/battle/DistributedShipBroadsideAI.py
++++ b/pirates/battle/DistributedShipBroadsideAI.py
+@@ -2,6 +2,7 @@ from direct.directnotify import DirectNotifyGlobal
+ from direct.distributed.ClockDelta import *
+ 
+ from pirates.battle.DistributedWeaponAI import DistributedWeaponAI
++from pirates.battle import WeaponGlobals
+ 
+ 
+ class DistributedShipBroadsideAI(DistributedWeaponAI):
+@@ -301,6 +302,10 @@ class DistributedShipBroadsideAI(DistributedWeaponAI):
+                     targetShip.takeDamage(totalDamage, ship.doId, applyModifiers=False)
+                 else:
+                     # Direct HP reduction for player ships
++                    # family server (sea-0004): Take Cover! cuts enemy cannon fire too
++                    if WeaponGlobals.C_TAKECOVER in targetShip.getSkillEffects():
++                        totalDamage = int(totalDamage * WeaponGlobals.TAKE_COVER_BONUS)
++
+                     newHp = max(0, targetShip.getHp() - totalDamage)
+                     targetShip.b_setHp(newHp)
+                     
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index 8419681..b713f56 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -2837,6 +2837,10 @@ class GameFSMShipAI(FSM.FSM):
+                 target.takeDamage(totalDamage, self.ship.doId, applyModifiers=False)
+             else:
+                 # Player ship: same path as the broadside damage
++                # family server (sea-0004): Take Cover! cuts enemy cannon fire too
++                if WeaponGlobals.C_TAKECOVER in target.getSkillEffects():
++                    totalDamage = int(totalDamage * WeaponGlobals.TAKE_COVER_BONUS)
++
+                 newHp = max(0, target.getHp() - totalDamage)
+                 target.b_setHp(newHp)
+                 targetFSM = getattr(target, 'gameFSM', None)
+-- 
+2.53.0
+

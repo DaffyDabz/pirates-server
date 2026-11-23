@@ -1,0 +1,36 @@
+From 36e8ba1a171cc7817be5ea7f93ff65c9a9fd9cd5 Mon Sep 17 00:00:00 2001
+From: DaffyDabz <daffydabz@users.noreply.github.com>
+Date: Wed, 18 Nov 2026 21:26:50 -0800
+Subject: [PATCH 151/371] pirates: Navy Ferrets skip the empty broadside
+ instead of logging No broadside cannons every second, server-tree patch 0167
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ pirates/ship/GameFSMShipAI.py | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/pirates/ship/GameFSMShipAI.py b/pirates/ship/GameFSMShipAI.py
+index 2c941a3..a30f47d 100644
+--- a/pirates/ship/GameFSMShipAI.py
++++ b/pirates/ship/GameFSMShipAI.py
+@@ -2514,6 +2514,17 @@ class GameFSMShipAI(FSM.FSM):
+         broadsideSide = self._getBroadsideFacing(target)
+         if broadsideSide < 0:
+             return False
++
++        # family server: a ship with no broadside cannons on this side (the Navy Ferret, the
++        # only enemy in the starter waters, and Stumpy's ship) fights with its deck cannons only.
++        # Trying a broadside anyway fired nothing and logged "No broadside cannons on side N"
++        # on every AI update, about once a second for each such ship in a fight.
++        broadside = self.ship.broadside
++        if not broadside:
++            return False
++        sideCannons = broadside.leftBroadside if broadsideSide == 0 else broadside.rightBroadside
++        if not sideCannons:
++            return False
+         
+         # Calculate damage modifiers for logging/debugging
+         distanceMod = self._calculateDamageFalloff(dist)
+-- 
+2.53.0
+
