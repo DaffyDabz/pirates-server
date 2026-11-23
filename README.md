@@ -7,7 +7,7 @@ played end to end: crews, ships, sea battles, quests, shops, card games and frie
 fan project that we play on a home server, and the bots in
 [Pirates Online Bots](https://github.com/DaffyDabz/pirates-online-bots) test it every day.
 
-**Status:** playable; everything below is live on our server. · **Visibility:** private for now · **Last updated:**
+**Status:** playable; everything below is live on our server. · **Visibility:** public · **Last updated:**
 2026-11-22
 
 ## Contents
